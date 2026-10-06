@@ -1,0 +1,2 @@
+# Preserve SEC response bytes and SHA-256 digests across Git checkouts.
+data/raw/sec/** -text

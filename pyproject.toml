@@ -1,19 +1,29 @@
 [project]
 name = "sec-pipeline"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "Verified SEC sample acquisition and filing-linked financial statement export"
+readme = "readme.md"
 authors = [
     { name = "Qiwei (Emma) Shan", email = "qs2314@columbia.edu" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.12,<3.13"
 dependencies = [
-    "edgartools>=5.60.0",
+    "edgartools==5.59.1",
+    "httpx>=0.25,<0.29",
+    "lxml>=5,<7",
 ]
+
+[tool.uv]
+cache-dir = ".uv-cache"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
 
 [project.scripts]
 sec-pipeline = "sec_pipeline:main"
 
 [build-system]
-requires = ["uv_build>=0.12.15,<0.13.0"]
+requires = ["uv_build==0.12.21"]
 build-backend = "uv_build"

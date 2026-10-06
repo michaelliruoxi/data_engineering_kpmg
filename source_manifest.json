@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "project": "data_engineering_kpmg",
+  "instruction_source": "Verified Columbia practicum email dated 2026-10-01, forwarding KPMG data-access instructions",
+  "scope": "Single explicit Microsoft filing example; no broader batch specified",
+  "company": "Microsoft Corporation",
+  "cik": "0000789019",
+  "accession_number": "0001193125-26-191507",
+  "form": "10-Q",
+  "filing_date": "2026-04-29",
+  "reporting_period_end": "2026-03-31",
+  "filing_index_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/0001193125-26-191507-index.html",
+  "issuer_confirmation_url": "https://microsoft.gcs-web.com/sec-filings/sec-filing/10-q/0001193125-26-191507",
+  "access": "Public SEC filing",
+  "reuse_license": null,
+  "redistribution": "User explicitly authorized tracking this public SEC sample; no general redistribution license assessed.",
+  "status": "verified",
+  "updated_at_utc": "2026-10-01T19:22:12Z",
+  "notes": [
+    "Identity/contact details are intentionally omitted from this manifest.",
+    "Referenced KPMG ZIP not found in forwarded email; internal KPMG repository not fetched.",
+    "Complete submission omitted as redundant; no substantive analysis.",
+    "The user approved the SEC identification name and contact email in this session; details remain runtime-only."
+  ],
+  "files": [
+    {
+      "local_path": "data/raw/sec/0001193125-26-191507/msft-20260331.htm",
+      "size_bytes": 7732062,
+      "retrieved_at_utc": "2026-10-01T19:22:08Z",
+      "sha256": "a615ae0de8fe27dd8d1032978b1c810305d3cf7a864b386807cd25a73fc70d59",
+      "status": "verified",
+      "role": "main_inline_xbrl_filing",
+      "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/msft-20260331.htm",
+      "http_status": 200,
+      "content_type": "text/html",
+      "verification": {
+        "result": "passed",
+        "inline_xbrl_identity_and_period_match": true
+      }
+    },
+    {
+      "local_path": "data/raw/sec/0001193125-26-191507/msft-20260331_htm.xml",
+      "size_bytes": 9675172,
+      "retrieved_at_utc": "2026-10-01T19:22:10Z",
+      "sha256": "d9c4e6b92fccf521277f96ddc8fceb95f9708495f8fa245137e5054a3947cef1",
+      "status": "verified",
+      "role": "extracted_xbrl_instance",
+      "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/msft-20260331_htm.xml",
+      "http_status": 200,
+      "content_type": "text/xml",
+      "verification": {
+        "result": "passed",
+        "identity_and_period_match": true,
+        "schema_reference_matches": true,
+        "context_count": 409
+      }
+    },
+    {
+      "local_path": "data/raw/sec/0001193125-26-191507/msft-20260331.xsd",
+      "size_bytes": 1508093,
+      "retrieved_at_utc": "2026-10-01T19:22:12Z",
+      "sha256": "11bfc25e715493f9750956eee727384f1d0db44b0298dbbf9055b80a2363dcb3",
+      "status": "verified",
+      "role": "xbrl_extension_schema",
+      "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/msft-20260331.xsd",
+      "http_status": 200,
+      "content_type": "text/xml",
+      "verification": {
+        "result": "passed",
+        "target_namespace": "http://www.microsoft.com/20260331",
+        "element_count": 108
+      }
+    }
+  ],
+  "workflow_origin": "Independent starter using the public edgartools library; not the unavailable KPMG starter ZIP or internal implementation.",
+  "index_document": {
+    "role": "filing_index",
+    "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/0001193125-26-191507-index.html",
+    "local_path": "data/raw/sec/0001193125-26-191507/0001193125-26-191507-index.html",
+    "status": "verified",
+    "size_bytes": 11540,
+    "sha256": "c03cc6c008535d590fe6be2033f476eac451747db283a5ebccba81759d12849b",
+    "retrieved_at_utc": "2026-10-01T19:20:59Z",
+    "http_status": 200,
+    "content_type": "text/html; charset=UTF-8",
+    "verification": {
+      "result": "passed",
+      "accession_and_dates_match": true,
+      "document_links_match": true
+    }
+  },
+  "download_attempts": [
+    {
+      "started_at_utc": "2026-10-01T19:20:57Z",
+      "requests": [
+        {
+          "source_url": "https://www.sec.gov/robots.txt",
+          "requested_at_utc": "2026-10-01T19:20:57Z",
+          "http_status": 200,
+          "retrieved_at_utc": "2026-10-01T19:20:58Z",
+          "content_type": "text/plain",
+          "size_bytes": 2736,
+          "sha256": "f83678ce2bb4a1f7603e0f7f0eac1bc7f1063f45997516a8cd6f4029f234c623"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/0001193125-26-191507-index.html",
+          "requested_at_utc": "2026-10-01T19:20:59Z",
+          "http_status": 200,
+          "retrieved_at_utc": "2026-10-01T19:20:59Z",
+          "content_type": "text/html; charset=UTF-8",
+          "size_bytes": 11540,
+          "sha256": "c03cc6c008535d590fe6be2033f476eac451747db283a5ebccba81759d12849b"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/msft-20260331.htm",
+          "requested_at_utc": "2026-10-01T19:21:01Z",
+          "http_status": 200,
+          "retrieved_at_utc": "2026-10-01T19:21:02Z",
+          "content_type": "text/html",
+          "size_bytes": 7732062,
+          "sha256": "a615ae0de8fe27dd8d1032978b1c810305d3cf7a864b386807cd25a73fc70d59"
+        }
+      ],
+      "identity_approved": true,
+      "result": "download_failed",
+      "error": "Unexpected or missing DocumentPeriodEndDate.",
+      "finished_at_utc": "2026-10-01T19:21:02Z"
+    },
+    {
+      "started_at_utc": "2026-10-01T19:22:05Z",
+      "requests": [
+        {
+          "source_url": "https://www.sec.gov/robots.txt",
+          "requested_at_utc": "2026-10-01T19:22:06Z",
+          "http_status": 200,
+          "retrieved_at_utc": "2026-10-01T19:22:06Z",
+          "content_type": "text/plain",
+          "size_bytes": 2736,
+          "sha256": "f83678ce2bb4a1f7603e0f7f0eac1bc7f1063f45997516a8cd6f4029f234c623"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/msft-20260331.htm",
+          "requested_at_utc": "2026-10-01T19:22:08Z",
+          "http_status": 200,
+          "retrieved_at_utc": "2026-10-01T19:22:08Z",
+          "content_type": "text/html",
+          "size_bytes": 7732062,
+          "sha256": "a615ae0de8fe27dd8d1032978b1c810305d3cf7a864b386807cd25a73fc70d59"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/msft-20260331_htm.xml",
+          "requested_at_utc": "2026-10-01T19:22:10Z",
+          "http_status": 200,
+          "retrieved_at_utc": "2026-10-01T19:22:10Z",
+          "content_type": "text/xml",
+          "size_bytes": 9675172,
+          "sha256": "d9c4e6b92fccf521277f96ddc8fceb95f9708495f8fa245137e5054a3947cef1"
+        },
+        {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/msft-20260331.xsd",
+          "requested_at_utc": "2026-10-01T19:22:12Z",
+          "http_status": 200,
+          "retrieved_at_utc": "2026-10-01T19:22:12Z",
+          "content_type": "text/xml",
+          "size_bytes": 1508093,
+          "sha256": "11bfc25e715493f9750956eee727384f1d0db44b0298dbbf9055b80a2363dcb3"
+        }
+      ],
+      "identity_approved": true,
+      "result": "verified",
+      "finished_at_utc": "2026-10-01T19:22:12Z"
+    }
+  ],
+  "download_policy": {
+    "library": "edgartools",
+    "library_version": "5.59.1",
+    "minimum_request_interval_seconds": 2.0,
+    "concurrency": 1,
+    "automatic_retries": 0,
+    "follow_redirects": false,
+    "tls_verification": true,
+    "identity_storage": "Runtime environment only; omitted from tracked files",
+    "max_file_bytes": 26214400,
+    "sec_access_rules_url": "https://www.sec.gov/about/developer-resources"
+  },
+  "robots_check": {
+    "source_url": "https://www.sec.gov/robots.txt",
+    "retrieved_at_utc": "2026-10-01T19:22:06Z",
+    "http_status": 200,
+    "content_type": "text/plain",
+    "size_bytes": 2736,
+    "sha256": "f83678ce2bb4a1f7603e0f7f0eac1bc7f1063f45997516a8cd6f4029f234c623",
+    "all_sample_urls_allowed": true
+  },
+  "verified_at_utc": "2026-10-01T19:22:12Z",
+  "verification_scope": "Raw-byte hashes and sizes; index accession/dates/links; HTML and XBRL identity/period; XML structure and matching schema reference/namespace. No financial extraction or full taxonomy validation."
+}

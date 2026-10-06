@@ -1,10 +1,47 @@
-# Python-generated files
+# Only the approved public SEC sample and its filing index may be tracked.
+/data/*
+!/data/raw/
+/data/raw/*
+!/data/raw/sec/
+/data/raw/sec/*
+!/data/raw/sec/0001193125-26-191507/
+/data/raw/sec/0001193125-26-191507/*
+!/data/raw/sec/0001193125-26-191507/msft-20260331.htm
+!/data/raw/sec/0001193125-26-191507/msft-20260331_htm.xml
+!/data/raw/sec/0001193125-26-191507/msft-20260331.xsd
+!/data/raw/sec/0001193125-26-191507/0001193125-26-191507-index.html
+/downloads/
+
+# Local environments, caches, and credentials.
+.venv/
+venv/
+.tools/
+.cache/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
 __pycache__/
-*.py[oc]
+*.py[cod]
 build/
 dist/
 wheels/
 *.egg-info
+.ipynb_checkpoints/
+.env
+.env.*
+.aws/
+credentials*
+secrets*
+.netrc
+.pypirc
+.git-credentials
+*.pem
+*.key
 
-# Virtual environments
-.venv
+# Keep private correspondence and any future KPMG starter materials local.
+/private/
+/materials/
+/kpmg_materials/
+*.zip
+*.eml
+*.msg
