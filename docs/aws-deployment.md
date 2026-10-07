@@ -1,14 +1,16 @@
 # AWS PostgreSQL deployment
 
-The shared `sec` database is already deployed on Amazon RDS for PostgreSQL, with the local database and original SEC files retained. This guide records the completed setup and retains the deployment procedures for maintenance and recovery reference. Current team work uses the existing instance; outstanding teammate access is tracked separately from AWS setup.
+The shared `sec` schema is already deployed in the `sec_filings` database on Amazon RDS for PostgreSQL, with the local database and original SEC files retained. This guide records the completed setup and retains the deployment procedures for maintenance and recovery reference. Current team work uses the existing instance; outstanding teammate access is tracked separately from AWS setup.
+
+**For teammates:** use the [database access guide](../readme.md) and [manual example queries](manual-example.md). The provisioning, restore, and account-administration steps below are maintainer procedures; joining the project does not require creating or restoring a database.
 
 ## Current deployment status: October 6, 2026
 
-The `sec-filings` RDS instance is Available in `us-east-1`: PostgreSQL 17.11, `db.t4g.micro`, 20 GiB encrypted gp3 storage, one-day automated backups, and deletion protection. Its security group allows TCP 5432 from the maintainer's current public IPv4 `/32`. A connection using the ignored `.env.aws` file succeeded with `verify-full` and TLS 1.3. The actual master username is `postgres`.
+The recorded deployment state is **Available** for the `sec-filings` RDS instance in `us-east-1`: PostgreSQL 17.11, `db.t4g.micro`, 20 GiB encrypted gp3 storage, one-day automated backups, and deletion protection. At verification, its security group allowed TCP 5432 from the maintainer's public IPv4 `/32`. A connection using the ignored `.env.aws` file succeeded with `verify-full` and TLS 1.3. The actual master username is `postgres`. These are October 6 results; check the live configuration before maintenance.
 
-The import is complete. A fresh snapshot of local schema `sec` was restored transactionally into RDS. All nine tables (including the migration ledger) and three citation views matched by canonical full-row SHA-256 hashes; UUIDs and every stored field were included. View definitions and the relation inventory also matched. A fresh local comparison confirmed the source was unchanged, and the migration checksum check found no pending migrations.
+The initial import is complete. A fresh snapshot of local schema `sec` was restored transactionally into RDS. At that point, all nine tables (including the migration ledger) and three citation views matched by canonical full-row SHA-256 hashes; UUIDs and every stored field were included. View definitions and the relation inventory also matched. A fresh local comparison confirmed the source was unchanged, and the migration checksum check found no pending migrations. The manual sample added afterward means current cloud and local content are no longer expected to match.
 
-Cloud counts are one company, one filing, four source documents, and zero processed reports, chunks, financial facts, or tables. The original source files remain local; this deployment copies database records, not file bytes.
+The initial cloud import contained one company, one filing, four source documents, and no processed content. On October 6, 2026, a separate, manually prepared `manual-example-v1` sample added **24 financial facts, 3 statement excerpts, 24 table-to-fact links, 1 report excerpt with 2 sections, and 6 chunks** to RDS. The sample was committed in one transaction and verified through a fresh TLS connection; existing metadata was unchanged. The six [sample queries](manual-example.md) passed under all six reader roles using the administrator's existing connection. Those role checks do not establish connectivity from teammates' own networks. This is partial example data, not completed pipeline output. The original source files and separate local database remain unchanged.
 
 The retained migration backup is `backups/sec_filings-rds-20261006T200820Z-030a1bf5.dump`. Its companion `.verification.json` records the backup hash, per-relation counts and hashes, TLS result, and final cloud status. Both are local and ignored by Git. Docker was recovered by preserving only its stale socket-only runtime directories and restarting; the PostgreSQL volume and Docker settings were retained.
 
@@ -16,7 +18,7 @@ The October 6 account setup recorded in "Clarify teammate AWS database access" c
 
 Network access from the teammates' own machines remains pending: the latest recorded AWS inbound rule still permits only the maintainer's public IPv4 address. Add approved teammate `/32` rules and test their connections before marking onboarding complete. Reader accounts do not need to be recreated. Michael retains shared writes initially; restricted loader permissions can be considered after local implementation and review.
 
-To check the live database from this checkout:
+For the maintainer to check live status from this checkout, after completing [local setup](developer-usage.md):
 
 ```powershell
 .\.venv\Scripts\python.exe -m sec_pipeline.db_cli --env-file .env.aws status
@@ -54,7 +56,7 @@ Use RDS **Standard create** so the settings are visible. Select a Free tier temp
 
 Public accessibility provides a network endpoint; the security group still controls who can reach it. Never add `0.0.0.0/0` or `::/0`. Add approved teammate source addresses separately. If the institution requires private access, choose a private-network design before creating the database; the connection steps and cost estimate will change.
 
-For 730 running hours, current `us-east-1` on-demand pricing gives approximately $11.68 compute + $2.30 storage + $3.65 for one public IPv4 address = **$17.63/month before credits**. This is a baseline, not a cap. Taxes, CPU bursting, additional backup storage, traffic, and optional services can add charges. Review AWS's creation summary before submission. No NAT gateway, VPN, EC2 instance, proxy, or paid support is included in this estimate.
+The October 6 planning estimate for 730 running hours in `us-east-1` was approximately $11.68 compute + $2.30 storage + $3.65 for one public IPv4 address = **$17.63/month before credits**. This is a dated baseline, not a cap or a current quote. Taxes, CPU bursting, additional backup storage, traffic, and optional services can add charges. Review AWS's current pricing and creation summary before submission. No NAT gateway, VPN, EC2 instance, proxy, or paid support is included in this estimate.
 
 After creation, wait for **Available**, then record the endpoint hostname. Verify the final security-group rule and configuration before connecting.
 
@@ -85,20 +87,22 @@ Invoke-WebRequest -Uri 'https://truststore.pki.rds.amazonaws.com/us-east-1/us-ea
 
 ## 4. Copy the existing database
 
+This procedure is for a new, empty destination during deployment or recovery. It is not a refresh procedure for the populated shared RDS database.
+
 Start Docker Desktop and the existing local database. Use the [backup workflow](database.md#backup) to produce a fresh, uniquely named custom-format dump after confirming local status. Preserve all existing backups.
 
 Scope the fresh archive to **schema `sec`** using `pg_dump --schema=sec -Fc`, then restore that entire scoped archive into the new, empty RDS database using PostgreSQL 17 `pg_restore` and verified TLS. Use `--no-owner --no-privileges --exit-on-error --single-transaction`. Omit `--schema` from the restore command so the archive's `CREATE SCHEMA` entry is included. The local administrator role and grants should not be copied into RDS. The existing Docker container supplies a compatible client if none is installed on Windows. Copy the dump and CA bundle into that container before restoring from it, and use the corresponding container paths.
 
 Supply passwords using an interactive password prompt or a private credential mechanism, never a command argument or connection URL. Do not use `--clean`, overwrite another populated database, or seed before restoring. Dump/restore preserves existing UUIDs, provenance, processed records, and the migration ledger.
 
-Once restored, verify with the existing command:
+For a new restore, run the maintainer migration and status commands:
 
 ```powershell
 .\.venv\Scripts\python.exe -m sec_pipeline.db_cli --env-file .env.aws migrate
 .\.venv\Scripts\python.exe -m sec_pipeline.db_cli --env-file .env.aws status
 ```
 
-For a current-schema dump, `migrate` should apply nothing and validate the existing migration hashes. Compare all table counts, record IDs, and citation views against the local source. The documented sample contains one company, one filing, four source documents, and no processed content; use fresh source counts if loaders have since added records. Check `pg_stat_ssl` for the active connection and test reconnecting.
+For a current-schema dump, `migrate` should apply nothing and validate the existing migration hashes; if migrations are pending, this command applies them. Compare all table counts, record IDs, and citation views against the source used for that dump. The initial metadata-only import contained one company, one filing, four source documents, and no processed content. The shared RDS database now also contains the manual sample, so use fresh counts from the actual source and destination for a new restore. Check `pg_stat_ssl` for the active connection and test reconnecting.
 
 The source files and `source_manifest.json` are not contained in the database. Retain matching local copies for each loader until shared object storage and its file-resolution support are implemented.
 

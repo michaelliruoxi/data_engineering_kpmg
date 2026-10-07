@@ -2,11 +2,13 @@
 
 The database stores SEC filing metadata, source provenance, and versioned outputs from teammate loaders. The included Microsoft sample seeds **one company, one filing, and four source documents**. It does not extract or load financial facts, cleaned reports, tables, or chunks.
 
+The shared RDS database additionally contains a separately inserted [manual formatted example](manual-example.md), version `manual-example-v1`. The seed command and local setup described below still load metadata only.
+
 The foundation follows the KPMG database design supplied with the implementation plan. PostgreSQL runs locally in Docker. Python uses synchronous `psycopg`; there is no ORM or HTTP service.
 
 ## Start on Windows
 
-Run these commands in PowerShell from the repository root. Start Docker Desktop and wait until its engine is available.
+Run these commands in PowerShell from the repository root. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if it is not available, then start Docker Desktop and wait until its engine is available. Use a shell without `PG*` connection overrides from a previous RDS session so the Python commands below use the local `.env` settings.
 
 ```powershell
 docker info
@@ -19,8 +21,11 @@ Replace `CHANGE_ME` with a strong local password before starting the database. A
 
 ```powershell
 docker compose up -d --wait
+if ($LASTEXITCODE -ne 0) { throw 'Local database startup failed.' }
 uv run --locked sec-db migrate
+if ($LASTEXITCODE -ne 0) { throw 'Database migration failed.' }
 uv run --locked sec-db seed-manifest --manifest source_manifest.json --data-root .
+if ($LASTEXITCODE -ne 0) { throw 'Metadata seed failed.' }
 uv run --locked sec-db status
 ```
 
@@ -28,7 +33,7 @@ Use `.\.tools\integration-uv\bin\uv.exe` in place of `uv` if using the repositor
 
 The seed verifies the manifest and the sizes and SHA-256 hashes of the three entries in `files` and the separate `index_document` before opening a write transaction. These four records reference the original files under `data/raw/sec/`; source bytes are not copied into PostgreSQL or modified. No SEC or other HTTP requests are required by database ingestion. Installing dependencies and pulling the container image can use the network.
 
-After seeding, expect these counts:
+After seeding a newly created database, expect these counts. Seeding an existing database leaves other records in place, so its totals may be higher.
 
 | Table | Rows |
 | --- | ---: |
@@ -50,6 +55,7 @@ Compose provides one `db` service in project `sec-filings`. Its PostgreSQL 17 im
 | `POSTGRES_PASSWORD` | Local password; set in ignored `.env` |
 | `POSTGRES_PORT` | Published local port; defaults to `5432` |
 | `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD` | Python connection overrides; each overrides the corresponding local default or `POSTGRES_*` value |
+| `PGSSLMODE`, `PGSSLROOTCERT` | Optional TLS mode and CA certificate path; use `verify-full` and the AWS CA bundle for RDS |
 
 `sec-db` reads `.env` by default if present. Process environment values replace the same keys from the file; `PG*` keys then take precedence over `POSTGRES_*` keys. Use a different file with the global option before the subcommand:
 
@@ -57,6 +63,8 @@ Compose provides one `db` service in project `sec-filings`. Its PostgreSQL 17 im
 uv run --locked sec-db --env-file .env.local status
 uv run --locked sec-db --help
 ```
+
+The first command assumes you have created `.env.local` with the desired connection settings. To inspect RDS with an authorized maintainer login, use `.env.aws` instead. A reader limited to views should use `sec.filing_catalog`; `status` also needs access to the migration ledger and all data tables.
 
 Do not put a password in a command argument or connection URL. The Python connection defaults to `127.0.0.1`. Standard `PG*` overrides affect Python connections; they do not reconfigure Compose.
 
@@ -116,7 +124,9 @@ Section metadata is a JSON array; chunk metadata, source references, and table s
 
 ### Python transactions
 
-Import public helpers from `sec_pipeline.database`. They accept an existing `psycopg` connection and do not commit individual records. Group related writes in a transaction; return the UUIDs needed for later records. Do not catch an insertion failure and commit the rest of an intended atomic import.
+Import public helpers from `sec_pipeline.database`. Record-writing helpers accept an existing `psycopg` connection and leave commit or rollback to the caller. Group related writes in a transaction and retain the returned UUIDs for dependent records. Do not catch an insertion failure and commit the rest of an intended atomic import.
+
+The following example requires a migrated local database and a write-capable login. Run it as Python from the repository root. It registers the same company as the metadata seed: on a seeded database it returns the existing UUID; on an empty migrated database it inserts the company. Successful exit commits the transaction; an exception rolls it back.
 
 ```python
 from sec_pipeline.database import CompanyInput, connect, register_company
@@ -127,6 +137,7 @@ with connect() as conn:
             conn,
             CompanyInput(cik="0000789019", name="Microsoft Corporation"),
         )
+        print(company_id)
 ```
 
 See [the integration tests](../tests/test_database_integration.py) for complete report, chunk, exact financial fact, table, and citation examples. Their synthetic records are written in transactions that roll back.
@@ -159,7 +170,7 @@ WHERE accession_number = '0001193125-26-191507'
 ORDER BY concept_namespace, concept_name, period_end, instant_date, occurrence_key;
 ```
 
-The fact query returns no rows until a teammate loads extracted facts. Select the intended extraction version, dimensions, unit, and period before comparing values; these queries do not aggregate overlapping periods.
+The catalog counts include all versions loaded for the filing. The fact query returns no rows in a metadata-only database. In shared RDS, add `AND extraction_version = 'manual-example-v1'` immediately after the accession filter in the second query to read the 24 manually prepared example facts. The [manual example queries](manual-example-queries.sql) include this filter and counts scoped to that version. Select the intended extraction version, dimensions, unit, and period before comparing values; these queries do not aggregate overlapping periods.
 
 SQL loaders should use explicit column lists, stable UUIDs, and a single transaction for related records. The Python helpers also enforce strict same-content idempotency; direct SQL callers must implement equivalent conflict checking instead of using unconditional updates or `ON CONFLICT DO NOTHING` for changed records.
 
@@ -205,6 +216,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Verification database creation failed; choose 
 docker compose exec -T db sh -c 'pg_restore -U "$POSTGRES_USER" -d sec_filings_restore_check --exit-on-error --single-transaction /tmp/sec_filings_restore.dump'
 if ($LASTEXITCODE -ne 0) { throw 'Restore verification failed.' }
 docker compose exec -T db sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d sec_filings_restore_check -c "SELECT count(*) AS companies FROM sec.companies; SELECT count(*) AS filings FROM sec.filings; SELECT count(*) AS source_documents FROM sec.source_documents;"'
+if ($LASTEXITCODE -ne 0) { throw 'Restored database count check failed.' }
 ```
 
 For the metadata-only sample, the restored counts must be 1, 1, and 4. Verify citation queries and migration status as well before relying on a backup. A successful backup command alone does not prove the restore works.
@@ -219,10 +231,16 @@ Run the existing regression tests, including the offline database tests:
 uv run --locked python -m unittest discover -s tests -v
 ```
 
-Integration tests require an empty, migrated database dedicated to testing. Create `sec_filings_test` once; omit the first command on later runs. The tests roll back fixtures and do not create, drop, or truncate databases.
+Integration tests require an empty, migrated database dedicated to testing. Create `sec_filings_test` once with the following command. If it already exists from an earlier test run, skip this creation step. The tests roll back fixtures and do not create, drop, or truncate databases.
 
 ```powershell
 docker compose exec -T db sh -c 'createdb -U "$POSTGRES_USER" sec_filings_test'
+if ($LASTEXITCODE -ne 0) { throw 'Test database creation failed.' }
+```
+
+Then migrate the test database and run the live tests. The script restores `PGDATABASE` before testing because the test suite requires the test database to differ from the configured application database; it connects to `SEC_DB_TEST_DATABASE` explicitly.
+
+```powershell
 $previousDatabase = $env:PGDATABASE
 $previousTestFlag = $env:SEC_DB_TEST
 $previousTestDatabase = $env:SEC_DB_TEST_DATABASE
