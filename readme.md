@@ -84,7 +84,9 @@ These column names may be unfamiliar:
 
 **What you should see:** the initial sample is one Microsoft quarterly report, reference `0001193125-26-191507`, with **4** in `source_document_count`.
 
-As of October 6, 2026, the database contains filing details and references to the original documents. Extracted financial figures and document text have not been added yet, so other views may be empty. The original files are kept with the project files; connecting to the database does not download them.
+The example loaded on October 6, 2026 contains **24 financial facts, 3 statement excerpts, 1 report excerpt, and 6 text chunks**, labeled `manual-example-v1`. These are selected real values and passages from the Microsoft filing; the team's complete extraction pipeline is still being built. The [example guide](docs/manual-example.md) explains how to read the values, run six ready-to-use queries, and check the expected results.
+
+This example is in the **shared AWS database**. A local database created with the developer setup starts with filing details and four source-file records only. In either database, source-file records contain links and file details; connecting does not download the original documents.
 
 The next time you want to use the database, open DBeaver, connect to the saved connection, and open **filing_catalog → Data** again.
 
@@ -119,9 +121,12 @@ Columns ending in **`_id`** connect related records. For example, a filing's **c
 1. Open **companies → Data** and find Microsoft.
 2. Open **filings → Data** and find report reference `0001193125-26-191507` in the **accession_number** column.
 3. Open **source_documents → Data** to see the four original-file records from the imported sample. The **source_url** column contains the original web addresses.
-4. Return to **Views → filing_catalog → Data** to see the combined overview again.
+4. Under **sec → Views**, open **fact_provenance → Data** for financial figures and their sources, or **chunk_citations → Data** for text passages and citations.
+5. Under **sec → Tables**, open **financial_tables → Data** and read **readable_text** for the statement excerpts. Return to **Views → filing_catalog → Data** for the combined overview.
 
-The imported sample does not yet include processed report text or financial figures. It is normal for **reports**, **chunks**, **financial_facts**, and **financial_tables** to show no rows until the team adds that information. If you see **Permission denied** instead, ask the administrator for access to the specific table.
+These tables and views can contain multiple filings and extraction versions. The [six sample queries](docs/manual-example-queries.sql) select the Microsoft filing and `manual-example-v1` for you, so their expected counts remain useful as the team adds more data. Query 1 shows the counts; query 2 shows the 24 facts; query 6 shows the six passages and checks that they match the stored report excerpt.
+
+When reading a financial figure, keep its **unit and period** beside it. For example, a value stored in dollars differs from a statement displayed in millions, and a three-month amount differs from a nine-month amount even when they end on the same date. The [example guide](docs/manual-example.md#read-the-values-correctly) explains both cases. If you see **Permission denied**, ask the administrator for access to the specific table or view.
 
 ## 7. Understand the tabs and refresh the data
 
@@ -146,7 +151,7 @@ If you opened **chunks** and only see a list of column names such as `id`, `fili
 | A **certificate** or **SSL** error | Check that the security file is still in the same folder and selected in the SSL tab. Use the Host address exactly as shown above. |
 | **Permission denied** | You connected, but your login is not allowed to open that item. Send its name to the administrator. |
 | You cannot find **sec** or **filing_catalog** | Check that you opened `sec_filings`, then **Schemas → sec → Views**. Ask the administrator if it is missing. |
-| Some views contain no rows | This can be expected: financial figures and report text have not been loaded yet. Start with `filing_catalog`. |
+| Some views contain no rows | Press **F5**, clear old filters, and confirm you selected the shared RDS database. The manual example includes 24 facts and 6 chunks; the separate local database may contain only filing metadata. |
 
 When asking for help, include the error message and which step you reached. Keep your password out of messages and screenshots.
 
@@ -156,6 +161,7 @@ These guides are optional if you only want to view the data:
 
 - [GitHub tutorial: personal branches, commits, and pull requests to main](docs/github-tutorial.md)
 - [Python access, SQL examples, and project commands](docs/developer-usage.md)
+- [Manual data example: six queries and expected results](docs/manual-example.md)
 - [Database structure and local setup](docs/database.md)
 - [AWS deployment and maintenance](docs/aws-deployment.md)
 - [Team implementation plan](docs/team-implementation-plan.md)

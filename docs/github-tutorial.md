@@ -31,7 +31,7 @@ This is the easiest route for a small documentation change; no installation is n
 4. Click **Commit changes...** and enter a message describing your work.
 5. Check that the destination is **your personal branch**, then confirm the commit. If it says `main`, cancel, copy your edits somewhere safe, and reapply them on your branch.
 
-Browser commits are already saved on GitHub, so **there is no separate push step**. Confirm the change appears on your branch, then skip to **step 5** to open a PR.
+Browser commits are already saved on GitHub, so **there is no separate push step**. Confirm the change appears on your branch, then skip to [step 5: open a pull request](#5-open-a-pull-request-to-main).
 
 ### Option B: work on your computer
 
@@ -173,6 +173,8 @@ This uploads your branch to GitHub; `-u` connects it to the matching remote bran
 6. Submit the PR and request a teammate or maintainer under **Reviewers**, if available. Use a draft PR if the work is unfinished.
 
 **Verify the submitted PR proposes your branch → `main`.** Do not target a teammate's branch or reverse the direction. See GitHub's [PR guide](https://docs.github.com/en/pull-requests/how-tos/create-pull-requests/creating-a-pull-request).
+
+A documentation PR might use the title **Clarify manual sample queries** and explain which query or field was confusing and how the change fixes it. In the checks, report what you actually did, such as reviewing Markdown links or running the six read-only queries with your assigned reader login. Do not claim database queries passed if you only reviewed the SQL text; state any connection or test limitation.
 
 ## 6. Make review fixes and finish
 

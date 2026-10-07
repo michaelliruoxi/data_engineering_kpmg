@@ -4,6 +4,8 @@ This guide covers Python access, SQL queries, local development, and the SEC exp
 
 ## First SQL query
 
+Connect to the shared database using the [main README](../readme.md), then open a SQL editor for that connection. Run each statement below through its semicolon. These statements also work against a migrated and seeded local database.
+
 ```sql
 SELECT current_database() AS database_name, current_user AS connected_user;
 
@@ -13,10 +15,9 @@ ORDER BY filing_date DESC, accession_number
 LIMIT 20;
 ```
 
-The initial sample includes the Microsoft 10-Q with accession `0001193125-26-191507` and four source documents.
+The catalog should include the Microsoft 10-Q with accession `0001193125-26-191507` and `source_document_count = 4`. The shared database also contains the [manual formatted example and six read queries](manual-example.md), version `manual-example-v1`, for facts, statement excerpts, report text, and citations. Running the local metadata seed does not install that manual example.
 
 ## Python access
-
 
 Get a copy of this repository, install [uv](https://docs.astral.sh/uv/getting-started/installation/), and open a terminal in the repository's root folder. Install the locked dependencies:
 
@@ -65,7 +66,9 @@ with connect(".env.aws") as conn:
         print(row)
 ```
 
-Run from the repository root so both `.env.aws` and the certificate path resolve correctly. Calling `connect()` without the filename uses the local `.env` instead. Existing process `PG*` environment variables override file settings; `DATABASE_URL` is not used by this project's helper.
+The first printed row identifies the database and your login; the remaining rows are the same catalog results as the SQL example. `SET TRANSACTION READ ONLY` prevents this example from writing data.
+
+Run from the repository root so both `.env.aws` and the certificate path resolve correctly. Calling `connect()` without the filename uses the local `.env` instead. Existing process `PG*` environment variables override matching file settings; `DATABASE_URL` is not used by this project's helper.
 
 ## Connection diagnostics
 
@@ -80,7 +83,6 @@ Test-NetConnection sec-filings.cghyw6082mug.us-east-1.rds.amazonaws.com -Port 54
 For DBeaver versions that expose SSL under Driver properties, use `sslmode=verify-full` and `sslrootcert=<full path to the AWS PEM file>`. Keep hostname and certificate verification enabled.
 
 ## Local development and database administration
-
 
 See [database setup and loader contracts](database.md) for local Docker setup, the schema, write interfaces, tests, and backup/restore. See [AWS deployment and maintenance](aws-deployment.md) for the hosted database.
 
@@ -97,12 +99,15 @@ The included Microsoft sample, accession `0001193125-26-191507`, is stored under
 
 ## Export an income statement
 
+This command makes SEC requests and exports an income statement from the selected ticker's latest available 10-K to a new CSV. The AAPL example below does not process the bundled Microsoft 10-Q or load any database records.
+
 Approve the name and contact email to send to SEC, then supply them at runtime:
 
 ```powershell
 $env:EDGAR_IDENTITY = Read-Host 'Approved SEC User-Agent: Full Name contact email'
 try {
     uv run --locked sec-pipeline --ticker AAPL --output data/processed/AAPL-income.csv --identity-approved
+    if ($LASTEXITCODE -ne 0) { throw 'Income statement export failed.' }
 } finally {
     Remove-Item Env:EDGAR_IDENTITY -ErrorAction SilentlyContinue
 }

@@ -1,6 +1,8 @@
 # SEC filing pipeline team implementation plan
 
-Last reconciled with the workspace and related project chats: October 6, 2026. Team: Michael, Jace, Bryce, Jazzy, Emma, Ruby, and Sally.
+Deployment and access evidence recorded October 6, 2026; documentation reviewed October 7, 2026. Team: Michael, Jace, Bryce, Jazzy, Emma, Ruby, and Sally.
+
+A [manual formatted example](manual-example.md), version `manual-example-v1`, is available in shared RDS: 24 facts, 3 statement excerpts, 24 table-to-fact links, 1 report excerpt with 2 sections, and 6 chunks. It provides concrete data for teams to query while implementing their modules. It is a partial example and does not complete the processing or full-filing acceptance work below. The initial deployment counts in the baseline table describe the earlier metadata import.
 
 The next delivery is a reproducible workflow that turns the supplied Microsoft quarterly filing into queryable financial facts, three primary financial statements, cleaned report text, and text chunks with source citations. **AWS RDS setup, the initial database import, and all six individual read-only accounts are complete.** Remaining access work is approving teammates' network addresses and testing connections from their machines. Processing development can start locally now; shared write permissions come later, only for reviewed loaders.
 
@@ -8,7 +10,7 @@ The next delivery is a reproducible workflow that turns the supplied Microsoft q
 
 | Area | Current position | Implication for this plan |
 | --- | --- | --- |
-| Source collection | Four local files for Microsoft 10-Q `0001193125-26-191507`: HTML, extracted XBRL XML, extension schema, and filing index. Their local verification passed during this review. | Use these files for the first delivery; additional downloads are not required. |
+| Source collection | Four local files for Microsoft 10-Q `0001193125-26-191507`: HTML, extracted XBRL XML, extension schema, and filing index. Their local verification passed in the recorded baseline check. | Use these files for the first delivery; additional downloads are not required. |
 | Acquisition and export | A fixed-sample downloader/verifier and a separate latest-10-K income-statement CSV exporter exist. | Reuse source verification. Build a processor for the supplied 10-Q; the CSV exporter is not that processor. |
 | Storage | PostgreSQL tables, a migration ledger, input classes, storage helpers, and three citation/catalog views exist. | Build transformations around the existing interfaces. |
 | AWS RDS setup — completed | The existing instance, schema import, initial metadata import, and maintainer's verified TLS connection are established. The October 6 deployment record contains one company, one filing, four source documents, and no processed content. | Use the existing AWS database. Remaining work concerns processing, ingestion, and any outstanding teammate access. The counts are from the recorded deployment snapshot. |
@@ -16,18 +18,18 @@ The next delivery is a reproducible workflow that turns the supplied Microsoft q
 | Teammate network access — pending | The latest access chat still records only Michael's network as allowed. Teammate source-IP rules and connections from their own machines have not been verified. | Collect approved public IPv4 addresses, add specific rules, and test each connection. This does not block offline parsing or local database development. |
 | Processing | No financial fact extractor, table extractor, report cleaner, chunker, or complete processing runner is present. | Tasks 2–6 implement these missing stages. |
 | Collaboration workflow — documented | The GitHub tutorial now requires personal branches and reviewed PRs into `main`. Repository collaborator access and branch-protection enforcement are not confirmed by the tutorial. | Confirm invitations; follow the branch/PR rule immediately; check protection settings separately. |
-| Tests and delivery | Existing tests cover acquisition, CSV export, configuration, and database contracts, including synthetic records. Database code, documentation, and configuration also include uncommitted/untracked work. | Preserve the foundation, add real-processing tests, and publish a coherent reviewed baseline before expecting teammates to clone it. |
+| Tests and delivery | Existing tests cover acquisition, CSV export, configuration, and database contracts, including synthetic records. They do not implement or validate complete filing extraction. | Use a reviewed baseline from `main`, preserve the foundation, and add real-processing tests with each module. |
 
 Relevant existing references: [database access and navigation](../readme.md), [developer usage](developer-usage.md), [GitHub workflow](github-tutorial.md), [database contracts](database.md#schema-and-loader-contract), [AWS deployment status](aws-deployment.md#current-deployment-status-october-6-2026), [storage implementation](../src/sec_pipeline/database.py), [schema and views](../src/sec_pipeline/migrations/001_initial.sql), and [source manifest](../source_manifest.json).
 
-Local verification for this reconciliation: all four original source files passed verification, and 32 offline tests passed. The 11 opt-in live database tests were skipped; that run does not establish new live database or teammate-network results.
+The recorded October 6 local check verified all four original source files and passed 32 offline tests. The 11 opt-in live database tests were skipped; that run does not establish new live database or teammate-network results. Each implementation PR must report its own checks.
 
 ### Decisions carried forward from project chats
 
 - **Clarify teammate AWS database access:** individual read-only accounts were created and verified; teammate network access is pending. Michael retains administration and shared imports. Jace may receive restricted loader access when the workflow is ready; the other developers can work locally, and Sally uses read-only access for shared validation.
 - **Add beginner GitHub workflow guide:** everyone commits and pushes only to their own branch and submits PRs to `main`. The designated maintainer merges after review. Writing the tutorial did not enable branch protection.
 - **Compare online database options:** AWS deployment and metadata migration are complete. The README now covers beginner DBeaver access, the Host-versus-JDBC-URL distinction, and browsing tables/views through their Data tabs.
-- **Build project PostgreSQL system**, **Merge remote branch robustly**, and **Set up SEC filing download:** preserve the verified public sample, existing storage contracts, and separate CSV exporter. The earlier published exporter baseline does not mean the later database and documentation changes have been published; current Git status still shows that work locally.
+- **Build project PostgreSQL system**, **Merge remote branch robustly**, and **Set up SEC filing download:** preserve the verified public sample, existing storage contracts, and separate CSV exporter. Teammates should start from the reviewed baseline on `main`; a local commit or an open PR alone does not make changes part of that baseline.
 
 Deployment and account status above reflect the recorded results in those chats. Completion of a login check from Michael's network is separate from successful access on a teammate's computer.
 
@@ -87,7 +89,7 @@ Follow the [beginner GitHub guide](github-tutorial.md):
 4. Open a PR with base `main`, including the change, tests/evidence, and handoff notes. Make review fixes on the same personal branch.
 5. Michael reviews and merges through the PR after the required checks. Start a new branch for the next task.
 
-Michael should confirm whether `main` protection already enforces reviewed PRs and blocks direct-push bypasses; configure it if needed. Its enforcement is currently unverified, not a completed setup item. These rules also govern publishing the outstanding database/documentation baseline.
+Michael should confirm whether `main` protection already enforces reviewed PRs and blocks direct-push bypasses; configure it if needed. Its enforcement is currently unverified, not a completed setup item. These rules also govern updates to the database and documentation baseline.
 
 ## Task 1 Database and integration
 
@@ -104,7 +106,7 @@ AWS provisioning, the initial database migration, and reader-account creation ar
 
 ### Work to complete
 
-1. Review and package the existing database changes through a personal branch and PR to `main`, so teammates can obtain the same working schema, dependencies, tests, and documentation. Confirm GitHub invitations and branch-protection enforcement. Preserve unrelated local changes and use the deployed AWS database as the shared integration destination.
+1. Confirm that the schema, dependencies, tests, and documentation needed by teammates are available in the reviewed `main` baseline. Publish subsequent changes through a personal branch and PR to `main`. Confirm GitHub invitations and branch-protection enforcement. Preserve unrelated local changes and use the deployed AWS database as the shared integration destination.
 2. Confirm the shared contracts below with all owners. Decide version labels, provenance fields, section metadata, cell identifiers, error reporting, and the exact first-delivery boundary before modules diverge.
 3. Reuse the six existing reader accounts. Complete approved source-IP rules and connection checks from teammate machines, using the README's access/navigation guide. Keep shared writes with Michael initially; review Jace's required operations before granting a restricted loader role. Check comparison reads and row locks as well as inserts. A catalog query is sufficient for basic reader onboarding; `sec-db status` is an administrative diagnostic with broader requirements.
 4. Own schema evolution and code integration. Reuse the existing input classes and helpers; add a new migration only when an agreed requirement cannot fit the current schema. Never modify an already-applied migration.
@@ -249,7 +251,7 @@ AWS provisioning, the initial database migration, and reader-account creation ar
 
 ## Shared contracts to settle before implementation
 
-The existing Python input classes and SQL constraints are established interfaces. The more specific conventions below are proposed team decisions to finalize at the first checkpoint.
+The existing Python input classes and SQL constraints are established interfaces. The more specific conventions below are proposed team decisions to finalize at the first checkpoint. The manual sample illustrates the storage format; its table/section JSON and shared `manual-example-v1` label do not replace these decisions or the separate production-stage versions below.
 
 | Contract | Proposed agreement |
 | --- | --- |
