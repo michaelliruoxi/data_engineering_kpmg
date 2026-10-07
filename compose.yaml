@@ -1,0 +1,26 @@
+name: sec-filings
+
+services:
+  db:
+    # Official PostgreSQL 17 bookworm image, pinned to the Linux amd64 manifest.
+    image: postgres:17-bookworm@sha256:91eb910c44c7ed13f7f1a4ccadaa9ca72ef14cddc04cacb6e070e48eb44731a3
+    platform: linux/amd64
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sec_filings}
+      POSTGRES_USER: ${POSTGRES_USER:-sec_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_INITDB_ARGS: --encoding=UTF8
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
