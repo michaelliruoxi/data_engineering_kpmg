@@ -6,7 +6,7 @@ All example records use **`manual-example-v1`** as their extraction or chunking 
 
 ## What to open
 
-Connect to the shared AWS database using the [database access guide](../readme.md). Use your assigned login and an approved network connection. The local Docker database is separate; select the shared RDS connection in DBeaver.
+Connect to the shared AWS database using the [database access guide](../readme.md). Use your assigned login and `verify-full` SSL with the AWS CA certificate; individual IPv4 approval is no longer required. The local Docker database is separate; select the shared RDS connection in DBeaver.
 
 In DBeaver, select the shared connection and open **SQL Editor → New SQL Editor**. Open [manual-example-queries.sql](manual-example-queries.sql), copy one numbered query into the editor, select the whole query through its semicolon, and choose **SQL Editor → Execute SQL Statement**. Read the rows in the result grid below the editor. Each query is read-only and works independently; no Python setup or earlier query result is required. See DBeaver's [SQL editor](https://dbeaver.com/docs/dbeaver/SQL-Editor/) and [query execution](https://dbeaver.com/docs/dbeaver/SQL-Execution/) guides if your menu layout differs.
 

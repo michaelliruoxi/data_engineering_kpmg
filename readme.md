@@ -8,17 +8,14 @@ This project stores information about company reports filed with the U.S. Securi
 
 Michael is the project administrator and manages access to the database.
 
-Michael has already created individual read-only accounts for Jace, Bryce, Jazzy, Emma, Ruby, and Sally. Request your own credentials privately. Access from your network still needs approval and a connection test.
+Michael has already created individual read-only accounts for Jace, Bryce, Jazzy, Emma, Ruby, and Sally. Request your own credentials privately, then test the connection from your computer using the steps below.
 
 Ask Michael for:
 
 - Your own **database username and password**.
-- Permission to connect from your current internet connection.
 - **Read-only access** if you only need to view information. This lets you browse without changing the shared data.
 
-To arrange the internet connection permission, open [this AWS page](https://checkip.amazonaws.com/), copy the address it shows, and send it to the administrator. This is your **public IP address**—the address your internet connection uses. Tell them if you will be using a VPN.
-
-**Wait for the administrator to confirm access before continuing.** Having this README does not automatically give you access. If you later change Wi-Fi networks or turn a VPN on or off, the administrator may need to approve your new address.
+**Individual IP approval is no longer required as of October 7, 2026.** You do not need to send Michael your public IPv4 address or request a new AWS rule when changing Wi-Fi or VPN. You still need your assigned database username and password, plus the verified SSL connection described below. See the [AWS access configuration](docs/aws-deployment.md#current-deployment-status-october-7-2026) for the current network setting.
 
 ## 2. Install the app and download the security file
 
@@ -146,7 +143,7 @@ If you opened **chunks** and only see a list of column names such as `id`, `fili
 | What you see | What to do |
 | --- | --- |
 | **Invalid JDBC URL** | Check the field label: **Host** takes the server address alone; **URL** takes the full `jdbc:postgresql://...:5432/sec_filings` value from step 3. |
-| The connection keeps waiting or says **timed out** | Send the administrator your current public IP address. Mention any Wi-Fi or VPN change. |
+| The connection keeps waiting or says **timed out** | Check the Host and port from step 3. Your Wi-Fi, VPN, or local firewall may block database connections. Send Michael the error and network context so he can check the connection and RDS status; individual IPv4 approval is not required. |
 | **Password authentication failed** | Check that you used the database username and password provided to you. Ask the administrator to check your login if it still fails. |
 | A **certificate** or **SSL** error | Check that the security file is still in the same folder and selected in the SSL tab. Use the Host address exactly as shown above. |
 | **Permission denied** | You connected, but your login is not allowed to open that item. Send its name to the administrator. |

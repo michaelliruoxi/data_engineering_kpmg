@@ -1,10 +1,10 @@
 # SEC filing pipeline team implementation plan
 
-Deployment and access evidence recorded October 6, 2026; documentation reviewed October 7, 2026. Team: Michael, Jace, Bryce, Jazzy, Emma, Ruby, and Sally.
+Deployment and account evidence recorded October 6, 2026; AWS network rule verified and documentation reviewed October 7, 2026. Team: Michael, Jace, Bryce, Jazzy, Emma, Ruby, and Sally.
 
 A [manual formatted example](manual-example.md), version `manual-example-v1`, is available in shared RDS: 24 facts, 3 statement excerpts, 24 table-to-fact links, 1 report excerpt with 2 sections, and 6 chunks. It provides concrete data for teams to query while implementing their modules. It is a partial example and does not complete the processing or full-filing acceptance work below. The initial deployment counts in the baseline table describe the earlier metadata import.
 
-The next delivery is a reproducible workflow that turns the supplied Microsoft quarterly filing into queryable financial facts, three primary financial statements, cleaned report text, and text chunks with source citations. **AWS RDS setup, the initial database import, and all six individual read-only accounts are complete.** Remaining access work is approving teammates' network addresses and testing connections from their machines. Processing development can start locally now; shared write permissions come later, only for reviewed loaders.
+The next delivery is a reproducible workflow that turns the supplied Microsoft quarterly filing into queryable financial facts, three primary financial statements, cleaned report text, and text chunks with source citations. **AWS RDS setup, the initial database import, and all six individual read-only accounts are complete.** The security group now permits database connections from any IPv4 address; successful logins from teammates' machines remain unverified. Processing development can start locally now; shared write permissions come later, only for reviewed loaders.
 
 ## Current project baseline
 
@@ -15,23 +15,23 @@ The next delivery is a reproducible workflow that turns the supplied Microsoft q
 | Storage | PostgreSQL tables, a migration ledger, input classes, storage helpers, and three citation/catalog views exist. | Build transformations around the existing interfaces. |
 | AWS RDS setup — completed | The existing instance, schema import, initial metadata import, and maintainer's verified TLS connection are established. The October 6 deployment record contains one company, one filing, four source documents, and no processed content. | Use the existing AWS database. Remaining work concerns processing, ingestion, and any outstanding teammate access. The counts are from the recorded deployment snapshot. |
 | Database accounts — completed | Jace, Bryce, Jazzy, Emma, Ruby, and Sally each have an individual login in the `sec_reader` group. The access chat records successful login/read checks and no shared-data write or schema-creation permissions for all six. | Reuse the existing accounts and share each person's credentials privately. Account checks were performed from the already-allowed network. |
-| Teammate network access — pending | The latest access chat still records only Michael's network as allowed. Teammate source-IP rules and connections from their own machines have not been verified. | Collect approved public IPv4 addresses, add specific rules, and test each connection. This does not block offline parsing or local database development. |
+| AWS network rule — verified October 7 | Security group `sec-filings-access` permits TCP port 5432 from `0.0.0.0/0` (any IPv4) through rule `sgr-0736ba78869d57be9`. Prior `/32` entries remain but no longer restrict effective IPv4 access. | No teammate source-IP rule is needed under the current configuration. Verify each teammate's login from their own machine; individual read-only roles, password authentication, and `verify-full` TLS remain unchanged. |
 | Processing | No financial fact extractor, table extractor, report cleaner, chunker, or complete processing runner is present. | Tasks 2–6 implement these missing stages. |
 | Collaboration workflow — documented | The GitHub tutorial now requires personal branches and reviewed PRs into `main`. Repository collaborator access and branch-protection enforcement are not confirmed by the tutorial. | Confirm invitations; follow the branch/PR rule immediately; check protection settings separately. |
 | Tests and delivery | Existing tests cover acquisition, CSV export, configuration, and database contracts, including synthetic records. They do not implement or validate complete filing extraction. | Use a reviewed baseline from `main`, preserve the foundation, and add real-processing tests with each module. |
 
-Relevant existing references: [database access and navigation](../readme.md), [developer usage](developer-usage.md), [GitHub workflow](github-tutorial.md), [database contracts](database.md#schema-and-loader-contract), [AWS deployment status](aws-deployment.md#current-deployment-status-october-6-2026), [storage implementation](../src/sec_pipeline/database.py), [schema and views](../src/sec_pipeline/migrations/001_initial.sql), and [source manifest](../source_manifest.json).
+Relevant existing references: [database access and navigation](../readme.md), [developer usage](developer-usage.md), [GitHub workflow](github-tutorial.md), [database contracts](database.md#schema-and-loader-contract), [AWS deployment status](aws-deployment.md#current-deployment-status-october-7-2026), [storage implementation](../src/sec_pipeline/database.py), [schema and views](../src/sec_pipeline/migrations/001_initial.sql), and [source manifest](../source_manifest.json).
 
 The recorded October 6 local check verified all four original source files and passed 32 offline tests. The 11 opt-in live database tests were skipped; that run does not establish new live database or teammate-network results. Each implementation PR must report its own checks.
 
 ### Decisions carried forward from project chats
 
-- **Clarify teammate AWS database access:** individual read-only accounts were created and verified; teammate network access is pending. Michael retains administration and shared imports. Jace may receive restricted loader access when the workflow is ready; the other developers can work locally, and Sally uses read-only access for shared validation.
+- **Clarify teammate AWS database access:** individual read-only accounts were created and verified. The October 7 AWS change permits any IPv4 source on port 5432; successful logins from teammates' machines remain unverified. Michael retains administration and shared imports. Jace may receive restricted loader access when the workflow is ready; the other developers can work locally, and Sally uses read-only access for shared validation.
 - **Add beginner GitHub workflow guide:** everyone commits and pushes only to their own branch and submits PRs to `main`. The designated maintainer merges after review. Writing the tutorial did not enable branch protection.
 - **Compare online database options:** AWS deployment and metadata migration are complete. The README now covers beginner DBeaver access, the Host-versus-JDBC-URL distinction, and browsing tables/views through their Data tabs.
 - **Build project PostgreSQL system**, **Merge remote branch robustly**, and **Set up SEC filing download:** preserve the verified public sample, existing storage contracts, and separate CSV exporter. Teammates should start from the reviewed baseline on `main`; a local commit or an open PR alone does not make changes part of that baseline.
 
-Deployment and account status above reflect the recorded results in those chats. Completion of a login check from Michael's network is separate from successful access on a teammate's computer.
+Deployment and account status above reflect the recorded results in those chats; current network-rule status reflects the verified October 7 AWS change. Completion of a login check from Michael's network is separate from successful access on a teammate's computer.
 
 ### Findings from the supplied filing
 
@@ -75,7 +75,7 @@ Structured extraction of every note table, additional companies/filings, compreh
 | Ruby | `sec_ruby`, read-only | Develops chunking locally; shared writes only if assigned an approved loader operation |
 | Sally | `sec_sally`, read-only | Validates and demonstrates shared results with read-only queries |
 
-All six reader accounts are already created. Michael's immediate access follow-up is to collect each teammate's public IPv4 address, add an approved `/32` rule where needed, and verify DBeaver or Python access from that teammate's machine using `verify-full`. Passwords and personal IP addresses stay outside this plan and version control. Teammates do not need AWS console access to use these database accounts.
+All six reader accounts are already created. The current security-group rule permits TCP port 5432 from any IPv4 address, so teammate source-IP collection and additional `/32` rules are not required. Michael's immediate access follow-up is to verify DBeaver or Python login from each teammate's machine using their individual account, password authentication, and `verify-full` TLS. These teammate-machine checks remain unverified. Passwords and personal IP addresses stay outside this plan and version control. Teammates do not need AWS console access to use these database accounts.
 
 Offline extraction and local loader tests do not require shared write access. Michael can run the first reviewed shared import. Any later write grant must match the approved loader's actual tables and operations; do not give everyone write access merely because they own a processing module.
 
@@ -101,14 +101,15 @@ Michael should confirm whether `main` protection already enforces reviewed PRs a
 - Import of the existing schema and Microsoft filing/source metadata.
 - Maintainer connection verification with TLS and local/cloud data comparison.
 - Creation and verification of all six individual read-only accounts.
+- Verification on October 7 that the security group permits TCP port 5432 from any IPv4 address.
 
-AWS provisioning, the initial database migration, and reader-account creation are complete prerequisites. Michael's remaining responsibilities are integration, PR review, teammate network onboarding, and any later narrowly scoped loader permissions.
+AWS provisioning, the initial database migration, reader-account creation, and the current security-group rule are complete prerequisites. Michael's remaining responsibilities are integration, PR review, teammate-machine login verification, and any later narrowly scoped loader permissions.
 
 ### Work to complete
 
 1. Confirm that the schema, dependencies, tests, and documentation needed by teammates are available in the reviewed `main` baseline. Publish subsequent changes through a personal branch and PR to `main`. Confirm GitHub invitations and branch-protection enforcement. Preserve unrelated local changes and use the deployed AWS database as the shared integration destination.
 2. Confirm the shared contracts below with all owners. Decide version labels, provenance fields, section metadata, cell identifiers, error reporting, and the exact first-delivery boundary before modules diverge.
-3. Reuse the six existing reader accounts. Complete approved source-IP rules and connection checks from teammate machines, using the README's access/navigation guide. Keep shared writes with Michael initially; review Jace's required operations before granting a restricted loader role. Check comparison reads and row locks as well as inserts. A catalog query is sufficient for basic reader onboarding; `sec-db status` is an administrative diagnostic with broader requirements.
+3. Reuse the six existing reader accounts. Complete the pending login checks from teammate machines using the README's access/navigation guide, password authentication, and `verify-full` TLS. The current security-group rule already permits any IPv4 source on port 5432. Keep shared writes with Michael initially; review Jace's required operations before granting a restricted loader role. Check comparison reads and row locks as well as inserts. A catalog query is sufficient for basic reader onboarding; `sec-db status` is an administrative diagnostic with broader requirements.
 4. Own schema evolution and code integration. Reuse the existing input classes and helpers; add a new migration only when an agreed requirement cannot fit the current schema. Never modify an already-applied migration.
 5. Design filing-scoped snapshots that record IDs, complete content or deterministic content hashes, versions, source checksums, and table/fact relationships. Compare the first and second successful imports; counts alone are insufficient to prove unchanged results.
 6. Coordinate late-stage failure tests in a dedicated local test database. Confirm that a failure leaves no partial new import. Review task 7's results and resolve required failures before loading the accepted version into the shared database.
@@ -120,7 +121,7 @@ AWS provisioning, the initial database migration, and reader-account creation ar
 - A release checklist identifying the exact filing, source checksums, processing versions, destination, and validation result.
 - **Complete when:** every module uses the agreed contracts; required team connections work; a real filing passes validation; reruns preserve IDs/content; a deliberate failure preserves the previous database state; and the shared import can be read through the intended accounts.
 
-**Dependencies and boundary:** begins immediately using the completed AWS setup and reader accounts, and continues throughout delivery. Jace owns the runner implementation in task 2; Michael owns its integration policy, shared imports, and PR review. Teammate network onboarding can proceed alongside offline development.
+**Dependencies and boundary:** begins immediately using the completed AWS setup and reader accounts, and continues throughout delivery. Jace owns the runner implementation in task 2; Michael owns its integration policy, shared imports, and PR review. Teammate-machine login verification can proceed alongside offline development.
 
 ## Task 2 Acquisition and ingestion workflow
 
@@ -247,7 +248,7 @@ AWS provisioning, the initial database migration, and reader-account creation ar
 - A small SQL demonstration and a short walkthrough suitable for the team presentation.
 - **Complete when:** all required checks execute and pass for the selected versions; full-scope counts and coverage reconcile; unresolved required links are zero; the source-tracing demo works on real data; and reviewers can distinguish source evidence, processed output, and test fixtures.
 
-**Dependencies and boundary:** source review begins immediately; Sally's existing shared account remains read-only. Shared demonstrations need her network access to be enabled, while reference preparation and local tests can proceed now. Output validation depends on tasks 2–6. Task 1 owns release and transaction acceptance; this task independently checks content correctness. Each implementation owner remains responsible for their own tests.
+**Dependencies and boundary:** source review begins immediately; Sally's existing shared account remains read-only. The security group permits her IPv4 connection, but successful login from her machine still needs verification before shared demonstrations. Reference preparation and local tests can proceed now. Output validation depends on tasks 2–6. Task 1 owns release and transaction acceptance; this task independently checks content correctness. Each implementation owner remains responsible for their own tests.
 
 ## Shared contracts to settle before implementation
 
@@ -267,7 +268,7 @@ The existing Python input classes and SQL constraints are established interfaces
 
 ## Delivery sequence
 
-**Completed prerequisites:** AWS RDS setup, initial schema/metadata import, maintainer connectivity verification, and all six reader accounts tested from the allowed network. The GitHub contribution guide and beginner database-navigation guide are also available. The checkpoints below cover remaining onboarding, implementation, and data handoff.
+**Completed prerequisites:** AWS RDS setup, initial schema/metadata import, maintainer connectivity verification, all six reader accounts tested from the previously allowed network, and the October 7 security-group rule permitting any IPv4 source on port 5432. The GitHub contribution guide and beginner database-navigation guide are also available. The checkpoints below cover teammate-machine login verification, remaining repository onboarding, implementation, and data handoff.
 
 ```mermaid
 flowchart LR
@@ -287,7 +288,7 @@ This diagram shows data dependencies, not a requirement to wait before starting 
 
 | Checkpoint | Exit evidence | Work that can proceed in parallel |
 | --- | --- | --- |
-| A Team readiness | GitHub invitations confirmed, baseline reviewed through a PR, personal branches ready, contracts agreed, matching sources verified | Enable teammate source-IP rules and test their reader connections; begin source review and offline development immediately |
+| A Team readiness | GitHub invitations confirmed, baseline reviewed through a PR, personal branches ready, contracts agreed, matching sources verified | Verify reader logins from teammates' machines; begin source review and offline development immediately |
 | B First module outputs | Fact inventory, one primary table draft, cleaned sections, and fixture-based chunks can be inspected | Facts, tables, cleaning, runner development, and validation fixtures |
 | C Complete local processing | All sample facts, three primary statements, full cleaned report, and chunks pass module checks | Resolve mapping/content defects while improving integration tests |
 | D Integrated acceptance | One command loads and validates all selected versions locally; replay and deliberate-failure rollback pass | Review PRs, prepare demo, and confirm Michael's shared-import route or approved restricted loader permissions |
@@ -314,10 +315,11 @@ Keep derived sample outputs and full run reports under ignored `data/processed/`
 ## Final acceptance checklist
 
 - [x] AWS RDS setup, initial schema/metadata import, and maintainer connectivity verification are complete.
-- [x] All six individual read-only accounts have been created and verified from the allowed network.
+- [x] All six individual read-only accounts have been created and verified from the previously allowed network.
+- [x] The October 7 security-group rule permits TCP port 5432 from any IPv4 address; individual read-only roles, password authentication, and `verify-full` TLS remain unchanged.
 - [x] Beginner database-access/navigation and personal-branch/PR guides are available.
 - [ ] Repository collaborator access and enforcement of the reviewed-PR rule for `main` are confirmed.
-- [ ] Teammate network rules are approved and reader connections work from the required teammate machines.
+- [ ] Successful reader logins are verified from the required teammate machines.
 - [ ] Every teammate has the same reviewed code baseline and matching source files.
 - [ ] The sample's four original files and manifest remain unchanged.
 - [ ] All 1,622 XML fact occurrences are represented for the chosen fact version, with exact value/context semantics.
