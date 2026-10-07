@@ -4,9 +4,11 @@ The shared `sec` schema is already deployed in the `sec_filings` database on Ama
 
 **For teammates:** use the [database access guide](../readme.md) and [manual example queries](manual-example.md). The provisioning, restore, and account-administration steps below are maintainer procedures; joining the project does not require creating or restoring a database.
 
-## Current deployment status: October 6, 2026
+## Current deployment status: October 7, 2026
 
-The recorded deployment state is **Available** for the `sec-filings` RDS instance in `us-east-1`: PostgreSQL 17.11, `db.t4g.micro`, 20 GiB encrypted gp3 storage, one-day automated backups, and deletion protection. At verification, its security group allowed TCP 5432 from the maintainer's public IPv4 `/32`. A connection using the ignored `.env.aws` file succeeded with `verify-full` and TLS 1.3. The actual master username is `postgres`. These are October 6 results; check the live configuration before maintenance.
+The October 6 deployment record showed **Available** for the `sec-filings` RDS instance in `us-east-1`: PostgreSQL 17.11, `db.t4g.micro`, 20 GiB encrypted gp3 storage, one-day automated backups, and deletion protection. At that initial verification, its security group allowed TCP 5432 from the maintainer's public IPv4 `/32`. A connection using the ignored `.env.aws` file succeeded with `verify-full` and TLS 1.3. The actual master username is `postgres`. These instance and connection results are from October 6; check the live configuration before maintenance.
+
+On October 7, AWS confirmed the saved inbound rule on `sec-filings-access` (`sg-013b476361af0d709`): **PostgreSQL TCP 5432 from `0.0.0.0/0` (Anywhere-IPv4)**. Individual IPv4 approval is no longer required. The earlier `/32` rules remain, but the broader rule makes IPv4 access unrestricted at this security group. No IPv6 Anywhere rule (`::/0`) was added. Any IPv4 host can attempt a database login; valid database credentials and permissions are still required. Keep clients on `verify-full` TLS with the AWS CA certificate.
 
 The initial import is complete. A fresh snapshot of local schema `sec` was restored transactionally into RDS. At that point, all nine tables (including the migration ledger) and three citation views matched by canonical full-row SHA-256 hashes; UUIDs and every stored field were included. View definitions and the relation inventory also matched. A fresh local comparison confirmed the source was unchanged, and the migration checksum check found no pending migrations. The manual sample added afterward means current cloud and local content are no longer expected to match.
 
@@ -16,7 +18,7 @@ The retained migration backup is `backups/sec_filings-rds-20261006T200820Z-030a1
 
 The October 6 account setup recorded in "Clarify teammate AWS database access" created and verified six individual logins in the `sec_reader` group: `sec_jace`, `sec_bryce`, `sec_jazzy`, `sec_emma`, `sec_ruby`, and `sec_sally`. All six logins were tested from the already-allowed network and can read the SEC tables/views without shared-data write or schema-creation permissions. Credentials are shared privately.
 
-Network access from the teammates' own machines remains pending: the latest recorded AWS inbound rule still permits only the maintainer's public IPv4 address. Add approved teammate `/32` rules and test their connections before marking onboarding complete. Reader accounts do not need to be recreated. Michael retains shared writes initially; restricted loader permissions can be considered after local implementation and review.
+AWS network configuration is complete for direct IPv4 connections. Successful logins from the teammates' own machines remain unverified; test each connection before marking onboarding complete. Reader accounts and their permissions are unchanged and do not need to be recreated. Michael retains shared writes initially; restricted loader permissions can be considered after local implementation and review.
 
 For the maintainer to check live status from this checkout, after completing [local setup](developer-usage.md):
 
@@ -30,11 +32,11 @@ Open the [AWS console](https://console.aws.amazon.com/console/home). Complete si
 
 In Billing and Cost Management, check the account plan, Free Tier status, credit balance, and expiration dates. Set a monthly cost budget with email alerts before creating the database; a budget alert does not cap spending. Free-plan credits and eligibility are account-specific. Sharing PostgreSQL credentials does not require inviting teams into AWS Organizations.
 
-## 2. Review the initial configuration
+## 2. Review the instance configuration
 
-Use RDS **Standard create** so the settings are visible. Select a Free tier template if the account offers it; otherwise use the development/sandbox option and review every value. Console labels may differ by account plan.
+For provisioning or recovery, use RDS **Standard create** so the settings are visible. Select a Free tier template if the account offers it; otherwise use the development/sandbox option and review every value. Console labels may differ by account plan. The table retains the initial instance baseline and includes the October 7 network access change.
 
-| Setting | Initial value |
+| Setting | Configuration |
 | --- | --- |
 | Region | US East (N. Virginia), `us-east-1` |
 | Engine | PostgreSQL 17, current supported minor version |
@@ -47,14 +49,14 @@ Use RDS **Standard create** so the settings are visible. Select a Free tier temp
 | Storage autoscaling | Off initially; monitor free space and increase deliberately |
 | Port | 5432 |
 | Connectivity | No additional EC2 instance or RDS Proxy |
-| Public access | Yes for the proposed direct laptop connection; restrict the security group as below |
-| Security group | A dedicated group, TCP 5432 from the maintainer's current public IPv4 `/32` only |
+| Public access | Yes, for direct laptop connections |
+| Security group | `sec-filings-access`: PostgreSQL TCP 5432 from `0.0.0.0/0` (Anywhere-IPv4) |
 | Credentials | Self managed for this starter estimate; enter and retain the password directly in a password manager |
 | Automated backups | 1 day for the Free plan; use longer retention only if the account plan allows it |
 | Deletion protection | Enabled |
 | Monitoring | Basic/standard options; review charges before enabling additional monitoring |
 
-Public accessibility provides a network endpoint; the security group still controls who can reach it. Never add `0.0.0.0/0` or `::/0`. Add approved teammate source addresses separately. If the institution requires private access, choose a private-network design before creating the database; the connection steps and cost estimate will change.
+Public accessibility provides the endpoint, and the current security group permits incoming IPv4 connections on TCP 5432 without individual IP rules. Database authentication, read-only role permissions, and verified TLS remain part of the connection setup. This setting does not open other ports or add IPv6 access. A later move to restricted IPs or a private network would require updating these connection instructions.
 
 The October 6 planning estimate for 730 running hours in `us-east-1` was approximately $11.68 compute + $2.30 storage + $3.65 for one public IPv4 address = **$17.63/month before credits**. This is a dated baseline, not a cap or a current quote. Taxes, CPU bursting, additional backup storage, traffic, and optional services can add charges. Review AWS's current pricing and creation summary before submission. No NAT gateway, VPN, EC2 instance, proxy, or paid support is included in this estimate.
 
@@ -110,7 +112,7 @@ The source files and `source_manifest.json` are not contained in the database. R
 
 The six current teammate logins already belong to the read-only `sec_reader` group. Reuse these accounts for onboarding. For future people or services, create separate logins and assign appropriate group roles. Reserve schema migrations, role administration, and database ownership for Michael. Keep shared imports with Michael until a reviewed loader needs a restricted write role; scope any grant to its actual tables and operations, without schema administration or overwriting source provenance.
 
-Each team needs the endpoint, port, database name, its own login, the CA bundle, and instructions to use `verify-full`. Share credentials privately. Add only approved source IPs to the security group, and verify access from another team's machine before calling cross-team sharing complete. Local success alone does not prove another team's network can connect.
+Each team needs the endpoint, port, database name, its own login, the CA bundle, and instructions to use `verify-full`. Share credentials privately. Under the current Anywhere-IPv4 rule, teammates do not need to submit public IP addresses. Verify login and a reader query from each teammate's machine before calling onboarding complete; local success alone does not prove another team's network can connect.
 
 ## References
 

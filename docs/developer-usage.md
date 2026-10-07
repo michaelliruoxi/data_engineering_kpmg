@@ -1,6 +1,6 @@
 # Developer usage
 
-This guide covers Python access, SQL queries, local development, and the SEC exporter. For a walkthrough that does not require code, use the [main README](../readme.md). You still need an assigned database login and an approved source IP before connecting to RDS.
+This guide covers Python access, SQL queries, local development, and the SEC exporter. For a walkthrough that does not require code, use the [main README](../readme.md). RDS permits TCP 5432 from any IPv4 address (`0.0.0.0/0`) as of October 7, 2026, so individual source-IP approval is not required. Use your assigned database login and `verify-full` TLS with the AWS CA certificate.
 
 ## First SQL query
 
@@ -79,6 +79,8 @@ Test-NetConnection sec-filings.cghyw6082mug.us-east-1.rds.amazonaws.com -Port 54
 ```
 
 `TcpTestSucceeded: True` confirms the network path only. Use the SQL example to verify database permissions. A permission error from `sec-db status` does not necessarily mean a view-only reader cannot connect.
+
+If TCP fails, check the endpoint and port, local firewall or VPN restrictions, and the current RDS/network configuration with Michael. The current AWS rule does not require registering a new public IPv4 address. Successful connections from each teammate's own computer still need to be checked.
 
 For DBeaver versions that expose SSL under Driver properties, use `sslmode=verify-full` and `sslrootcert=<full path to the AWS PEM file>`. Keep hostname and certificate verification enabled.
 
