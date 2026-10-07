@@ -1,2 +1,4 @@
 # Preserve SEC response bytes and SHA-256 digests across Git checkouts.
 data/raw/sec/** -text
+# Keep migration checksums identical across Windows and Linux checkouts.
+src/sec_pipeline/migrations/*.sql text eol=lf

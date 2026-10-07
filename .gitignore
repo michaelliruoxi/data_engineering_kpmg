@@ -29,6 +29,8 @@ wheels/
 .ipynb_checkpoints/
 .env
 .env.*
+!.env.example
+/backups/
 .aws/
 credentials*
 secrets*
