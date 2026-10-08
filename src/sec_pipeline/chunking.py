@@ -32,7 +32,9 @@ def chunk_report(
         end = section.get("offset_end")
 
         if not isinstance(start, int) or not isinstance(end, int):
-            raise ValueError("Each section needs integer offset_start and offset_end")
+            raise ValueError(
+                "Each section needs integer offset_start and offset_end"
+            )
         if start < 0 or end <= start or end > len(full_text):
             raise ValueError(f"Invalid section range: {start}:{end}")
         if start < previous_end:
@@ -71,6 +73,8 @@ def chunk_report(
             continue
 
         cursor = section_start
+        previous_chunk_end = section_start
+
         while cursor < section_end:
             hard_end = min(cursor + max_chars, section_end)
             end = hard_end
@@ -78,18 +82,29 @@ def chunk_report(
             if hard_end < section_end:
                 window = full_text[cursor:hard_end]
 
-                # Prefer splitting after a paragraph break, then other whitespace.
+                # Prefer a paragraph break only if it advances beyond
+                # the end of the previous chunk.
                 paragraph_break = window.rfind("\n\n")
-                if paragraph_break > 0:
-                    end = cursor + paragraph_break + 2
+                paragraph_end = cursor + paragraph_break + 2
+
+                if (
+                    paragraph_break > 0
+                    and paragraph_end > previous_chunk_end
+                ):
+                    end = paragraph_end
                 else:
                     whitespace = max(
                         window.rfind(" "),
                         window.rfind("\n"),
                         window.rfind("\t"),
                     )
-                    if whitespace > 0:
-                        end = cursor + whitespace + 1
+                    whitespace_end = cursor + whitespace + 1
+
+                    if (
+                        whitespace > 0
+                        and whitespace_end > previous_chunk_end
+                    ):
+                        end = whitespace_end
 
             text = full_text[cursor:end]
             if text.strip():
@@ -97,6 +112,8 @@ def chunk_report(
                     "section_id": section.get("section_id"),
                     "title": section.get("title"),
                     "source_locator": section.get("source_locator"),
+                    "max_chars": max_chars,
+                    "overlap": overlap,
                 }
                 chunks.append(
                     ChunkInput(
@@ -112,13 +129,16 @@ def chunk_report(
                     )
                 )
 
+            previous_chunk_end = end
+
             if end >= section_end:
                 break
 
-            # Start the next chunk with overlap, while always making progress.
+            # Preserve overlap while ensuring the next chunk moves forward.
             cursor = max(cursor + 1, end - overlap)
 
     return chunks
+
 
 def store_chunks(
     conn: psycopg.Connection,
