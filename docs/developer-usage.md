@@ -101,7 +101,7 @@ The included Microsoft sample, accession `0001193125-26-191507`, is stored under
 
 ## Task 2 processing workflow
 
-Use the [processing workflow guide](processing-workflow.md) for the input-verification command, source-ID bindings, shared transaction controller, and offline tests. The controller provides the execution and validation gates; the full processing CLI, parser adapters, dry-run, and real-filing rollback/replay checks are still being integrated.
+Use the [processing workflow guide](processing-workflow.md) for input verification, the configurable pure dry-run command, source-ID bindings, the shared transaction controller, and offline tests. Dry-run parses through explicit adapters and uses the actual chunker without a database connection. Production parser/validator adapters, the real-import command, and real-filing rollback/replay acceptance are still being integrated.
 
 ## Export an income statement
 

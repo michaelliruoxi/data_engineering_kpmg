@@ -1,9 +1,11 @@
 # Task 2 processing workflow
 
-The input verifier and source-ID mapper are available. The transaction controller
-is implemented in `sec_pipeline.processing.run_ingestion_transaction()`.
-The full processing command and dry-run are still under development: this
-controller alone does not extract or import the supplied filing.
+The input verifier, source-ID mapper, transaction controller, and configurable
+pure dry-run are available. The controller is implemented in
+`sec_pipeline.processing.run_ingestion_transaction()` and dry-run in
+`run_dry_run()`. Production facts, table, cleaner, and validation adapters still
+need integration; this framework does not yet complete the supplied filing's
+financial import.
 
 ## Available commands
 
@@ -11,14 +13,66 @@ Run these from the repository root with the locked environment:
 
 ```sh
 uv run --locked python scripts/process_filing.py --verify-inputs
+uv run --locked python scripts/process_filing.py --help
 uv run --locked python -m unittest discover -s tests -p 'test_processing*.py' -v
 ```
 
 Input verification checks the approved local sources without SEC requests.
-It does not parse financial data or write database records. The workflow tests
-use a recording connection and fixture adapters, without credentials or a
-database. They test ordering, error propagation, and validation gates; they
-are not PostgreSQL rollback or real-filing acceptance tests.
+It does not parse financial data or write database records. Transaction-controller
+tests use a recording connection; dry-run tests use pure fixture adapters and
+Ruby's actual chunker. CLI tests verify and parse unchanged bundled source files
+with deliberately limited test parsers while database connections are forbidden.
+These tests prove workflow and isolation behavior; they are not PostgreSQL rollback
+tests or acceptance of the team's financial extraction and cleaning.
+
+## Dry-run command and pure adapters
+
+`--dry-run` requires an explicit adapter module and all four processing versions.
+The module must expose `get_dry_run_plan()` returning `DryRunPlan(stages,
+required_checks)`. No production adapter module is supplied yet. A missing module,
+parser, result, or required validation check is an error; nothing is silently
+skipped or reported as a successful filing run.
+
+After the real adapters are agreed and integrated, use this command with their
+actual module and version labels. The uppercase values below are placeholders:
+
+```sh
+uv run --locked python scripts/process_filing.py --dry-run \
+  --manifest source_manifest.json --data-root . \
+  --adapter-module YOUR_AGREED_ADAPTER_MODULE \
+  --facts-version YOUR_FACTS_VERSION --tables-version YOUR_TABLES_VERSION \
+  --reports-version YOUR_REPORTS_VERSION --chunks-version paragraph-v1
+```
+
+Each `DryRunStages` parser receives only a `DryRunContext`, containing verified
+source paths, requested versions, reference data, temporary IDs, and previous
+parser outputs. It must not connect to databases or perform storage. Adapters
+translate the actual teammates' parser signatures into this runner-owned API.
+Facts and tables return `ParseResult(items, rejected=(), unresolved_cells=0)`
+with materialized records. The report adapter returns a `ParseResult` with one
+`ParsedReport(full_text, sections)`. Its section offsets refer to the unchanged
+final cleaned text. The default chunks adapter calls Ruby's real `chunk_report()`.
+The pure validation adapter returns the same strict `ValidationResult` described
+below and checks actual parser outputs for the exact requested versions.
+
+The CLI reuses `load_manifest()` and `verify_sample()`, verifies before loading
+adapter code, and the runner verifies before parsing and again after validation.
+Verification uses local files only and never replaces or downloads a missing or
+changed source. Help does not load adapters or read source files.
+
+Optional `--reference-file path.json` supplies a JSON object to the validator.
+Its optional `expected_counts` object names `facts`, `tables`, `reports`, and/or
+`chunks` with non-negative integer counts. A supplied count must match extraction;
+absent counts are reported as unknown (`null`), not invented. Other reference
+fields are passed through for the agreed financial checks.
+
+Successful stdout is a JSON summary of accession, source hashes, versions,
+expected/extracted/stored/rejected counts, unresolved cells, report characters,
+and the actual validation checks. All stored counts are zero. Parsed records,
+report text, credentials, and temporary source/report UUIDs are not returned.
+There is no database connection parameter and the dry-run never invokes the
+metadata or storage helpers. Unexpected adapter diagnostics are reported by stage
+without printing their exception text.
 
 ## Transaction controller contract
 
@@ -66,10 +120,9 @@ tests; production integrations should retain the real default metadata helper.
 
 ## Remaining integration
 
-Wire the actual facts, table, cleaner, chunking, and validation adapters; provide
-the processing CLI with explicit destination, versions, and reference options;
-add a dry-run that verifies and parses without opening a database connection;
-and report source hashes and extracted/stored/rejected/unresolved counts.
+Wire the actual facts, table, cleaner, and validation adapters into the pure
+dry-run and write controller. Add the real-import CLI with explicit destination,
+versions, and references, and its stored/rejected/unresolved count summary.
 Complete real PostgreSQL late-failure rollback and stable replay tests before
 claiming acceptance on the supplied filing. Jace's shared login is read-only:
 write tests use a local writable database, followed by Michael's reviewed import.
