@@ -37,6 +37,7 @@ class RecordingConnection:
     @contextmanager
     def transaction(self):
         self.events.append("begin")
+        self.info.transaction_status.name = "INTRANS"
         try:
             yield
         except BaseException:
@@ -49,6 +50,8 @@ class RecordingConnection:
             self.pending.clear()
             self.commits += 1
             self.events.append("commit")
+        finally:
+            self.info.transaction_status.name = "IDLE"
 
 
 class ProcessingWorkflowTests(unittest.TestCase):
@@ -174,6 +177,31 @@ class ProcessingWorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ProcessingError, "transaction was rolled back"):
             self.run_pipeline()
         self.assert_rolled_back()
+
+    def test_aborted_transactions_cannot_pass_when_adapters_swallow_errors(self):
+        original_stages = self.stages
+
+        def aborted(operation):
+            def adapter(conn, *args):
+                result = operation(conn, *args)
+                conn.info.transaction_status.name = "INERROR"
+                return result
+            return adapter
+
+        for phase in ("metadata", "facts", "tables", "report", "chunks", "validation"):
+            with self.subTest(phase=phase):
+                self.conn = RecordingConnection()
+                arguments = {}
+                if phase == "metadata":
+                    arguments["seed_metadata"] = aborted(self.seed_metadata)
+                else:
+                    name = "validate" if phase == "validation" else phase
+                    arguments["stages"] = replace(original_stages, **{
+                        name: aborted(getattr(original_stages, name)),
+                    })
+                with self.assertRaisesRegex(ProcessingError, "aborted"):
+                    self.run_pipeline(**arguments)
+                self.assert_rolled_back()
 
     def test_missing_required_check_blocks_commit(self):
         self.validation = ValidationResult(self.versions, {"counts": True})

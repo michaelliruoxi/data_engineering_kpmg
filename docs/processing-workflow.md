@@ -22,8 +22,9 @@ It does not parse financial data or write database records. Transaction-controll
 tests use a recording connection; dry-run tests use pure fixture adapters and
 Ruby's actual chunker. CLI tests verify and parse unchanged bundled source files
 with deliberately limited test parsers while database connections are forbidden.
-These tests prove workflow and isolation behavior; they are not PostgreSQL rollback
-tests or acceptance of the team's financial extraction and cleaning.
+These offline tests prove workflow and isolation behavior; they are not acceptance
+of the team's financial extraction and cleaning. The opt-in PostgreSQL suite below
+separately verifies real transaction behavior.
 
 ## Dry-run command and pure adapters
 
@@ -115,14 +116,61 @@ and parser-specific result shapes still need agreement with the module owners.
 
 Only successful validation permits the outer transaction to commit. Metadata
 and outputs remain in that same transaction, so a later propagated failure
-causes rollback. `seed_metadata` is an optional injection point used by offline
+causes rollback. After metadata, every write stage, and validation, the controller
+also requires an active, healthy transaction. An adapter that catches a SQL error
+without recovering the transaction cannot produce a successful import.
+`seed_metadata` is an optional injection point used by offline
 tests; production integrations should retain the real default metadata helper.
+
+## Local PostgreSQL transaction tests
+
+Run the explicit live-test command from the repository root:
+
+```sh
+uv run --locked python scripts/test_ingestion_local.py \
+  --env-file .env.local --database sec_filings_test
+```
+
+The dedicated local database must already exist, have the project migrations,
+and contain no business rows. The command reads the explicit environment file,
+ignores ambient `PG*`/`POSTGRES_*` settings throughout the run, pins the connection
+to a loopback address, and rejects remote hosts, application database names, or
+names without the `_test` suffix. It does not create, migrate, truncate, or drop
+databases. An unavailable, unmigrated, or nonempty database is an error; the
+explicit command cannot report success through skipped tests.
+
+The ten tests use the actual verified manifest, default `seed_manifest()`,
+storage helpers, PostgreSQL constraints, and Ruby's real chunker. They write two
+clearly marked fixture facts, one linked fixture table, and fixture report/chunks;
+these are not financial records extracted from the filing. The suite checks:
+
+- Validation reads the exact requested versions and actual stored rows while a
+  separate connection still sees only previously committed data.
+- Failures after each write stage, false/unverified/missing checks, wrong versions,
+  and a late PostgreSQL chunk constraint failure roll back metadata and outputs.
+- A second successful run preserves every UUID, row count, row value, timestamp,
+  and table/fact link; a failed replay preserves the previous committed import.
+- A conflicting fact rolls back a new preceding row and preserves existing data;
+  adapters cannot manually commit or roll back the controller's outer transaction.
+- A swallowed SQL error in a write stage or validator cannot report success after
+  PostgreSQL has aborted the transaction. An error correctly recovered inside a
+  nested savepoint leaves the outer transaction healthy and can still succeed.
+
+Successful cases really commit so an independent connection can prove visibility
+and replay. Cleanup uses only this test's recorded metadata UUIDs and output
+versions, in foreign-key order, and checks that the database returns to its initial
+empty state. A session advisory lock prevents concurrent copies of this suite.
+Original source and manifest hashes are checked before and after; HTTP requests
+are forbidden. Ordinary test discovery skips this live suite unless configured by
+the explicit command. The six local-target guard tests remain part of the offline
+processing suite.
 
 ## Remaining integration
 
 Wire the actual facts, table, cleaner, and validation adapters into the pure
 dry-run and write controller. Add the real-import CLI with explicit destination,
 versions, and references, and its stored/rejected/unresolved count summary.
-Complete real PostgreSQL late-failure rollback and stable replay tests before
-claiming acceptance on the supplied filing. Jace's shared login is read-only:
-write tests use a local writable database, followed by Michael's reviewed import.
+The live fixture suite verifies PostgreSQL transaction and replay behavior; the
+actual production adapters still need those checks and full acceptance on the
+supplied filing. Jace's shared login is read-only: write tests use a local writable
+database, followed by Michael's reviewed import.

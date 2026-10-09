@@ -131,6 +131,11 @@ def _check_manifest(manifest: Mapping[str, Any], manifest_path: Path) -> None:
         raise ProcessingError("The manifest changed after input verification.")
 
 
+def _require_active_transaction(conn: Any, phase: str) -> None:
+    if conn.closed or conn.info.transaction_status.name != "INTRANS":
+        raise ProcessingError(f"The ingestion transaction is inactive or aborted after {phase}.")
+
+
 Stage = Callable[[Any, PipelineContext], Any]
 
 
@@ -196,6 +201,7 @@ def run_ingestion_transaction(
         with conn.transaction():
             phase = "metadata"
             seed = seed_metadata(conn, manifest_path, data_root)
+            _require_active_transaction(conn, phase)
             context = PipelineContext(
                 manifest=MappingProxyType(dict(manifest)),
                 data_root=data_root,
@@ -207,9 +213,11 @@ def run_ingestion_transaction(
                 result = getattr(stages, phase)(conn, context)
                 if result is None:
                     raise ProcessingError(f"The {phase} adapter returned no result.")
+                _require_active_transaction(conn, phase)
                 outputs[phase] = result
             phase = "validation"
             validation = stages.validate(conn, context)
+            _require_active_transaction(conn, phase)
             _check_validation(validation, expected_versions, checks)
             outputs["validation"] = validation
             phase = "commit"
