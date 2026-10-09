@@ -46,6 +46,17 @@ FIXTURE_TEXT = (
 )
 
 
+def check_connection_target(conn, options):
+    # The client connects to the published loopback port. Docker can forward it
+    # to a private server interface, so inet_server_addr() is not that address.
+    address = conn.info.hostaddr
+    if address not in {"127.0.0.1", "::1"} or address != options["hostaddr"]:
+        raise RuntimeError("The actual connection does not use the requested local loopback address.")
+    database = conn.execute("SELECT current_database()").fetchone()[0]
+    if database != options["dbname"]:
+        raise RuntimeError("The actual database is not the requested dedicated test database.")
+
+
 class IngestionPostgresTests(unittest.TestCase):
     connection_options = None
 
@@ -84,9 +95,7 @@ class IngestionPostgresTests(unittest.TestCase):
         cls.addClassCleanup(cls.guard.close)
         if not cls.guard.execute("SELECT pg_try_advisory_lock(%s)", (73654321455,)).fetchone()[0]:
             raise RuntimeError("Another ingestion test suite is using this test database.")
-        target = cls.guard.execute("SELECT current_database(), inet_server_addr()::text").fetchone()
-        if target != (options["dbname"], options["hostaddr"]):
-            raise RuntimeError("The actual database connection is not the requested local target.")
+        check_connection_target(cls.guard, options)
         baseline = db.status(cls.guard)
         cls.guard.rollback()
         if not baseline["ready"]:

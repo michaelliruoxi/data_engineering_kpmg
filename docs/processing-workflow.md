@@ -135,7 +135,11 @@ The dedicated local database must already exist, have the project migrations,
 and contain no business rows. The command reads the explicit environment file,
 ignores ambient `PG*`/`POSTGRES_*` settings throughout the run, pins the connection
 to a loopback address, and rejects remote hosts, application database names, or
-names without the `_test` suffix. It does not create, migrate, truncate, or drop
+names without the `_test` suffix. The live connection check uses the client's
+`conn.info.hostaddr` and the actual database name. Docker port publishing can make
+PostgreSQL's server-side `inet_server_addr()` a private container address, so it
+does not need to equal the client's loopback target.
+It does not create, migrate, truncate, or drop
 databases. An unavailable, unmigrated, or nonempty database is an error; the
 explicit command cannot report success through skipped tests.
 
@@ -162,7 +166,7 @@ versions, in foreign-key order, and checks that the database returns to its init
 empty state. A session advisory lock prevents concurrent copies of this suite.
 Original source and manifest hashes are checked before and after; HTTP requests
 are forbidden. Ordinary test discovery skips this live suite unless configured by
-the explicit command. The six local-target guard tests remain part of the offline
+the explicit command. The eleven local-target guard tests remain part of the offline
 processing suite.
 
 ## Remaining integration
