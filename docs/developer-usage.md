@@ -99,6 +99,10 @@ uv run --locked python -m unittest discover -s tests -v
 
 The included Microsoft sample, accession `0001193125-26-191507`, is stored under `data/raw/sec/`. Its source URLs, file sizes, and SHA-256 hashes are recorded in `source_manifest.json`. Verification runs locally without SEC requests.
 
+## Task 2 processing workflow
+
+Use the [processing workflow guide](processing-workflow.md) for the input-verification command, source-ID bindings, shared transaction controller, and offline tests. The controller provides the execution and validation gates; the full processing CLI, parser adapters, dry-run, and real-filing rollback/replay checks are still being integrated.
+
 ## Export an income statement
 
 This command makes SEC requests and exports an income statement from the selected ticker's latest available 10-K to a new CSV. The AAPL example below does not process the bundled Microsoft 10-Q or load any database records.
