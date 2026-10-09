@@ -168,6 +168,10 @@ Original source and manifest hashes are checked before and after; HTTP requests
 are forbidden. Ordinary test discovery skips this live suite unless configured by
 the explicit command. The eleven local-target guard tests remain part of the offline
 processing suite.
+Live startup reuses the CLI's tested `verified_inputs()` function before opening
+a database connection. Two offline regression tests exercise that startup path
+against the real bundled sources and a missing manifest, with database and HTTP
+connections forbidden.
 
 ## Remaining integration
 

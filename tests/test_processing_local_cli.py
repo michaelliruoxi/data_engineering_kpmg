@@ -69,6 +69,19 @@ class LocalIngestionTargetTests(unittest.TestCase):
         with patch.dict(os.environ, {"PGPASSWORD": "ambient-only"}), self.assertRaisesRegex(ValueError, "password|PASSWORD"):
             command.local_test_settings(self.env_file, "sec_filings_test")
 
+    def test_live_startup_verifies_real_sources_without_database_or_http(self):
+        with (patch("httpx.Client.send", side_effect=AssertionError("Unexpected HTTP request")),
+              patch("urllib.request.urlopen", side_effect=AssertionError("Unexpected HTTP request"))):
+            manifest = live.load_verified_test_inputs()
+        self.assertIsInstance(manifest, dict)
+        self.assertEqual(manifest["status"], "verified")
+        self.assertEqual(manifest["accession_number"], "0001193125-26-191507")
+        self.assertEqual(len([manifest["index_document"], *manifest["files"]]), 4)
+
+    def test_live_startup_stops_before_database_when_manifest_is_missing(self):
+        with patch.object(live, "ROOT", self.env_file.parent), self.assertRaises(FileNotFoundError):
+            live.load_verified_test_inputs()
+
 
 class DockerConnectionTargetTests(unittest.TestCase):
     class Connection:

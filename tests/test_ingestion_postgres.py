@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from download_sec_sample import load_manifest, verify_sample
+from process_filing import verified_inputs
 from sec_pipeline import chunking, database as db
 from sec_pipeline.processing import (
     PipelineStages, ProcessingError, ValidationResult, run_ingestion_transaction,
@@ -55,6 +55,12 @@ def check_connection_target(conn, options):
     database = conn.execute("SELECT current_database()").fetchone()[0]
     if database != options["dbname"]:
         raise RuntimeError("The actual database is not the requested dedicated test database.")
+
+
+def load_verified_test_inputs():
+    """Reuse the tested CLI verifier before opening any live connection."""
+    with redirect_stdout(io.StringIO()):
+        return verified_inputs(manifest_path=ROOT / "source_manifest.json", data_root=ROOT)
 
 
 class IngestionPostgresTests(unittest.TestCase):
@@ -91,6 +97,10 @@ class IngestionPostgresTests(unittest.TestCase):
                 or options.get("hostaddr") not in {"127.0.0.1", "::1"}
                 or not re.fullmatch(r"[A-Za-z0-9_]+_test(?:_[A-Za-z0-9_]+)?", options["dbname"])):
             raise RuntimeError("Live ingestion tests require an explicitly local test database.")
+        cls.enterClassContext(patch("httpx.Client.send", side_effect=AssertionError("Unexpected HTTP request")))
+        cls.enterClassContext(patch("urllib.request.urlopen", side_effect=AssertionError("Unexpected HTTP request")))
+        cls.manifest = load_verified_test_inputs()
+        cls.initial_hashes = cls.source_hashes()
         cls.guard = cls.open_connection()
         cls.addClassCleanup(cls.guard.close)
         if not cls.guard.execute("SELECT pg_try_advisory_lock(%s)", (73654321455,)).fetchone()[0]:
@@ -102,12 +112,6 @@ class IngestionPostgresTests(unittest.TestCase):
             raise RuntimeError("Migrate the dedicated test database before running this suite.")
         if any(baseline["counts"].values()):
             raise RuntimeError("The dedicated test database must be empty; existing data will not be deleted.")
-        cls.enterClassContext(patch("httpx.Client.send", side_effect=AssertionError("Unexpected HTTP request")))
-        cls.enterClassContext(patch("urllib.request.urlopen", side_effect=AssertionError("Unexpected HTTP request")))
-        cls.manifest = load_manifest(ROOT / "source_manifest.json")
-        with redirect_stdout(io.StringIO()):
-            verify_sample(cls.manifest, ROOT)
-        cls.initial_hashes = cls.source_hashes()
         cls.baseline = cls.snapshot()
         cls.addClassCleanup(cls.assert_final_state)
 
