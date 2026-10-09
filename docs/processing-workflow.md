@@ -244,14 +244,20 @@ connections forbidden.
 
 ### Recorded evidence
 
-At commit `bf543e7`, Jace's Mac ran all ten transaction-controller PostgreSQL
-tests successfully on October 8, 2026: `Ran 10 tests in 8.892s`, `OK`, followed
-by confirmation that fixture records were cleaned and original sources remained
-unchanged. This is actual local database evidence for the fixture workflow.
-The two added import-wrapper PostgreSQL tests require a new local run; the earlier
-ten-test result does not establish their outcome. Offline import tests use a
-recording connection, real local source verification, and the real chunker, not
-a live database or the production financial parsers.
+At commit `bf94976`, Jace's Mac ran all twelve PostgreSQL tests successfully on
+October 8, 2026: `Ran 12 tests in 11.521s`, `OK`, followed by confirmation that
+fixture records were cleaned and original sources remained unchanged. This run
+includes the two import-wrapper checks for actual stored counts/replay and
+reference-count failure rollback, as well as the ten transaction-controller
+checks. The target was the dedicated local `sec_filings_test` database at
+`127.0.0.1:5432`.
+
+The same code passed all 101 offline processing tests in the development
+checkout. Offline import tests use a recording connection, real local source
+verification, and the real chunker. Both suites use clearly marked fixture
+financial/report records; these results establish the workflow contracts and
+actual local PostgreSQL transaction behavior, not acceptance of production
+financial extraction from the supplied filing.
 
 ## Remaining integration
 
@@ -263,3 +269,6 @@ The live fixture suite verifies PostgreSQL transaction and replay behavior; the
 actual production adapters still need those checks and full acceptance on the
 supplied filing. Jace's shared login is read-only: write tests use a local writable
 database, followed by Michael's reviewed import.
+
+See the [Task 2 handoff](task2-handoff.md) for the tested entry points, module-owner
+inputs, and remaining real-filing acceptance work.
