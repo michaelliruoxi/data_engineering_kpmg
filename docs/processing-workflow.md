@@ -1,9 +1,10 @@
 # Task 2 processing workflow
 
-The input verifier, source-ID mapper, transaction controller, and configurable
-pure dry-run are available. The controller is implemented in
-`sec_pipeline.processing.run_ingestion_transaction()` and dry-run in
-`run_dry_run()`. Production facts, table, cleaner, and validation adapters still
+The input verifier, source-ID mapper, transaction controller, configurable pure
+dry-run, and explicit import command are available. The controller is implemented
+in `sec_pipeline.processing.run_ingestion_transaction()`, dry-run in
+`run_dry_run()`, and the import/count wrapper in `run_ingestion()`.
+Production facts, table, cleaner, and validation adapters still
 need integration; this framework does not yet complete the supplied filing's
 financial import.
 
@@ -75,6 +76,71 @@ There is no database connection parameter and the dry-run never invokes the
 metadata or storage helpers. Unexpected adapter diagnostics are reported by stage
 without printing their exception text.
 
+## Explicit import command
+
+`--ingest` requires `--env-file`, `--database`, an adapter module, and all four
+processing versions. The selected file supplies host, port, user, password, and
+TLS settings through the existing database configuration reader; `--database`
+selects the destination name explicitly. Ambient `PG*`/`POSTGRES_*` values,
+including libpq service settings, cannot redirect the command. The command uses
+one TCP host, pins literal IP/localhost targets, and checks the connected target
+before writing. It does not create or migrate databases.
+
+This is the command shape after the production bridges are integrated. Uppercase
+adapter/version labels are placeholders; this command is not runnable until those
+modules exist and the destination is migrated and writable:
+
+```sh
+uv run --locked python scripts/process_filing.py --ingest \
+  --manifest source_manifest.json --data-root . \
+  --env-file .env.local --database sec_filings \
+  --adapter-module YOUR_AGREED_ADAPTER_MODULE \
+  --facts-version YOUR_FACTS_VERSION --tables-version YOUR_TABLES_VERSION \
+  --reports-version YOUR_REPORTS_VERSION --chunks-version paragraph-v1 \
+  --reference-file YOUR_AGREED_REFERENCE_FILE.json
+```
+
+The module exposes `get_ingestion_plan()` returning `IngestionPlan(stages,
+required_checks)`. `stages` is the existing `PipelineStages` contract below.
+Each write adapter calls a database-independent parser with the registered IDs
+from this run, stores the accepted records with the caller's connection, and
+returns `WriteResult(parsed=ParseResult(...), stored_ids=...)`. IDs are ordered to
+match the accepted records; each record needs one distinct stored UUID. Later
+adapters read `context.outputs[stage].parsed.items` and `.stored_ids`. For example,
+tables can build the occurrence-key-to-fact-ID mapping from the facts result.
+Table links must be stored in that same table stage and checked by validation.
+
+| Stage | Accepted record type | Provenance |
+| --- | --- | --- |
+| `facts` | `FactInput` | Registered XML source and requested fact version |
+| `tables` | `FinancialTableInput` | Registered HTML source and requested table version |
+| `report` | Exactly one `ReportInput` | Registered HTML source and requested report version |
+| `chunks` | `ChunkInput` | Stored report UUID and requested chunk version |
+
+`store_ingestion_chunks()` supplies a ready write bridge to Ruby's actual
+`chunk_report()` and `store_chunks()`. The report bridge must finalize and store
+its text first. Pure dry-run output is never passed into the write run: parsers
+run again with registered metadata IDs, and wrong filing/source/report IDs or
+versions cause rollback before commit. These bridge interfaces belong to Jace's
+runner and do not assert that teammates have already adopted them.
+
+Reference JSON is available as `context.reference`; `expected_counts` has the
+same rules as dry-run. Before commit, the wrapper requires the validator's exact
+version/check results, queries actual selected row IDs for all four stages, and
+matches them to the accepted records. Extra or missing selected rows and expected
+count mismatches are errors. It then re-verifies the original sources and builds
+a serializable summary inside the transaction. All these failures roll back
+metadata and outputs together.
+
+Successful stdout is JSON containing the same accession/hash/version/count
+fields as dry-run, with actual stored counts and a credential-free destination
+(host, port, database). `stored` means the total accepted records present for the
+selected versions, including unchanged records reused on replay; it is not the
+number newly inserted. Rejected items and unresolved-cell counts come from parser
+diagnostics and still require the agreed validator's assessment. No summary is
+printed on failure. The CLI closes its connection on success or failure, and
+unexpected connection errors do not expose authentication diagnostics.
+
 ## Transaction controller contract
 
 The caller first uses `load_manifest()` and `verify_sample()` from the existing
@@ -143,7 +209,7 @@ It does not create, migrate, truncate, or drop
 databases. An unavailable, unmigrated, or nonempty database is an error; the
 explicit command cannot report success through skipped tests.
 
-The ten tests use the actual verified manifest, default `seed_manifest()`,
+The twelve tests use the actual verified manifest, default `seed_manifest()`,
 storage helpers, PostgreSQL constraints, and Ruby's real chunker. They write two
 clearly marked fixture facts, one linked fixture table, and fixture report/chunks;
 these are not financial records extracted from the filing. The suite checks:
@@ -159,6 +225,9 @@ these are not financial records extracted from the filing. The suite checks:
 - A swallowed SQL error in a write stage or validator cannot report success after
   PostgreSQL has aborted the transaction. An error correctly recovered inside a
   nested savepoint leaves the outer transaction healthy and can still succeed.
+- The import wrapper reports actual selected PostgreSQL counts and preserves all
+  rows on replay. A wrong reference count discovered after validation rolls back
+  every new record before commit.
 
 Successful cases really commit so an independent connection can prove visibility
 and replay. Cleanup uses only this test's recorded metadata UUIDs and output
@@ -173,11 +242,23 @@ a database connection. Two offline regression tests exercise that startup path
 against the real bundled sources and a missing manifest, with database and HTTP
 connections forbidden.
 
+### Recorded evidence
+
+At commit `bf543e7`, Jace's Mac ran all ten transaction-controller PostgreSQL
+tests successfully on October 8, 2026: `Ran 10 tests in 8.892s`, `OK`, followed
+by confirmation that fixture records were cleaned and original sources remained
+unchanged. This is actual local database evidence for the fixture workflow.
+The two added import-wrapper PostgreSQL tests require a new local run; the earlier
+ten-test result does not establish their outcome. Offline import tests use a
+recording connection, real local source verification, and the real chunker, not
+a live database or the production financial parsers.
+
 ## Remaining integration
 
 Wire the actual facts, table, cleaner, and validation adapters into the pure
-dry-run and write controller. Add the real-import CLI with explicit destination,
-versions, and references, and its stored/rejected/unresolved count summary.
+dry-run and explicit import command. The command, explicit destination/version/
+reference options, and stored/rejected/unresolved summaries are implemented;
+production adapter and reference labels still need agreement with their owners.
 The live fixture suite verifies PostgreSQL transaction and replay behavior; the
 actual production adapters still need those checks and full acceptance on the
 supplied filing. Jace's shared login is read-only: write tests use a local writable

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 from pathlib import Path
 from types import MappingProxyType
@@ -77,6 +77,7 @@ class PipelineContext:
     source_ids: SourceIds
     versions: Mapping[str, str]
     outputs: Mapping[str, Any]
+    reference: Mapping[str, Any] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,7 @@ def run_ingestion_transaction(
     stages: PipelineStages,
     required_checks: Sequence[str],
     seed_metadata: Callable[[Any, Path, Path], Mapping[str, Any]] | None = None,
+    reference: Mapping[str, Any] | None = None,
 ) -> PipelineContext:
     """Run metadata and configured write adapters in one owned transaction.
 
@@ -203,11 +205,12 @@ def run_ingestion_transaction(
             seed = seed_metadata(conn, manifest_path, data_root)
             _require_active_transaction(conn, phase)
             context = PipelineContext(
-                manifest=MappingProxyType(dict(manifest)),
+                manifest=MappingProxyType(deepcopy(dict(manifest))),
                 data_root=data_root,
                 source_ids=resolve_source_ids(manifest, seed),
                 versions=MappingProxyType(expected_versions),
                 outputs=MappingProxyType(outputs),
+                reference=MappingProxyType(deepcopy(dict(reference or {}))),
             )
             for phase in stage_names:
                 result = getattr(stages, phase)(conn, context)
@@ -269,7 +272,6 @@ class DryRunContext(PipelineContext):
     """Pure adapters receive temporary IDs and references, never a connection."""
 
     report_id: UUID
-    reference: Mapping[str, Any]
 
 
 def chunk_dry_run_report(context: DryRunContext) -> ParseResult:
@@ -307,6 +309,19 @@ class DryRunPlan:
     required_checks: Sequence[str]
 
 
+def _reference_options(reference: Mapping[str, Any] | None) -> tuple[dict[str, Any], dict[str, int]]:
+    if reference is None:
+        reference = {}
+    if not isinstance(reference, Mapping):
+        raise ProcessingError("The reference must be a JSON object.")
+    expected = reference.get("expected_counts", {})
+    if not isinstance(expected, Mapping) or set(expected) - {"facts", "tables", "reports", "chunks"}:
+        raise ProcessingError("Reference expected_counts must name processing stages.")
+    if any(type(value) is not int or value < 0 for value in expected.values()):
+        raise ProcessingError("Reference counts must be non-negative integers.")
+    return deepcopy(dict(reference)), dict(expected)
+
+
 def run_dry_run(
     *,
     manifest_path: Path,
@@ -332,16 +347,7 @@ def run_dry_run(
         raise ProcessingError("All pure processing and validation adapters are required.")
     if not callable(verify_inputs):
         raise ProcessingError("A local input verifier is required for dry-run.")
-    if reference is None:
-        reference = {}
-    if not isinstance(reference, Mapping):
-        raise ProcessingError("The reference must be a JSON object.")
-    expected_counts = reference.get("expected_counts", {})
-    if not isinstance(expected_counts, Mapping) or set(expected_counts) - set(expected_versions):
-        raise ProcessingError("Reference expected_counts must name processing stages.")
-    if any(type(value) is not int or value < 0 for value in expected_counts.values()):
-        raise ProcessingError("Reference counts must be non-negative integers.")
-    expected_counts = dict(expected_counts)
+    reference, expected_counts = _reference_options(reference)
     manifest_path, data_root = Path(manifest_path), Path(data_root).resolve()
     phase = "input verification"
     outputs: dict[str, ParseResult] = {}
@@ -395,3 +401,187 @@ def run_dry_run(
             "passed": True, "required_checks": list(checks), "checks": dict(validation.checks)
         },
     }
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    """Accepted parser records and their storage IDs, in matching order.
+
+    IDs returned on replay count as stored records, not newly inserted rows.
+    Rejected parser records remain diagnostics and must not be written.
+    """
+
+    parsed: ParseResult
+    stored_ids: Sequence[UUID]
+
+    def __post_init__(self):
+        if not isinstance(self.parsed, ParseResult):
+            raise ProcessingError("A write adapter must supply its ParseResult.")
+        if not isinstance(self.stored_ids, Sequence) or isinstance(self.stored_ids, (str, bytes)):
+            raise ProcessingError("Stored IDs must be a materialized sequence.")
+        ids = tuple(_as_uuid(value, "stored record") for value in self.stored_ids)
+        if len(ids) != len(self.parsed.items) or len(set(ids)) != len(ids):
+            raise ProcessingError("Each accepted record must have one distinct stored ID.")
+        object.__setattr__(self, "stored_ids", ids)
+
+
+@dataclass(frozen=True)
+class IngestionPlan:
+    """Runner-owned write bridge, separate from teammates' pure parser APIs."""
+
+    stages: PipelineStages
+    required_checks: Sequence[str]
+
+
+def check_ingestion_options(
+    plan: IngestionPlan, versions: Mapping[str, str], reference: Mapping[str, Any] | None,
+) -> None:
+    """Reject missing configuration before the CLI opens a connection."""
+    if not isinstance(plan, IngestionPlan) or not isinstance(plan.stages, PipelineStages) or any(
+        not callable(getattr(plan.stages, name))
+        for name in ("facts", "tables", "report", "chunks", "validate")
+    ):
+        raise ProcessingError("All ingestion and validation adapters are required in IngestionPlan.")
+    _processing_options(versions, plan.required_checks)
+    _reference_options(reference)
+
+
+def store_ingestion_chunks(conn: Any, context: PipelineContext) -> WriteResult:
+    """Chunk the stored report using Ruby's real parser and storage helper."""
+    from .chunking import chunk_report, store_chunks
+
+    report_result = context.outputs["report"]
+    report = report_result.parsed.items[0]
+    chunks = chunk_report(
+        filing_id=context.source_ids.filing_id, report_id=report_result.stored_ids[0],
+        full_text=report.full_text, sections=report.sections,
+        chunking_version=context.versions["chunks"],
+    )
+    return WriteResult(ParseResult(chunks), store_chunks(conn, chunks))
+
+
+def _check_write_result(name: str, result: Any, context: PipelineContext) -> None:
+    from .database import ChunkInput, FactInput, FinancialTableInput, ReportInput
+
+    if not isinstance(result, WriteResult):
+        raise ProcessingError(f"The {name} adapter must return WriteResult.")
+    types = {"facts": FactInput, "tables": FinancialTableInput, "report": ReportInput, "chunks": ChunkInput}
+    version_key = "reports" if name == "report" else name
+    source_id = context.source_ids.xml_document_id if name == "facts" else context.source_ids.html_document_id
+    if name == "report" and len(result.parsed.items) != 1:
+        raise ProcessingError("The report adapter must store exactly one ReportInput.")
+    for record in result.parsed.items:
+        if not isinstance(record, types[name]) or record.filing_id != context.source_ids.filing_id:
+            raise ProcessingError(f"The {name} records must use the registered filing ID and storage input type.")
+        if name == "chunks":
+            if record.report_id != context.outputs["report"].stored_ids[0] or record.chunking_version != context.versions[version_key]:
+                raise ProcessingError("Chunks must use the stored report ID and requested chunk version.")
+        elif record.source_document_id != source_id or record.extraction_version != context.versions[version_key]:
+            raise ProcessingError(f"The {name} records must use the registered source ID and requested version.")
+
+
+def _stored_ids(conn: Any, name: str, context: PipelineContext) -> set[UUID]:
+    """Inspect the actual selected rows inside the import transaction."""
+    if name == "chunks":
+        statement = """SELECT id FROM sec.chunks
+            WHERE filing_id = %s AND report_id = %s AND chunking_version = %s"""
+        parameters = (context.source_ids.filing_id, context.outputs["report"].stored_ids[0], context.versions["chunks"])
+    else:
+        statements = {
+            "facts": "SELECT id FROM sec.financial_facts WHERE filing_id = %s AND source_document_id = %s AND extraction_version = %s",
+            "tables": "SELECT id FROM sec.financial_tables WHERE filing_id = %s AND source_document_id = %s AND extraction_version = %s",
+            "report": "SELECT id FROM sec.reports WHERE filing_id = %s AND source_document_id = %s AND extraction_version = %s",
+        }
+        statement = statements[name]
+        source_id = context.source_ids.xml_document_id if name == "facts" else context.source_ids.html_document_id
+        parameters = (context.source_ids.filing_id, source_id, context.versions["reports" if name == "report" else name])
+    return {row[0] for row in conn.execute(statement, parameters).fetchall()}
+
+
+def run_ingestion(
+    conn: Any,
+    *,
+    manifest_path: Path,
+    data_root: Path,
+    versions: Mapping[str, str],
+    plan: IngestionPlan,
+    verify_inputs: Callable[[Path, Path], Mapping[str, Any]],
+    reference: Mapping[str, Any] | None = None,
+    seed_metadata: Callable[[Any, Path, Path], Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Import with actual-row counts, source checks, and validation before commit.
+
+    The CLI owns the connection; this function reuses the tested outer
+    transaction controller. Adapters parse with registered IDs during this run,
+    never using records or temporary IDs retained from a previous dry-run.
+    """
+    check_ingestion_options(plan, versions, reference)
+    if not callable(verify_inputs):
+        raise ProcessingError("A local input verifier is required for ingestion.")
+    expected_versions, checks = _processing_options(versions, plan.required_checks)
+    reference, expected_counts = _reference_options(reference)
+    manifest_path, data_root = Path(manifest_path), Path(data_root).resolve()
+    try:
+        manifest = verify_inputs(manifest_path, data_root)
+        _check_manifest(manifest, manifest_path)
+    except ProcessingError:
+        raise
+    except Exception as exc:
+        raise ProcessingError("Ingestion failed during input verification.") from exc
+    summary: dict[str, Any] = {}
+
+    def writer(name):
+        def write_stage(connection, context):
+            result = getattr(plan.stages, name)(connection, context)
+            _check_write_result(name, result, context)
+            return result
+        return write_stage
+
+    def validate(connection, context):
+        validation = plan.stages.validate(connection, context)
+        _require_active_transaction(connection, "validation")
+        _check_validation(validation, expected_versions, checks)
+        counts = {}
+        for name in ("facts", "tables", "report", "chunks"):
+            result = context.outputs[name]
+            actual_ids = _stored_ids(connection, name, context)
+            if actual_ids != set(result.stored_ids):
+                raise ProcessingError(f"Stored {name} rows do not match the adapter's accepted records.")
+            key = "reports" if name == "report" else name
+            counts[key] = {
+                "expected": expected_counts.get(key), "extracted": len(result.parsed.items),
+                "stored": len(actual_ids), "rejected": len(result.parsed.rejected),
+                "unresolved_cells": result.parsed.unresolved_cells,
+            }
+            if counts[key]["expected"] is not None and counts[key]["expected"] != counts[key]["extracted"]:
+                raise ProcessingError("Extracted counts do not match reference expected_counts.")
+        try:
+            if verify_inputs(manifest_path, data_root) != manifest:
+                raise ProcessingError("Inputs changed during ingestion.")
+            _check_manifest(manifest, manifest_path)
+        except ProcessingError:
+            raise
+        except Exception as exc:
+            raise ProcessingError("Source verification failed before ingestion commit.") from exc
+        records = [manifest["index_document"], *manifest["files"]]
+        summary.update({
+            "mode": "ingest", "accession_number": manifest["accession_number"],
+            "source_hashes": {record["local_path"]: record["sha256"] for record in records},
+            "versions": expected_versions, "counts": counts,
+            "report_characters": len(context.outputs["report"].parsed.items[0].full_text),
+            "validation": {"passed": True, "required_checks": list(checks), "checks": dict(validation.checks)},
+        })
+        # A malformed summary must fail inside the transaction, before commit.
+        json.dumps(summary)
+        return validation
+
+    run_ingestion_transaction(
+        conn, manifest=manifest, manifest_path=manifest_path, data_root=data_root,
+        versions=expected_versions,
+        stages=PipelineStages(
+            facts=writer("facts"), tables=writer("tables"), report=writer("report"),
+            chunks=writer("chunks"), validate=validate,
+        ),
+        required_checks=checks, seed_metadata=seed_metadata, reference=reference,
+    )
+    return summary

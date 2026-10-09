@@ -31,7 +31,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from process_filing import verified_inputs
 from sec_pipeline import chunking, database as db
 from sec_pipeline.processing import (
-    PipelineStages, ProcessingError, ValidationResult, run_ingestion_transaction,
+    IngestionPlan, ParseResult, PipelineStages, ProcessingError, ValidationResult,
+    WriteResult, run_ingestion, run_ingestion_transaction,
 )
 
 
@@ -277,6 +278,67 @@ class IngestionPostgresTests(unittest.TestCase):
             finally:
                 self.assertFalse(writer.closed)
                 self.assertEqual(writer.info.transaction_status, TransactionStatus.IDLE)
+
+    def ingestion_fixture_plan(self):
+        """Adapt this suite's existing fixture writers to the import contract."""
+        original = self.fixture_stages()
+
+        def fixture_context(context):
+            outputs = {}
+            for name, result in context.outputs.items():
+                if name in {"facts", "chunks"}:
+                    outputs[name] = {"items": result.parsed.items, "ids": result.stored_ids}
+                else:
+                    outputs[name] = {"item": result.parsed.items[0], "id": result.stored_ids[0]}
+            return replace(context, outputs=outputs)
+
+        def bridge(name):
+            def write(conn, context):
+                result = getattr(original, name)(conn, fixture_context(context))
+                if name in {"facts", "chunks"}:
+                    return WriteResult(ParseResult(result["items"]), result["ids"])
+                return WriteResult(ParseResult((result["item"],)), (result["id"],))
+            return write
+
+        return IngestionPlan(PipelineStages(
+            facts=bridge("facts"), tables=bridge("tables"), report=bridge("report"), chunks=bridge("chunks"),
+            validate=lambda conn, context: original.validate(conn, fixture_context(context)),
+        ), self.required)
+
+    def run_import_once(self, reference=None):
+        self.events.clear()
+        self.validation_seen = False
+        self.observer_before = self.snapshot()
+        with self.open_connection() as writer:
+            try:
+                return run_ingestion(
+                    writer, manifest_path=ROOT / "source_manifest.json", data_root=ROOT,
+                    versions=self.versions, plan=self.ingestion_fixture_plan(), reference=reference,
+                    verify_inputs=lambda path, root: load_verified_test_inputs(),
+                )
+            finally:
+                self.assertFalse(writer.closed)
+                self.assertEqual(writer.info.transaction_status, TransactionStatus.IDLE)
+
+    def test_import_summary_replay_uses_actual_database_counts(self):
+        reference = {"expected_counts": {"facts": 2, "tables": 1, "reports": 1}}
+        first = self.run_import_once(reference)
+        before = self.snapshot()
+        second = self.run_import_once(reference)
+        self.assertEqual(first, second)
+        self.assertEqual(self.snapshot(), before)
+        self.assertTrue(first["validation"]["passed"])
+        for name, table in (("facts", "financial_facts"), ("tables", "financial_tables"),
+                            ("reports", "reports"), ("chunks", "chunks")):
+            with self.subTest(stage=name):
+                self.assertEqual(first["counts"][name]["stored"], len(before[table]))
+                self.assertEqual(first["counts"][name]["extracted"], len(before[table]))
+
+    def test_import_reference_count_failure_rolls_back_before_commit(self):
+        with self.assertRaisesRegex(ProcessingError, "do not match reference"):
+            self.run_import_once({"expected_counts": {"facts": 999}})
+        self.assertTrue(self.validation_seen)
+        self.assertEqual(self.snapshot(), self.baseline)
 
     def test_success_commits_all_stages_only_after_real_row_validation(self):
         context = self.run_once()
