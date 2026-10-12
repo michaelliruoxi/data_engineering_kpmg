@@ -26,8 +26,14 @@ def detect_sections(full_text: str) -> list[dict]:
             "MANAGEMENT",
             "UNREGISTERED SALES OF EQUITY SECURITIES",
         ],
-        "3": ["QUANTITATIVE AND QUALITATIVE DISCLOSURES"],
-        "4": ["CONTROLS AND PROCEDURES"],
+        "3": [
+            "QUANTITATIVE AND QUALITATIVE DISCLOSURES",
+            "DEFAULTS UPON SENIOR SECURITIES",
+        ],
+        "4": [
+            "CONTROLS AND PROCEDURES",
+            "MINE SAFETY DISCLOSURES",
+        ],
         "5": ["OTHER INFORMATION"],
         "6": ["EXHIBITS"],
     }
@@ -40,7 +46,7 @@ def detect_sections(full_text: str) -> list[dict]:
     # Find full Part I and Part II headings.
     # Requiring the complete title helps avoid page headers.
     part_pattern = re.compile(
-        r"(?im)^PART\s+(I|II)\.\s+(FINANCIAL|OTHER)\s+INFORMATION\s*$"
+        r"(?im)^PART\s+(I|II)\.?\s+(FINANCIAL|OTHER)\s+INFORMATION\s*$"
     )
 
     part_matches = list(part_pattern.finditer(full_text))

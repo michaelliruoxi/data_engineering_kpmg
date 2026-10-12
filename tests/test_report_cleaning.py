@@ -130,3 +130,51 @@ def test_part_i_skips_table_of_contents():
     expected_start = text.rfind("PART I. FINANCIAL INFORMATION")
 
     assert part_i["offset_start"] == expected_start
+
+def test_part_heading_without_period():
+    """Detect Part headings even when the period is missing."""
+
+    text = "\n".join([
+        "PART I FINANCIAL INFORMATION",
+        "ITEM 1. FINANCIAL STATEMENTS",
+        "Financial statement content.",
+        "PART II OTHER INFORMATION",
+        "ITEM 1. LEGAL PROCEEDINGS",
+        "Legal proceedings content.",
+    ])
+
+    sections = detect_sections(text)
+
+    section_ids = {
+        section["section_id"]
+        for section in sections
+    }
+
+    assert "part-i" in section_ids
+    assert "part-ii" in section_ids
+    assert "part-i-item-1" in section_ids
+    assert "part-ii-item-1" in section_ids
+
+def test_part_ii_items_3_and_4():
+    """Detect Part II Item 3 and Item 4 headings."""
+
+    text = "\n".join([
+        "PART I. FINANCIAL INFORMATION",
+        "ITEM 1. FINANCIAL STATEMENTS",
+        "Financial statement content.",
+        "PART II. OTHER INFORMATION",
+        "ITEM 3. DEFAULTS UPON SENIOR SECURITIES",
+        "No defaults.",
+        "ITEM 4. MINE SAFETY DISCLOSURES",
+        "Not applicable.",
+    ])
+
+    sections = detect_sections(text)
+
+    section_ids = {
+        section["section_id"]
+        for section in sections
+    }
+
+    assert "part-ii-item-3" in section_ids
+    assert "part-ii-item-4" in section_ids
