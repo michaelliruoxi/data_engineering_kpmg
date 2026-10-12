@@ -252,6 +252,20 @@ class OccurrenceTests(unittest.TestCase):
         with self.assertRaisesRegex(fx.FactExtractionError, "13 fact occurrence"):
             result.require_complete()
 
+    def test_tuples_and_their_items_fail_instead_of_being_skipped(self):
+        result = run("""
+            <ex:Revenue id="ok" contextRef="quarter" unitRef="usd">1</ex:Revenue>
+            <ex:Address id="tuple"><ex:City id="inside" contextRef="day">Redmond</ex:City>
+              <ex:Detail><ex:Zip id="deeper" contextRef="day">98052</ex:Zip></ex:Detail></ex:Address>""")
+        self.assertEqual([fact.occurrence_key for fact in result.facts], ["ok"])
+        self.assertEqual({(failure.element_id, failure.category) for failure in result.failures},
+                         {("tuple", fx.UNSUPPORTED), ("inside", fx.UNSUPPORTED), ("deeper", fx.UNSUPPORTED)})
+        inventory = result.inventory
+        self.assertEqual((inventory["fact_occurrences"], inventory["tuples"], inventory["extracted"],
+                          inventory["failed"]), (4, 1, 1, 3))
+        with self.assertRaisesRegex(fx.FactExtractionError, "3 fact occurrence"):
+            result.require_complete()
+
     def test_unsupported_contexts_fail_their_facts_instead_of_guessing(self):
         contexts = f"""
             <xbrli:context id="timed"><xbrli:entity>{ENTITY}</xbrli:entity>
@@ -435,7 +449,7 @@ class MicrosoftSampleTests(unittest.TestCase):
 
     def test_inventory_reconciles_with_the_source(self):
         inventory = self.result.inventory
-        expected = {"fact_occurrences": 1622, "extracted": 1622, "failed": 0, "contexts": 409, "units": 6,
+        expected = {"fact_occurrences": 1622, "tuples": 0, "extracted": 1622, "failed": 0, "contexts": 409, "units": 6,
                     "with_unit_ref": 1428, "without_unit_ref": 194, "extracted_nil": 2,
                     "extracted_numeric": 1426, "extracted_nonnumeric": 194, "occurrence_keys_from_xpath": 0}
         self.assertEqual({key: inventory[key] for key in expected}, expected)
@@ -538,6 +552,19 @@ class MicrosoftSampleTests(unittest.TestCase):
         first = json.loads(lines[0])
         self.assertEqual(first["filing_id"], str(UUID(int=0)))
         self.assertEqual(first["occurrence_key"], self.facts[0].occurrence_key)
+
+    def test_html_check_fails_when_an_inline_id_has_no_fact(self):
+        extra = {"html": {}, "facts": 1622, "inline_elements": 1623, "matched": 1622,
+                 "numeric_values_equal": 1426, "numeric_values_not_compared": 0,
+                 "mismatches": [], "inline_ids_without_fact": ["F_extra"]}
+        arguments = ["--manifest", str(PROJECT_ROOT / "source_manifest.json"),
+                     "--data-root", str(PROJECT_ROOT), "--check-html"]
+        with redirect_stdout(io.StringIO()) as output, \
+                patch.object(fx, "check_inline_correspondence", return_value=extra), \
+                patch.object(fx, "connect", side_effect=AssertionError("check opened a database connection")):
+            self.assertEqual(fx.main(arguments), 1)
+        self.assertEqual(json.loads(output.getvalue())["inline_correspondence"]["inline_ids_without_fact"],
+                         ["F_extra"])
 
     def test_id_export_never_overwrites_and_connects_only_when_asked(self):
         with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), \

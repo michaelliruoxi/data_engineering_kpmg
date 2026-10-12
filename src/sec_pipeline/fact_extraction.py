@@ -453,17 +453,32 @@ def extract_facts(
     labels, label_info = _schema_labels(root, xml_path) if use_schema_labels else (
         {}, {"schema": None, "sha256": None, "note": "label lookup disabled"})
 
-    # A fact is any element carrying contextRef; its id becomes the occurrence key.
-    occurrences = [(element, path) for element, path in _walk(root, "/*")
-                   if element.get("contextRef") is not None]
+    # An item is any element carrying contextRef; its id becomes the occurrence key. A
+    # top-level element that is neither structural nor an item is a tuple. Tuples, and
+    # items nested in them, become failures: storing the items alone would drop the
+    # grouping, and skipping the tuple would let a partial extraction pass as complete.
+    occurrences: list[tuple[etree._Element, str]] = []
+    tuple_paths: list[str] = []
+    for element, path in _walk(root, "/*"):
+        if element.get("contextRef") is not None:
+            occurrences.append((element, path))
+        elif element.getparent() is root and element.tag not in _STRUCTURAL:
+            occurrences.append((element, path))
+            tuple_paths.append(path)
     id_counts = Counter(element.get("id") for element, _ in occurrences if element.get("id"))
     scope = {"filing_id": filing_id, "source_document_id": source_document_id,
              "extraction_version": extraction_version}
 
     facts: list[FactInput] = []
     failures: list[FactFailure] = []
+    tuple_set = set(tuple_paths)
     for order, (element, path) in enumerate(occurrences, 1):
         try:
+            if path in tuple_set:
+                raise _Reject(UNSUPPORTED, "tuple (top-level element without contextRef); "
+                                           "tuples are not supported")
+            if any(path.startswith(f"{tuple_path}/") for tuple_path in tuple_paths):
+                raise _Reject(UNSUPPORTED, "item inside a tuple; tuples are not supported")
             facts.append(_read_fact(
                 element, path, order, scope=scope, contexts=contexts, units=units,
                 labels=labels, label_schema=label_info["schema"], id_counts=id_counts))
@@ -478,6 +493,7 @@ def extract_facts(
                    "size_bytes": len(data)},
         "extraction_version": extraction_version,
         "fact_occurrences": len(occurrences),
+        "tuples": len(tuple_paths),
         "extracted": len(facts),
         "failed": len(failures),
         "failures_by_category": dict(Counter(f.category for f in failures)),
@@ -499,13 +515,10 @@ def extract_facts(
         "labels": label_info | {"facts_with_label": sum(1 for f in facts if f.label),
                                 "facts_without_label": sum(1 for f in facts if not f.label)},
         # Present in the source but outside this version; listed so nothing is hidden.
+        # (Tuples are counted above and reported as failures.)
         "not_extracted": {
             "footnotes": sum(len(link.findall(f"{{{LINK}}}footnote")) for link in footnotes),
             "footnote_arcs": sum(len(link.findall(f"{{{LINK}}}footnoteArc")) for link in footnotes),
-            "other_top_level_elements": dict(Counter(
-                child.tag for child in root
-                if isinstance(child.tag, str) and child.tag not in _STRUCTURAL
-                and child.get("contextRef") is None)),
         },
     }
     return FactExtraction(facts=facts, failures=failures, inventory=inventory)
@@ -773,7 +786,11 @@ def main(argv: list[str] | None = None) -> int:
                 report["exported_ids"] = _export_fact_ids(conn, manifest, xml_local_path,
                                                           args.version, args.export_ids)
         print(json.dumps(report, indent=2, default=str))
-        problems = extraction.failures or report.get("inline_correspondence", {}).get("mismatches")
+        # An HTML/XML disagreement in either direction fails the run, including an inline
+        # tag whose id has no XML fact.
+        correspondence = report.get("inline_correspondence", {})
+        problems = (extraction.failures or correspondence.get("mismatches")
+                    or correspondence.get("inline_ids_without_fact"))
         return 1 if problems else 0
     except psycopg.Error as exc:
         # Connection errors and server details can contain credentials or input values.

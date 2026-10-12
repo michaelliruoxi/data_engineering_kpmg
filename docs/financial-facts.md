@@ -24,7 +24,7 @@ uv run --locked python -m unittest tests.test_fact_extraction -v
 
 - `--export-ids` reads the database selected by `--env-file` and writes one CSV row per fact: `occurrence_key`, `fact_id`, concept, label, value, nil flag, `unitRef`, `contextRef`, period, dimension count, and the filing, source, and version scope. It only reads, so a `sec_reader` login is enough, and it refuses to overwrite an existing file. Combined with `--load`, it runs after the load.
 
-- The dry run prints the inventory, any failures, and, with `--check-html`, the HTML comparison. It exits with status 1 if any occurrence failed or any comparison disagreed.
+- The dry run prints the inventory, any failures, and, with `--check-html`, the HTML comparison. It exits with status 1 if any occurrence failed, any fact disagreed with its inline tag, or any inline tag has no fact.
 - `--output` writes one JSON record per line to a new file and refuses to overwrite an existing one. `data/processed/` is ignored by Git. These records carry placeholder filing and source IDs.
 - `--load` is for a local database. It verifies and registers the manifest with `seed_manifest()`, then stores all facts in one transaction, so a failure leaves nothing behind. The shared database accepts it only from a login with write permission; the integrated import belongs to the task 2 runner.
 - The live database test in `tests/test_fact_extraction.py` is skipped unless `SEC_DB_TEST=1` is set. Prepare the dedicated test database as described in [the database guide](database.md#handoff-and-acceptance).
@@ -108,7 +108,7 @@ Every occurrence ends in `facts` or in `failures`; none is skipped silently. A f
 | Category | Examples |
 | --- | --- |
 | `malformed_source` | `contextRef` or `unitRef` with no matching definition, a repeated fact `id`, an invalid `decimals` or `xsi:nil` value, a nil fact with content, a period that starts after it ends |
-| `unsupported_extraction` | A numeric fact whose text is not a finite decimal (`N/A`, `1,000`, `INF`, empty), fraction or tuple content, a `dateTime` period, non-dimensional `segment` content |
+| `unsupported_extraction` | A numeric fact whose text is not a finite decimal (`N/A`, `1,000`, `INF`, empty), fraction content, a tuple (a top-level element without `contextRef`) and every item inside it, a `dateTime` period, non-dimensional `segment` content |
 
 A file that is not well-formed, declares a `DOCTYPE`, or is not an XBRL instance raises `FactExtractionError` before any fact is read.
 
