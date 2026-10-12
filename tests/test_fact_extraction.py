@@ -539,6 +539,18 @@ class MicrosoftSampleTests(unittest.TestCase):
         self.assertEqual(first["filing_id"], str(UUID(int=0)))
         self.assertEqual(first["occurrence_key"], self.facts[0].occurrence_key)
 
+    def test_id_export_never_overwrites_and_connects_only_when_asked(self):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()), \
+                redirect_stderr(io.StringIO()) as errors, \
+                patch.object(fx, "connect", side_effect=AssertionError("connected before checking the file")):
+            existing = Path(directory) / "ids.csv"
+            existing.write_text("keep me", encoding="utf-8")
+            arguments = ["--manifest", str(PROJECT_ROOT / "source_manifest.json"),
+                         "--data-root", str(PROJECT_ROOT), "--export-ids", str(existing)]
+            self.assertEqual(fx.main(arguments), 1)
+            self.assertEqual(existing.read_text(encoding="utf-8"), "keep me")
+        self.assertIn("already exists", errors.getvalue())
+
 
 @unittest.skipUnless(os.environ.get("SEC_DB_TEST") == "1", "Set SEC_DB_TEST=1 for live database tests.")
 class FactLoadingIntegrationTests(unittest.TestCase):
@@ -606,6 +618,29 @@ class FactLoadingIntegrationTests(unittest.TestCase):
             fx.store_facts(self.conn, [changed])
         second = fx.store_facts(self.conn, [replace(changed, extraction_version="facts-v2")])
         self.assertNotIn(second.fact_ids[changed.occurrence_key], stored.fact_ids.values())
+
+    def test_lookup_returns_stored_ids_for_inline_ids(self):
+        stored = fx.store_facts(self.conn, self.result.facts)
+        scope = {"filing_id": self.filing_id, "source_document_id": self.source_id}
+
+        # Everything in scope reads back exactly as store_facts returned it.
+        everything = fx.lookup_fact_ids(self.conn, **scope)
+        self.assertEqual(everything.fact_ids, stored.fact_ids)
+        self.assertEqual(everything.extraction_version, "facts-v1")
+
+        # The four equal revenue facts keep four distinct UUIDs, found by their inline ids.
+        revenue = [f.occurrence_key for f in self.result.facts
+                   if f.concept_name == "RevenueFromContractWithCustomerExcludingAssessedTax"
+                   and f.numeric_value == Decimal("82886000000") and not f.dimensions]
+        self.assertEqual(len(revenue), 4)
+        some = fx.lookup_fact_ids(self.conn, **scope, occurrence_keys=revenue + ["F_not-a-fact"])
+        self.assertEqual(some.fact_ids, {key: stored.fact_ids[key] for key in revenue})
+        self.assertEqual(len(set(some.fact_ids.values())), 4)
+
+        # Another version has nothing; a source outside the filing is refused.
+        self.assertEqual(fx.lookup_fact_ids(self.conn, **scope, extraction_version="facts-v9").fact_ids, {})
+        with self.assertRaises(fx.FactExtractionError):
+            fx.lookup_fact_ids(self.conn, filing_id=self.filing_id, source_document_id=UUID(int=7))
 
 
 if __name__ == "__main__":

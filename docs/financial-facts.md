@@ -8,6 +8,7 @@
 | `FactExtraction.require_complete()` | Raise `FactExtractionError` unless every occurrence was extracted. |
 | `store_facts(conn, facts)` | Store through `store_fact()` in the caller's transaction and return a `StoredFacts` mapping. It never commits. |
 | `check_inline_correspondence(html_path, facts)` | Compare the facts with the inline XBRL tags in the filing HTML. |
+| `lookup_fact_ids(conn, *, filing_id, source_document_id, extraction_version="facts-v1", occurrence_keys=None)` | Read the UUIDs of facts already stored in that database, by occurrence key (= inline HTML id). Read-only. |
 
 ## Commands
 
@@ -17,8 +18,11 @@ Run from the repository root. The first command is a dry run and opens no databa
 uv run --locked python -m sec_pipeline.fact_extraction --check-html
 uv run --locked python -m sec_pipeline.fact_extraction --output data/processed/facts-v1.jsonl
 uv run --locked python -m sec_pipeline.fact_extraction --load --env-file .env
+uv run --locked python -m sec_pipeline.fact_extraction --env-file .env --export-ids data/processed/facts-v1-ids.csv
 uv run --locked python -m unittest tests.test_fact_extraction -v
 ```
+
+- `--export-ids` reads the database selected by `--env-file` and writes one CSV row per fact: `occurrence_key`, `fact_id`, concept, label, value, nil flag, `unitRef`, `contextRef`, period, dimension count, and the filing, source, and version scope. It only reads, so a `sec_reader` login is enough, and it refuses to overwrite an existing file. Combined with `--load`, it runs after the load.
 
 - The dry run prints the inventory, any failures, and, with `--check-html`, the HTML comparison. It exits with status 1 if any occurrence failed or any comparison disagreed.
 - `--output` writes one JSON record per line to a new file and refuses to overwrite an existing one. `data/processed/` is ignored by Git. These records carry placeholder filing and source IDs.
@@ -120,7 +124,42 @@ stored = store_facts(conn, extraction.facts)   # inside the runner's transaction
 
 For a dry run, pass placeholder UUIDs and skip `store_facts()`. `extraction.inventory` supplies the source hash and the expected and extracted counts for the run report. Loading the same content again returns the same UUIDs; changed content under the same version raises `DataConflict`.
 
+In the runner's adapter API (`jace/ingestion-workflow`), the facts stage maps directly:
+
+```python
+from sec_pipeline.fact_extraction import XML_ROLE, extract_facts, store_facts
+
+def _xml_path(context):
+    [record] = [r for r in context.manifest["files"] if r["role"] == XML_ROLE]
+    return context.data_root / record["local_path"]
+
+def _extract(context):
+    return extract_facts(_xml_path(context), filing_id=context.source_ids.filing_id,
+                         source_document_id=context.source_ids.xml_document_id,
+                         extraction_version=context.versions["facts"])
+
+def parse_facts(context):              # PureStage: DryRunContext -> ParseResult
+    extraction = _extract(context)
+    return ParseResult(extraction.facts, rejected=extraction.failures)
+
+def write_facts(conn, context):        # Stage: (conn, PipelineContext) -> WriteResult
+    extraction = _extract(context).require_complete()
+    stored = store_facts(conn, extraction.facts)
+    return WriteResult(ParseResult(extraction.facts),
+                       [stored.fact_ids[f.occurrence_key] for f in extraction.facts])
+```
+
+`stored_ids` is in the same order as `items`, as the runner requires. Field names are those on `jace/ingestion-workflow` as of October 12, 2026.
+
 **Task 4, tables.** Every inline tag (`ix:nonFraction` or `ix:nonNumeric`) in the HTML carries an `id` equal to one fact's `occurrence_key`, so a table cell links to a fact through `stored.fact_ids[inline_id]`. `check_inline_correspondence()` verified this for the sample: 1,622 of 1,622 facts match one inline tag on `id`, concept, `contextRef`, `unitRef`, and nil flag, and no inline tag lacks a fact. For all 1,426 numeric values, the displayed number multiplied by ten to the power of `scale`, and negated when `sign="-"`, equals `numeric_value`. A cell showing `82,886` with `scale="6"` is the fact `82886000000`.
+
+How the table side gets fact UUIDs:
+
+- **Keep the inline id in the cell, not the UUID.** UUIDs are created by whichever database stores the facts, so a UUID from one database (yours, mine, or the shared one) means nothing in another. The inline id is the stable key; resolve it to a UUID only at load time, in the database the links go into.
+- **Inside the runner's transaction**, use the facts stage output: `stored.fact_ids[inline_id]`, or the runner's equivalent built from `items` and `stored_ids`.
+- **When the facts are already in that database** (your local test database after `--load`, or the shared database after Michael's import), call `lookup_fact_ids(conn, filing_id=..., source_document_id=xml_document_id, occurrence_keys=cell_inline_ids)`. The result is scoped to the filing, XML source, and version, so a link cannot reach another filing's or version's fact. A key missing from `fact_ids` means no stored fact: mark the cell unresolved.
+- **To inspect the mapping by hand**, run `--export-ids` against that same database and open the CSV.
+- **Never link on amount.** Quarterly revenue of 82,886,000,000 USD is four separate facts with four UUIDs (`F_3d73e726…`, `F_5639c226…`, `F_898c1aec…`, `F_9df6c506…`); only the inline id says which one a cell shows.
 
 **Task 7, validation.** Read results for this version through the provenance view:
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+import csv
 from dataclasses import asdict, dataclass
 from datetime import date
 from decimal import Decimal
@@ -532,6 +533,76 @@ def store_facts(conn: psycopg.Connection, facts: Sequence[FactInput]) -> StoredF
         fact_ids={fact.occurrence_key: store_fact(conn, fact) for fact in facts})
 
 
+def lookup_fact_ids(
+    conn: psycopg.Connection,
+    *,
+    filing_id: UUID,
+    source_document_id: UUID,
+    extraction_version: str = DEFAULT_VERSION,
+    occurrence_keys: Sequence[str] | None = None,
+) -> StoredFacts:
+    """Read the UUIDs of facts already stored in this database. Never writes.
+
+    This is how a table cell's inline id becomes a fact UUID when the facts were loaded
+    earlier: in the sample, the inline id equals the fact's occurrence_key. Works with a
+    read-only login. With `occurrence_keys`, only those keys are looked up; a key absent
+    from the result has no stored fact in this scope and must be treated as unresolved.
+    UUIDs differ between databases, so look them up in the database the links go into.
+    """
+    if conn.execute("SELECT 1 FROM sec.source_documents WHERE id = %s AND filing_id = %s",
+                    (source_document_id, filing_id)).fetchone() is None:
+        raise FactExtractionError("The source document is not registered under this filing.")
+    query = ("SELECT occurrence_key, id FROM sec.financial_facts "
+             "WHERE filing_id = %s AND source_document_id = %s AND extraction_version = %s")
+    parameters: list[Any] = [filing_id, source_document_id, extraction_version]
+    if occurrence_keys is not None:
+        query += " AND occurrence_key = ANY(%s)"
+        parameters.append(list(occurrence_keys))
+    return StoredFacts(
+        filing_id=filing_id, source_document_id=source_document_id,
+        extraction_version=extraction_version,
+        fact_ids=dict(conn.execute(query + " ORDER BY occurrence_key", parameters).fetchall()))
+
+
+_ID_EXPORT_COLUMNS = ("occurrence_key", "fact_id", "concept_namespace", "concept_name", "label",
+                      "numeric_value", "is_nil", "unit_ref", "context_ref", "period_kind",
+                      "period_start", "period_end", "instant_date", "dimension_count",
+                      "filing_id", "source_document_id", "extraction_version")
+
+
+def _export_fact_ids(conn: psycopg.Connection, manifest: dict[str, Any], xml_local_path: str,
+                     extraction_version: str, output: Path) -> dict[str, Any]:
+    """Write occurrence key -> fact UUID, with enough context to check each row, as CSV."""
+    row = conn.execute(
+        "SELECT s.filing_id, s.id FROM sec.source_documents AS s "
+        "JOIN sec.filings AS f ON f.id = s.filing_id "
+        "WHERE f.accession_number = %s AND s.local_path = %s",
+        (manifest["accession_number"], xml_local_path)).fetchone()
+    if row is None:
+        raise FactExtractionError("This database has no registered XML source for the manifest's filing.")
+    stored = lookup_fact_ids(conn, filing_id=row[0], source_document_id=row[1],
+                             extraction_version=extraction_version)
+    if not stored.fact_ids:
+        raise FactExtractionError(f"This database has no {extraction_version} facts for the filing.")
+    details = conn.execute(
+        "SELECT occurrence_key, concept_namespace, concept_name, label, numeric_value, is_nil, "
+        "source_reference->>'unit_ref', source_reference->>'context_ref', period_kind, "
+        "period_start, period_end, instant_date, jsonb_array_length(dimensions) "
+        "FROM sec.financial_facts WHERE source_document_id = %s AND extraction_version = %s",
+        (stored.source_document_id, extraction_version)).fetchall()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(_ID_EXPORT_COLUMNS)
+        for key, *rest in sorted(details):
+            writer.writerow([key, stored.fact_ids[key], *("" if v is None else v for v in rest),
+                             stored.filing_id, stored.source_document_id, extraction_version])
+    return {"file": str(output), "database": conn.info.dbname, "facts": len(details),
+            "filing_id": str(stored.filing_id), "source_document_id": str(stored.source_document_id),
+            "extraction_version": extraction_version,
+            "note": "fact UUIDs are valid only in this database"}
+
+
 # ------------------------------------------------------- inline HTML correspondence
 
 def _inline_number(element: etree._Element) -> Decimal | None:
@@ -643,8 +714,12 @@ def main(argv: list[str] | None = None) -> int:
                         help="Write one JSON fact per line to a new file, such as data/processed/facts-v1.jsonl.")
     parser.add_argument("--load", action="store_true",
                         help="Store the facts in the database selected by --env-file, in one transaction.")
+    parser.add_argument("--export-ids", type=Path, metavar="CSV",
+                        help="Write occurrence key (= inline HTML id) -> fact UUID for this version, read "
+                             "from the database selected by --env-file, to a new CSV file. Read-only; "
+                             "works with a reader login. Runs after --load when both are given.")
     parser.add_argument("--env-file", type=Path, default=Path(".env"),
-                        help="Connection settings for --load (default: .env, the local database).")
+                        help="Connection settings for --load and --export-ids (default: .env, the local database).")
     args = parser.parse_args(argv)
     try:
         manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
@@ -690,6 +765,13 @@ def main(argv: list[str] | None = None) -> int:
                                     "source_document_id": str(stored.source_document_id),
                                     "extraction_version": stored.extraction_version,
                                     "facts_in_database": in_database}
+        if args.export_ids:
+            if args.export_ids.exists():
+                raise FactExtractionError(f"{args.export_ids} already exists; choose a new file name.")
+            with connect(args.env_file) as conn:
+                conn.read_only = True
+                report["exported_ids"] = _export_fact_ids(conn, manifest, xml_local_path,
+                                                          args.version, args.export_ids)
         print(json.dumps(report, indent=2, default=str))
         problems = extraction.failures or report.get("inline_correspondence", {}).get("mismatches")
         return 1 if problems else 0
