@@ -96,3 +96,37 @@ def test_unknown_structure():
     assert sections[0]["section_id"] == "full-report"
     assert sections[0]["offset_start"] == 0
     assert sections[0]["offset_end"] == len(text)
+
+def test_part_i_skips_table_of_contents():
+    """Part I should start in the body, not the table of contents."""
+
+    text = "\n".join([
+        "TABLE OF CONTENTS",
+        "PART I. FINANCIAL INFORMATION",
+        "ITEM 1. FINANCIAL STATEMENTS",
+        "ITEM 2. MANAGEMENT'S DISCUSSION",
+        "PART II. OTHER INFORMATION",
+        "",
+        "INTRODUCTION TO THE REPORT",
+        "Some introductory text.",
+        "",
+        "PART I. FINANCIAL INFORMATION",
+        "ITEM 1. FINANCIAL STATEMENTS",
+        "Actual financial statement content.",
+        "ITEM 2. MANAGEMENT'S DISCUSSION",
+        "Actual management discussion.",
+        "PART II. OTHER INFORMATION",
+        "ITEM 1. LEGAL PROCEEDINGS",
+    ])
+
+    sections = detect_sections(text)
+
+    part_i = next(
+        section
+        for section in sections
+        if section["section_id"] == "part-i"
+    )
+
+    expected_start = text.rfind("PART I. FINANCIAL INFORMATION")
+
+    assert part_i["offset_start"] == expected_start

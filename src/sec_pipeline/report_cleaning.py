@@ -45,15 +45,24 @@ def detect_sections(full_text: str) -> list[dict]:
 
     part_matches = list(part_pattern.finditer(full_text))
 
-    # Find Part I in the report body.
-    part1 = next(
-        (
-            match
-            for match in part_matches
-            if match.group(1).upper() == "I"
-        ),
-        None,
-    )
+    # Find Part I headings.
+    part1_candidates = [
+        match
+        for match in part_matches
+        if match.group(1).upper() == "I"
+    ]
+
+    # Prefer the last Part I heading when a TOC is present.
+    part1 = None
+
+    if part1_candidates:
+        if (
+            "TABLE OF CONTENTS" in full_text.upper()
+            and len(part1_candidates) > 1
+        ):
+            part1 = part1_candidates[-1]
+        else:
+            part1 = part1_candidates[0]
 
     # Fallback if the report structure is not recognized.
     if part1 is None:
