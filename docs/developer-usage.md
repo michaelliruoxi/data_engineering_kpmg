@@ -99,6 +99,10 @@ uv run --locked python -m unittest discover -s tests -v
 
 The included Microsoft sample, accession `0001193125-26-191507`, is stored under `data/raw/sec/`. Its source URLs, file sizes, and SHA-256 hashes are recorded in `source_manifest.json`. Verification runs locally without SEC requests.
 
+## Task 2 processing workflow
+
+Use the [processing workflow guide](processing-workflow.md) for input verification, the configurable pure dry-run, explicit import command, source-ID bindings, and transaction tests. Dry-run uses the actual chunker without a database connection. Import requires an explicit environment file, destination database, adapter module, and all four versions; validation and actual-row count checks run before commit. Production parser/validator bridges and real-filing acceptance still need integration.
+
 ## Export an income statement
 
 This command makes SEC requests and exports an income statement from the selected ticker's latest available 10-K to a new CSV. The AAPL example below does not process the bundled Microsoft 10-Q or load any database records.
