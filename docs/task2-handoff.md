@@ -4,7 +4,8 @@ Jace's branch `jace/ingestion-workflow` supplies verification, pure dry-run
 orchestration, and an explicit transactional import command for the supplied
 Microsoft filing `0001193125-26-191507`. The runner is ready for module integration
 and review. Task 2's real-filing acceptance remains pending until the production
-facts, tables, cleaner, and validator are connected.
+tables, cleaner, and validator are connected and the facts parser dependency is
+included in the reviewed integration baseline.
 
 ## Implemented behavior
 
@@ -22,6 +23,9 @@ facts, tables, cleaner, and validator are connected.
   unresolved cells, and validation; verify actual selected stored IDs before commit.
 - Use Ruby's real chunker through `chunk_dry_run_report()` and the write bridge
   `store_ingestion_chunks()`.
+- Adapt Bryce's actual parser/loader through `facts_bridge.parse_facts()` and
+  `write_facts()` with `facts-v1`. Provide `fact_ids_for_tables()` for scoped
+  inline-ID-to-UUID resolution, and plan builders for the remaining bridges.
 
 The contracts and command options are documented in the
 [processing workflow guide](processing-workflow.md). Adapter interfaces here are
@@ -46,6 +50,14 @@ storage helpers, constraints, and chunker are real. The financial/report records
 are fixtures; these results do not validate the team's real financial extraction,
 cleaning, or financial reference checks. The offline suite does not use live SQL.
 
+On October 12, the added facts bridge passed all 116 offline processing tests and
+two explicit real-source component checks in an isolated combined checkout
+(runner `16ff86e`, Bryce's parser `cc05074`, and the new bridge files). It extracted
+all 1,622 facts with zero failures and matched every inline tag; all 1,426 numeric
+values compared equal. The write-side check recorded IDs in memory and checked
+their order/scope, including four equal revenue values resolving to four distinct
+UUIDs. This was not a live PostgreSQL test or complete filing import.
+
 Reproduction commands, from the repository root:
 
 ```sh
@@ -64,8 +76,8 @@ setup; keep credentials outside version control.
 
 | Owner | Handoff needed for integration |
 | --- | --- |
-| Bryce — facts | Published branch/module and pure parser signature; materialized fact records with stable occurrence keys, exact values/context semantics, XML provenance, version label, and rejection diagnostics |
-| Jazzy — tables | Published branch/module and pure parser signature; the three statement records, stable cell/table locators, fact occurrence references, link evidence, unresolved-cell diagnostics, and version label |
+| Bryce — facts | Available in PR #7, `bryce/financial-facts` at `cc05074`; `facts-v1` bridge now implemented and component-tested. Include the parser in the reviewed integration baseline |
+| Jazzy — tables | Published branch/module and pure parser signature; the three statement records, stable cell/table locators, fact occurrence references, link evidence, unresolved-cell diagnostics, and version label. Confirm use of `fact_ids_for_tables(context)` / the current WriteResult ID mapping |
 | Emma — cleaner | Published branch/module and pure parser signature; final cleaned text and ordered Unicode-offset sections with original-source locators, inclusion/removal evidence, and version label |
 | Ruby — chunks | Existing `chunk_report()`/`store_chunks()` are integrated; use the finalized report and its stored ID. Current chunker label is `paragraph-v1` |
 | Sally — validation | Published validator/reference fixtures, agreed required check names, exact-version validation functions for pure and stored outputs, and real-source acceptance evidence |
@@ -85,9 +97,10 @@ an import can commit. See the workflow guide for the complete shapes and example
 
 ## Remaining acceptance work
 
-1. Adapt the production module signatures, labels, and reference checks into both
-   plans. Keep fact occurrence IDs available for table links and finalized report
-   text available for chunking.
+1. Include Bryce's parser and assemble the existing facts/chunks bridges with the
+   production table, cleaner, and validation bridges in both complete plans. Use
+   `facts-v1`, verify Jazzy's inline-ID mapping, and agree the remaining labels and
+   reference checks. Keep finalized report text available for chunking.
 2. Run pure dry-run on the real supplied filing. Check all 1,622 XML fact
    occurrences, the three primary statements, retained report content, sections,
    chunk coverage/citations, and financial references with the module owners.

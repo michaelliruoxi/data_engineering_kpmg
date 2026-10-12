@@ -4,9 +4,10 @@ The input verifier, source-ID mapper, transaction controller, configurable pure
 dry-run, and explicit import command are available. The controller is implemented
 in `sec_pipeline.processing.run_ingestion_transaction()`, dry-run in
 `run_dry_run()`, and the import/count wrapper in `run_ingestion()`.
-Production facts, table, cleaner, and validation adapters still
-need integration; this framework does not yet complete the supplied filing's
-financial import.
+The facts bridge now adapts Bryce's PR #7 parser/loader with version `facts-v1`.
+That parser must be present in the integration checkout. Production table,
+cleaner, and validation adapters still need integration; this framework does
+not yet complete the supplied filing's financial import.
 
 ## Available commands
 
@@ -123,6 +124,49 @@ its text first. Pure dry-run output is never passed into the write run: parsers
 run again with registered metadata IDs, and wrong filing/source/report IDs or
 versions cause rollback before commit. These bridge interfaces belong to Jace's
 runner and do not assert that teammates have already adopted them.
+
+### Financial facts bridge
+
+`src/sec_pipeline/facts_bridge.py` adapts the handoff in
+[`docs/financial-facts.md` on Bryce's branch](https://github.com/michaelliruoxi/data_engineering_kpmg/blob/bryce/financial-facts/docs/financial-facts.md):
+
+- `parse_facts(context)` invokes the real local XML parser and returns
+  `ParseResult(facts, rejected=failures)` without storage.
+- `write_facts(conn, context)` requires complete extraction, uses the caller's
+  transaction through `store_facts()`, and orders stored IDs to match the fact
+  records. Both helpers require the explicit version `facts-v1`.
+- `fact_ids_for_tables(context)` builds occurrence/inline ID → UUID from
+  `context.outputs["facts"].parsed.items` and `.stored_ids`. It checks the filing,
+  XML source, version, unique keys, and original element IDs. Repeated amounts
+  remain separate facts with separate UUIDs.
+
+Inside the table write bridge, use:
+
+```python
+from sec_pipeline.facts_bridge import fact_ids_for_tables
+
+fact_ids = fact_ids_for_tables(context)
+# inline_id is the original ix:nonFraction/ix:nonNumeric element id from the cell.
+fact_id = fact_ids.get(inline_id)
+```
+
+A missing ID must remain unresolved for the table/validation diagnostics; it must
+not be replaced by an amount-based match or a UUID from another database.
+Jazzy's actual table adapter still needs to be checked against this interface.
+
+`build_dry_run_plan(tables=..., report=..., validate=..., required_checks=...)`
+and `build_ingestion_plan(...)` wire these facts stages and the existing real
+chunker into the runner plans. The complete team's adapter module exposes
+`get_dry_run_plan()` / `get_ingestion_plan()` by calling these builders with its
+other agreed bridges. The builders reject missing callbacks; `facts_bridge` alone
+is a component, not a complete CLI adapter module.
+
+Bryce's parser is supplied by [PR #7](https://github.com/michaelliruoxi/data_engineering_kpmg/pull/7);
+the runner/bridge is supplied by [PR #6](https://github.com/michaelliruoxi/data_engineering_kpmg/pull/6).
+As checked on October 12, both remain open and unmerged. Michael owns review and
+integration into `main`. Local component checks can combine the two revisions in
+an isolated checkout before merge; this does not establish a reviewed team baseline
+or a complete end-to-end import.
 
 Reference JSON is available as `context.reference`; `expected_counts` has the
 same rules as dry-run. Before commit, the wrapper requires the validator's exact
@@ -259,12 +303,33 @@ financial/report records; these results establish the workflow contracts and
 actual local PostgreSQL transaction behavior, not acceptance of production
 financial extraction from the supplied filing.
 
+The October 12 facts bridge change passed all 116 offline processing tests in an
+isolated combined checkout using the runner at `16ff86e` and Bryce's parser at
+`cc05074`, plus the bridge changes. Two additional explicit real-source bridge
+checks passed: 1,622/1,622 facts were extracted with zero failures; all inline IDs
+matched; all 1,426 numeric values compared equal. The write/mapping check used
+recorded storage UUIDs, not PostgreSQL. Four equal quarterly-revenue amounts
+retained four distinct occurrence IDs and UUIDs. All source/manifest hashes stayed
+unchanged and network/database connections were forbidden.
+
+Reproduce the real-source component checks after the PR #7 module is present:
+
+```sh
+SEC_FACTS_BRIDGE_SAMPLE=1 uv run --locked python -m unittest discover \
+  -s tests -p 'test_facts_bridge_sample.py' -v
+```
+
+An explicit run with a missing parser fails. Ordinary discovery does not opt into
+this cross-PR check. No new live-database or full-filing import result is claimed
+by these component checks.
+
 ## Remaining integration
 
-Wire the actual facts, table, cleaner, and validation adapters into the pure
-dry-run and explicit import command. The command, explicit destination/version/
-reference options, and stored/rejected/unresolved summaries are implemented;
-production adapter and reference labels still need agreement with their owners.
+Assemble the available facts bridge with the actual table, cleaner, and validation
+bridges in the complete adapter module. The command, explicit destination/version/
+reference options, and stored/rejected/unresolved summaries are implemented.
+Facts use `facts-v1`; the remaining production versions, reference labels, and
+Jazzy's consumption of the in-transaction ID mapping still need agreement/checking.
 The live fixture suite verifies PostgreSQL transaction and replay behavior; the
 actual production adapters still need those checks and full acceptance on the
 supplied filing. Jace's shared login is read-only: write tests use a local writable
