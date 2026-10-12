@@ -178,3 +178,28 @@ def test_part_ii_items_3_and_4():
 
     assert "part-ii-item-3" in section_ids
     assert "part-ii-item-4" in section_ids
+
+def test_part_heading_with_dash():
+    """Detect Part headings separated by hyphens or en dashes."""
+
+    for separator in ["-", "–"]:
+        text = "\n".join([
+            f"PART I {separator} FINANCIAL INFORMATION",
+            "ITEM 1. FINANCIAL STATEMENTS",
+            "Financial statement content.",
+            f"PART II {separator} OTHER INFORMATION",
+            "ITEM 1. LEGAL PROCEEDINGS",
+            "Legal proceedings content.",
+        ])
+
+        sections = detect_sections(text)
+
+        section_ids = {
+            section["section_id"]
+            for section in sections
+        }
+
+        assert "part-i" in section_ids
+        assert "part-ii" in section_ids
+        assert "part-i-item-1" in section_ids
+        assert "part-ii-item-1" in section_ids

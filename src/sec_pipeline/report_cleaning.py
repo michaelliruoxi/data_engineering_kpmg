@@ -46,7 +46,7 @@ def detect_sections(full_text: str) -> list[dict]:
     # Find full Part I and Part II headings.
     # Requiring the complete title helps avoid page headers.
     part_pattern = re.compile(
-        r"(?im)^PART\s+(I|II)\.?\s+(FINANCIAL|OTHER)\s+INFORMATION\s*$"
+        r"(?im)^PART\s+(I|II)\s*[.\-–]?\s+(FINANCIAL|OTHER)\s+INFORMATION\s*$"
     )
 
     part_matches = list(part_pattern.finditer(full_text))
