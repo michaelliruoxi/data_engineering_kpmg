@@ -12,6 +12,10 @@ uv run --locked python -m sec_pipeline.tables_cli --output outputs/financial-tab
 uv run --locked python -m unittest discover -s tests -v
 ```
 
+If editable imports are unavailable on macOS, use `PYTHONPATH="$PWD/src"`
+before `uv run --locked`. See [the October 12 verification](financial-tables-verification.md)
+for the measured import failure and the explicit local PostgreSQL acceptance command.
+
 The CLI verifies manifest sizes and hashes before parsing. It needs no credentials or SEC requests. JSON and TSV exports are evidence for review; their UUIDs 1/2/3 are explicitly placeholders and must never be imported. The integrated runner calls `extract_tables()` with actual metadata UUIDs.
 
 ## Inputs and outputs
@@ -72,4 +76,9 @@ The facts mapping is an integration handoff, not a reason to create substitute p
 
 Offline tests cover complete sample inventory, nine independently transcribed reference values, exact scale/periods, cash-flow sign presentation, numeric labels, semantic repeat, merged cells/blanks/dashes, original locators, deterministic output, selection with extra layout tables, ambiguous selection, missing IDs, wrong concept/context/unit, repeated amounts, and scope rejection before writes. Existing regression tests are also run.
 
-Live PostgreSQL tests are opt-in and are not established by offline success. The merged facts implementation now provides the scoped map contract, and sample compatibility is checked offline. Final acceptance still needs an actual database import/replay/rollback test, Sally's independent reference review (including the untagged cash balance), and Michael's reviewed shared import. This handoff does not claim those team-wide steps are complete.
+Live PostgreSQL tests are opt-in and are not established by offline success. The merged facts implementation provides the scoped map contract. Final acceptance still needs the complete team workflow, Sally's independent reference review (including the untagged cash balance), and Michael's reviewed shared import. This handoff does not claim those team-wide steps are complete.
+
+The October 12 follow-up now establishes real PostgreSQL **component** loading,
+replay, conflicts, scope rejection, and rollback using the actual facts/table parsers.
+It does not establish full report/chunk processing, Sally's independent review,
+or shared deployment. Details and repeatable commands are in the verification document.
