@@ -508,6 +508,9 @@ def run_ingestion(
     verify_inputs: Callable[[Path, Path], Mapping[str, Any]],
     reference: Mapping[str, Any] | None = None,
     seed_metadata: Callable[[Any, Path, Path], Mapping[str, Any]] | None = None,
+    processing_set_key: str | None = None,
+    coverage: Mapping[str, str] | None = None,
+    prefer_processing_set: bool = False,
 ) -> dict[str, Any]:
     """Import with actual-row counts, source checks, and validation before commit.
 
@@ -516,6 +519,13 @@ def run_ingestion(
     never using records or temporary IDs retained from a previous dry-run.
     """
     check_ingestion_options(plan, versions, reference)
+    if processing_set_key is None:
+        if coverage is not None or prefer_processing_set:
+            raise ProcessingError('Coverage and preferred selection require a processing-set key.')
+    elif (not isinstance(processing_set_key, str) or not processing_set_key.strip() or not isinstance(coverage, Mapping)
+          or set(coverage) != {'facts', 'tables', 'reports', 'chunks'}
+          or any(not isinstance(value, str) or value not in {'unknown', 'partial', 'complete'} for value in coverage.values())):
+        raise ProcessingError('A processing set requires a nonempty key and explicit coverage for all four stages.')
     if not callable(verify_inputs):
         raise ProcessingError("A local input verifier is required for ingestion.")
     expected_versions, checks = _processing_options(versions, plan.required_checks)
@@ -571,6 +581,26 @@ def run_ingestion(
             "report_characters": len(context.outputs["report"].parsed.items[0].full_text),
             "validation": {"passed": True, "required_checks": list(checks), "checks": dict(validation.checks)},
         })
+        if processing_set_key is not None:
+            from .catalog import ProcessingSetInput, store_processing_set, select_preferred_processing_set
+            record = ProcessingSetInput(
+                filing_id=context.source_ids.filing_id,
+                set_key=processing_set_key,
+                fact_source_document_id=context.source_ids.xml_document_id,
+                fact_extraction_version=expected_versions['facts'],
+                table_source_document_id=context.source_ids.html_document_id,
+                table_extraction_version=expected_versions['tables'],
+                report_id=context.outputs['report'].stored_ids[0],
+                chunking_version=expected_versions['chunks'],
+                coverage=dict(coverage), validation_status='passed',
+                validation=summary['validation'],
+                configuration={'versions': dict(expected_versions), 'source_hashes': summary['source_hashes']},
+            )
+            set_id = store_processing_set(connection, record)
+            if prefer_processing_set:
+                select_preferred_processing_set(connection, record.filing_id, set_id)
+            summary['processing_set_id'] = str(set_id)
+            summary['preferred'] = prefer_processing_set
         # A malformed summary must fail inside the transaction, before commit.
         json.dumps(summary)
         return validation

@@ -34,8 +34,13 @@ def main():
     if args.host in ('127.0.0.1', '::1'):
         options['hostaddr'] = args.host
     with psycopg.connect(**options) as conn:
-        database, address = conn.execute('SELECT current_database(), inet_server_addr()').fetchone()
-        if database != args.database or (address is not None and str(address) not in ('127.0.0.1', '::1')):
+        database = conn.execute('SELECT current_database()').fetchone()[0]
+        # Docker forwards the requested loopback endpoint to a private server
+        # interface. Check the actual client endpoint, as the ingestion runner
+        # does, rather than rejecting the server's container-side address.
+        wrong_endpoint = (conn.info.hostaddr != args.host if args.host in ('127.0.0.1', '::1')
+                          else conn.info.host != args.host)
+        if database != args.database or wrong_endpoint:
             raise RuntimeError('Actual test connection is not the requested local test database.')
         if args.migrate:
             if conn.execute("SELECT count(*) FROM pg_tables WHERE schemaname='sec'").fetchone()[0]:

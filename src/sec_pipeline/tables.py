@@ -17,6 +17,7 @@ from uuid import UUID
 from lxml import etree, html
 
 from .database import FinancialTableInput, store_financial_table, link_table_fact
+from .table_cells import TableCellError, relational_cells, store_table_cells
 
 XBRLI = 'http://www.xbrl.org/2003/instance'
 XBRLDI = 'http://xbrl.org/2006/xbrldi'
@@ -233,8 +234,6 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                     else 'label' if cell['column'] == 0 else 'formatting')
                 if inline:
                     try:
-                        if len(inline) > 1 and cell['column'] != 0:
-                            raise TableExtractionError('Multiple facts in a data cell')
                         if len({f.get('id') for f in inline}) != len(inline):
                             raise TableExtractionError('Duplicate inline ID in cell')
                         for f in inline:
@@ -356,14 +355,20 @@ def load_tables(conn, tables, scope: FactScope):
     """
     if conn.autocommit:
         raise TableExtractionError('Caller-managed transaction required')
-    checked = {}
     for table in tables:
+        # Validate every anchor and classification, not only the inventory count.
+        # A stale zero-unresolved inventory must not promote unresolved links.
+        try:
+            relational_cells(UUID(int=0), table)
+        except TableCellError as exc:
+            raise TableExtractionError(str(exc)) from exc
         expected = {'filing_id': str(scope.filing_id), 'xml_document_id': str(scope.xml_document_id),
                     'facts_version': scope.extraction_version}
         if (table.filing_id != scope.filing_id or table.source_document_id == scope.xml_document_id
                 or table.structure['fact_scope'] != expected):
             raise TableExtractionError('Invalid table/fact scope')
-        if table.structure['inventory'].get('unresolved', 0):
+        if table.structure['inventory'].get('unresolved', 0) or any(
+                cell['classification'] == 'unresolved' for row in table.structure['rows'] for cell in row):
             raise TableExtractionError('Unresolved financial cells block loading')
         for row in table.structure['rows']:
             for cell in row:
@@ -373,8 +378,6 @@ def load_tables(conn, tables, scope: FactScope):
                     fid = scope.xml_id_to_fact_id.get(ref['xml_id'])
                     if fid is None:
                         raise TableExtractionError(f'Missing stored fact: {ref["xml_id"]}')
-                    if (fid, ref['xml_id']) in checked:
-                        continue
                     record = conn.execute('''SELECT filing_id, source_document_id, extraction_version,
                         concept_namespace, concept_name, raw_value, unit, period_kind, period_start,
                         period_end, instant_date, dimensions, is_nil, numeric_value, occurrence_key, source_reference
@@ -383,19 +386,21 @@ def load_tables(conn, tables, scope: FactScope):
                     period = ref['period']
                     kind = 'instant' if 'instant' in period else 'duration' if 'startDate' in period else 'forever'
                     expected_record = (scope.filing_id, scope.xml_document_id, scope.extraction_version,
-                        ns, name, ref['raw_value'], ref['unit'], kind,
+                        ns, name, None if ref['is_nil'] else ref['raw_value'], ref['unit'], kind,
                         date.fromisoformat(period['startDate']) if 'startDate' in period else None,
                         date.fromisoformat(period['endDate']) if 'endDate' in period else None,
                         date.fromisoformat(period['instant']) if 'instant' in period else None,
-                        ref['dimensions'], ref['is_nil'], None if ref['is_nil'] else Decimal(ref['raw_value']))
+                        ref['dimensions'], ref['is_nil'], None if ref['is_nil'] or ref['unit'] is None else Decimal(ref['raw_value']))
                     if record is not None:
                         occurrence, provenance = record[-2:]
-                        source_ids = [provenance.get(k) for k in ('xml_id', 'id', 'fact_id')]
+                        source_ids = [provenance.get(k) for k in ('element_id', 'xml_id', 'id', 'fact_id')]
                         if ref['xml_id'] not in source_ids and occurrence != ref['xml_id']:
                             raise TableExtractionError('Stored occurrence does not identify XML fact ID')
                     if record is None or tuple(record[:-2]) != expected_record:
                         raise TableExtractionError('Stored fact differs from verified XML evidence/scope')
-                    checked[(fid, ref['xml_id'])] = True
+    # Even an all-header table has no preceding fact query to begin an implicit
+    # transaction. Establish caller ownership before opening the stage savepoint.
+    conn.execute('SELECT sec.lock_processing_filing(%s)', (scope.filing_id,))
     ids = {}
     with conn.transaction():
         for table in tables:
@@ -405,4 +410,5 @@ def load_tables(conn, tables, scope: FactScope):
                     for f in cell['fact_references']}
             for xml_id in sorted(refs):
                 link_table_fact(conn, scope.filing_id, tid, scope.xml_id_to_fact_id[xml_id])
+            store_table_cells(conn, tid, table, scope.xml_id_to_fact_id)
     return ids

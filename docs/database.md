@@ -1,5 +1,7 @@
 # PostgreSQL database foundation
 
+For migrations 002–005, use the [current README structure graph](../readme.md#database-structure-and-report-sections) and [browsing/selection guide](database-browsing.md). They explain named sections, statement cells, preferred output versions, coverage, and backward compatibility. The foundation diagram below describes the original core tables.
+
 The database stores SEC filing metadata, source provenance, and versioned outputs from teammate loaders. The included Microsoft sample seeds **one company, one filing, and four source documents**. It does not extract or load financial facts, cleaned reports, tables, or chunks.
 
 The shared RDS database additionally contains a separately inserted [manual formatted example](manual-example.md), version `manual-example-v1`. The seed command and local setup described below still load metadata only.
@@ -95,20 +97,20 @@ erDiagram
     financial_facts ||--o{ financial_table_facts : appears_in
 ```
 
-All data tables live in schema `sec`. Primary record IDs are UUIDs, except the table-to-fact link's composite key. Cross-record references enforce the filing boundary, so a report, fact, or table cannot cite a source document from another filing, and a table cannot link a fact from another filing.
+All data tables live in schema `sec`. Primary record IDs are UUIDs; association tables use composite keys, and `section_types` uses a stable text code. Cross-record references enforce the filing boundary, so a report, fact, or table cannot cite a source document from another filing, and a table cannot link a fact from another filing.
 
 | Table | Data and identity |
 | --- | --- |
 | `companies` | `cik` (10-character text, unique), `name`, optional `ticker` |
-| `filings` | `company_id`, unique `accession_number`, `form`, `filing_date`, optional `reporting_period_end`, `source_url`, `amendment_of_id`; amendments must reference the same company |
-| `source_documents` | `filing_id`, `role`, `source_url`, `local_path`, `sha256`, `size_bytes`, `retrieved_at`; identity is `(filing_id, local_path)` |
+| `filings` | `company_id`, unique `accession_number`, `form`, `filing_date`, optional `reporting_period_end`, `source_url`, `amendment_of_id`, `company_name_as_filed`; amendments must reference the same company |
+| `source_documents` | `filing_id`, `role`, `source_url`, `local_path`, `sha256`, `size_bytes`, `retrieved_at`; identity after 005 is `(filing_id, source_url)`, with optional title/type/storage URI |
 | `reports` | `filing_id`, `source_document_id`, `extraction_version`, `full_text`, `sections`; identity is `(source_document_id, extraction_version)` |
 | `chunks` | `filing_id`, `report_id`, `chunking_version`, `chunk_index`, `section`, `text`, `offset_start`, `offset_end`, `metadata`; identity is `(report_id, chunking_version, chunk_index)` |
 | `financial_facts` | Source occurrence and extraction version; concept, values, period, units, dimensions, and source reference; identity is `(source_document_id, extraction_version, occurrence_key)` |
 | `financial_tables` | `filing_id`, `source_document_id`, `extraction_version`, `table_key`, `statement_type`, `structure`, `readable_text`; identity is `(source_document_id, extraction_version, table_key)` |
 | `financial_table_facts` | `filing_id`, `table_id`, `fact_id`; composite primary key `(table_id, fact_id)` |
 
-Each data table includes `created_at`. Financial facts have `concept_namespace`, `concept_name`, optional `label`, `numeric_value`, `raw_value`, `is_nil`, `reported_decimals`, `reported_precision`, `unit`, `period_kind`, `period_start`, `period_end`, `instant_date`, `dimensions`, and `source_reference`.
+The original entity tables include `created_at`. Financial facts have `concept_namespace`, `concept_name`, optional `label`, `numeric_value`, `raw_value`, `is_nil`, `reported_decimals`, `reported_precision`, `unit`, `period_kind`, `period_start`, `period_end`, `instant_date`, `dimensions`, and `source_reference`.
 
 Loaders must preserve the following meanings:
 
@@ -120,7 +122,7 @@ Loaders must preserve the following meanings:
 - **Versioning:** Reusing an identity and version with identical content returns the existing UUID. Reusing it with changed content raises `DataConflict`. Use a new extraction or chunking version when producing changed output. Source-document checksum conflicts are not resolved by overwriting evidence.
 - **Chunk offsets:** Use zero-based, half-open Unicode character positions into the referenced report: `report_text[offset_start:offset_end] == chunk_text`. Positions count Unicode characters, not UTF-8 bytes or JavaScript UTF-16 code units. Compute offsets from the final cleaned text and do not normalize that text afterward. Database triggers reject mismatches and report edits that would invalidate stored chunks.
 
-Section metadata is a JSON array; chunk metadata, source references, and table structure are JSON objects. Teammates can preserve extractor-specific information without changing the base schema.
+Section metadata remains a JSON array, with valid descriptors also stored in `report_sections`; new inputs must provide ordered, nonoverlapping offsets within the report text. Chunk metadata, source references, and table structure are JSON objects. Teammates can preserve extractor-specific information without changing the base schema. Company identity lookup and source re-downloads follow the [metadata rules](database-browsing.md#migration-and-compatibility), which distinguish mutable display fields from source evidence.
 
 ### Python transactions
 

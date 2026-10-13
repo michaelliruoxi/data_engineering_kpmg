@@ -1,0 +1,59 @@
+name: Database contracts
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: local-test-only
+          POSTGRES_DB: sec_ci_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d sec_ci_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: 5432
+      PGUSER: postgres
+      PGPASSWORD: local-test-only
+      PGDATABASE: sec_ci_config
+      PGSSLMODE: disable
+      SEC_DB_TEST: '1'
+      SEC_DB_TEST_DATABASE: sec_ci_test
+      SEC_DB_CONCURRENCY_TEST: '1'
+      SEC_FACTS_BRIDGE_SAMPLE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: '.python-version'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.22'
+      - run: uv sync --locked
+      - name: Migrate dedicated local database
+        run: PGDATABASE=sec_ci_test uv run --locked sec-db migrate
+      - name: Pure, PostgreSQL, publication and concurrency tests
+        run: uv run --locked python -m pytest -q
+      - name: Existing committed ingestion transaction tests
+        run: |
+          cat > .env.ci <<'EOF'
+          PGHOST=127.0.0.1
+          PGPORT=5432
+          PGUSER=postgres
+          PGPASSWORD=local-test-only
+          PGDATABASE=sec_ci_config
+          PGSSLMODE=disable
+          EOF
+          uv run --locked python scripts/test_ingestion_local.py --env-file .env.ci --database sec_ci_test
+      - name: Real Microsoft facts and tables replay
+        run: uv run --locked python scripts/run_tables_postgres_tests.py --host 127.0.0.1 --port 5432 --database sec_ci_test --user postgres

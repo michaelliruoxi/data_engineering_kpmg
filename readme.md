@@ -2,6 +2,63 @@
 
 This project stores information about company reports filed with the U.S. Securities and Exchange Commission (SEC). The database is online, so approved teammates can view the same information from their own computers.
 
+## Database structure and report sections
+
+The schema below is available after migrations **001–005**. Merging this code does not upgrade the shared AWS database; the administrator must apply the migrations separately. Existing example views and extraction versions remain available.
+
+```mermaid
+erDiagram
+    companies ||--o{ filings : files
+    filings ||--o{ source_documents : records
+    source_documents ||--o{ reports : extracts
+    reports ||--o{ report_sections : organizes
+    section_types ||--o{ report_sections : classifies
+    reports ||--o{ chunks : divides
+    report_sections o|--o{ chunks : locates
+    source_documents ||--o{ financial_tables : extracts
+    source_documents ||--o{ financial_facts : extracts
+    financial_tables ||--o{ table_cells : contains
+    table_cells ||--o{ cell_fact_links : cites
+    financial_facts ||--o{ cell_fact_links : supplies
+    financial_tables ||--o{ financial_table_facts : groups
+    financial_facts ||--o{ financial_table_facts : belongs_to
+    filings ||--o{ filing_processing_sets : versions
+    reports o|--o{ filing_processing_sets : selects
+    filings ||--o| preferred_processing_sets : chooses
+    filing_processing_sets ||--o| preferred_processing_sets : browses
+```
+
+This graph shows the main relationships. Every extracted object also belongs to a filing; composite foreign keys prevent links between different filings or report versions. A processing set selects exact source/version pairs for facts and tables, an exact report, and a chunking version. The migration ledger, `schema_migrations`, records schema updates.
+
+| What you want | Where it resides | Convenient view |
+| --- | --- | --- |
+| Filing identity, dates, company, amendment | `companies`, `filings` | `filing_overview` |
+| Original HTML/XML, source URL, hash, file locator | `source_documents`; source bytes remain in files/storage | Source columns in the catalogs |
+| Full cleaned text | `reports.full_text` | Sections expose slices of this text |
+| MD&A, risks, business, governance, other items | `report_sections` + `section_types` | `section_catalog` |
+| Searchable passages and exact citations | `chunks`, linked to report and optionally section | `chunk_catalog` |
+| Statement layout, row/column headings, displayed cells | `financial_tables`, `table_cells` | `statement_catalog`, `statement_cells` |
+| Exact XBRL occurrences, units, periods, dimensions | `financial_facts`; `cell_fact_links` traces cells to occurrences | `fact_catalog` |
+| Versions to use, coverage, validation checks | `filing_processing_sets`, `preferred_processing_sets` | `filing_overview` |
+
+Start with **`filing_overview`**, then use the catalogs for that filing's explicitly preferred processing set. A filing without a preferred set remains visible in the overview; its preferred catalogs are empty. Counts and validation apply to the selected scope, and a passed check does not mean the entire filing was extracted.
+
+```sql
+SELECT company_name, form, accession_number, set_key, coverage, validation_status
+FROM sec.filing_overview ORDER BY filing_date DESC;
+
+SELECT accession_number, original_title, part, item, text, source_url,
+       section_validation_status, stage_coverage
+FROM sec.section_catalog
+WHERE section_type = 'mda';
+
+SELECT accession_number, original_title, text, section_validation_status
+FROM sec.section_catalog
+WHERE section_topic IN ('risks', 'governance');
+```
+
+**MD&A maps to 10-Q Part I Item 2 or 10-K Part II Item 7.** Governance is usually in 10-K Part III; a filing may refer readers to a separate proxy statement, whose contents are not automatically loaded. See the [complete report map, selection workflow, migration notes, and limitations](docs/database-browsing.md) and [ready-to-run browsing queries](docs/database-browsing-queries.sql).
+
 ## Choose how to connect
 
 **You can use DBeaver, connect directly from Python, or use both.** Have your database credentials ready, then follow the option that fits your work.
@@ -114,6 +171,9 @@ Clicking the small arrow beside a table expands details such as its columns. To 
 | **financial_facts** | Individual financial figures, such as revenue, with their dates, units, and sources |
 | **financial_tables** | Extracted financial statement tables |
 | **financial_table_facts** | Links showing which financial figures belong to which statement tables |
+| **report_sections**, **section_types** | Named report sections and consistent topic labels, available after migration 002 |
+| **filing_processing_sets**, **preferred_processing_sets** | Explicit version selections, coverage, and checks, available after migration 003 |
+| **table_cells**, **cell_fact_links** | Statement cells and their verified fact references, available after migration 004 |
 | **schema_migrations** | The database's technical update history; you can skip this when browsing the data |
 
 One company can have many filings. Each filing can have several source documents. As the team processes those documents, it adds report text, smaller text sections, and financial figures to the related tables.

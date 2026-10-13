@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
 from decimal import Decimal
 import hashlib
@@ -43,6 +43,7 @@ class FilingInput:
     reporting_period_end: date | None = None
     amendment_of_id: UUID | None = None
     source_url: str | None = None
+    company_name_as_filed: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -54,6 +55,9 @@ class SourceDocumentInput:
     sha256: str
     size_bytes: int
     retrieved_at: datetime
+    title: str | None = None
+    document_type: str | None = None
+    storage_uri: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -76,6 +80,7 @@ class ChunkInput:
     offset_end: int
     section: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    section_id: UUID | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -240,24 +245,89 @@ def _store(conn: psycopg.Connection, table: str, record: Any, keys: tuple[str, .
 
 
 def register_company(conn: psycopg.Connection, record: CompanyInput) -> UUID:
-    return _store(conn, 'companies', record, ('cik',))
+    """Resolve stable CIK identity; historical filings never overwrite a current profile."""
+    if conn.autocommit:
+        raise DatabaseError('Write helpers require autocommit=False and caller-managed transactions.')
+    row = conn.execute('''INSERT INTO sec.companies (cik, name, ticker)
+        VALUES (%s, %s, %s) ON CONFLICT (cik) DO NOTHING RETURNING id''',
+        (record.cik, record.name, record.ticker)).fetchone()
+    if row is None:
+        row = conn.execute('SELECT id FROM sec.companies WHERE cik = %s FOR SHARE',
+                           (record.cik,)).fetchone()
+    return row[0]
+
+
+def update_company_profile(conn: psycopg.Connection, record: CompanyInput) -> UUID:
+    """Explicitly update current display metadata, preserving filing name snapshots."""
+    if conn.autocommit:
+        raise DatabaseError('Write helpers require autocommit=False and caller-managed transactions.')
+    row = conn.execute('''UPDATE sec.companies SET name = %s, ticker = %s
+        WHERE cik = %s RETURNING id''', (record.name, record.ticker, record.cik)).fetchone()
+    if row is None:
+        raise DatabaseError('Register the company before updating its profile.')
+    return row[0]
 
 
 def register_filing(conn: psycopg.Connection, record: FilingInput) -> UUID:
-    return _store(conn, 'filings', record, ('accession_number',))
+    if conn.autocommit:
+        raise DatabaseError('Write helpers require autocommit=False and caller-managed transactions.')
+    existing = conn.execute('''SELECT id, company_name_as_filed FROM sec.filings
+        WHERE accession_number = %s FOR UPDATE''', (record.accession_number,)).fetchone()
+    if existing is None:
+        return _store(conn, 'filings', record, ('accession_number',))
+    previous_name = existing[1]
+    if previous_name is not None and record.company_name_as_filed not in (None, previous_name):
+        raise DataConflict('Conflicting company name in the same filing.')
+    filing_id = _store(conn, 'filings', replace(record, company_name_as_filed=previous_name),
+                       ('accession_number',))
+    if previous_name is None and record.company_name_as_filed is not None:
+        conn.execute('UPDATE sec.filings SET company_name_as_filed = %s WHERE id = %s',
+                     (record.company_name_as_filed, filing_id))
+    return filing_id
 
 
 def register_source_document(conn: psycopg.Connection, record: SourceDocumentInput) -> UUID:
     if record.retrieved_at.tzinfo is None or record.retrieved_at.utcoffset() is None:
         raise DatabaseError('retrieved_at must include a timezone.')
-    return _store(conn, 'source_documents', record, ('filing_id', 'local_path'))
+    if conn.autocommit:
+        raise DatabaseError('Write helpers require autocommit=False and caller-managed transactions.')
+    values = asdict(record)
+    columns = list(values)
+    row = conn.execute(sql.SQL('''INSERT INTO sec.source_documents ({}) VALUES ({})
+        ON CONFLICT (filing_id, source_url) DO NOTHING RETURNING id''').format(
+            sql.SQL(', ').join(map(sql.Identifier, columns)),
+            sql.SQL(', ').join(sql.Placeholder() for _ in columns)), list(values.values())).fetchone()
+    if row is not None:
+        return row[0]
+    # The original receipt and locator are retained when identical bytes are re-fetched.
+    row = conn.execute('''SELECT id FROM sec.source_documents
+        WHERE filing_id = %s AND source_url = %s AND role = %s
+          AND sha256 = %s AND size_bytes = %s FOR SHARE''',
+        (record.filing_id, record.source_url, record.role, record.sha256, record.size_bytes)).fetchone()
+    if row is None:
+        raise DataConflict('Source document bytes or role changed at the registered URL.')
+    return row[0]
 
 
 def store_report(conn: psycopg.Connection, record: ReportInput) -> UUID:
-    return _store(conn, 'reports', record, ('source_document_id', 'extraction_version'))
+    from .sections import store_report_sections
+    if conn.autocommit:
+        raise DatabaseError('Write helpers require autocommit=False and caller-managed transactions.')
+    # Start the caller's implicit transaction before opening a savepoint. On an
+    # idle psycopg connection, transaction() alone would commit on exit.
+    conn.execute('SELECT sec.lock_processing_filing(%s)', (record.filing_id,))
+    with conn.transaction():
+        report_id = _store(conn, 'reports', record, ('source_document_id', 'extraction_version'))
+        store_report_sections(conn, record, report_id=report_id)
+    return report_id
 
 
 def store_chunk(conn: psycopg.Connection, record: ChunkInput) -> UUID:
+    from .sections import section_id_for_chunk
+    if conn.autocommit:
+        raise DatabaseError('Write helpers require autocommit=False and caller-managed transactions.')
+    if record.section_id is None:
+        record = replace(record, section_id=section_id_for_chunk(conn, record))
     return _store(conn, 'chunks', record, ('report_id', 'chunking_version', 'chunk_index'))
 
 
@@ -342,6 +412,7 @@ def seed_manifest(conn: psycopg.Connection, manifest_path: Path, data_root: Path
             form=manifest['form'], filing_date=date.fromisoformat(manifest['filing_date']),
             reporting_period_end=date.fromisoformat(manifest['reporting_period_end']),
             source_url=manifest['filing_index_url'],
+            company_name_as_filed=manifest['company'],
         ))
         document_ids = {}
         for record in [manifest['index_document'], *manifest['files']]:
@@ -349,6 +420,9 @@ def seed_manifest(conn: psycopg.Connection, manifest_path: Path, data_root: Path
                 filing_id=filing_id, role=record['role'], source_url=record['source_url'],
                 local_path=record['local_path'], sha256=record['sha256'], size_bytes=record['size_bytes'],
                 retrieved_at=datetime.fromisoformat(record['retrieved_at_utc']),
+                title=Path(record['local_path']).name,
+                document_type=(manifest['form'] if record['role'] == 'main_inline_xbrl_filing'
+                               else record['role']),
             ))
     return {'company_id': company_id, 'filing_id': filing_id, 'document_ids': document_ids}
 
@@ -362,11 +436,15 @@ def status(conn: psycopg.Connection) -> dict[str, Any]:
         'SELECT name FROM sec.schema_migrations ORDER BY name').fetchall()]
     result['counts'] = {}
     for table in ('companies', 'filings', 'source_documents', 'reports', 'chunks',
-                  'financial_facts', 'financial_tables', 'financial_table_facts'):
+                  'financial_facts', 'financial_tables', 'financial_table_facts',
+                  'report_sections', 'table_cells', 'cell_fact_links',
+                  'filing_processing_sets', 'preferred_processing_sets'):
         if conn.execute('SELECT to_regclass(%s)', (f'sec.{table}',)).fetchone()[0] is None:
             result['counts'][table] = None
         else:
             result['counts'][table] = conn.execute(sql.SQL('SELECT count(*) FROM sec.{}').format(
                 sql.Identifier(table))).fetchone()[0]
-    result['ready'] = bool(result['migrations']) and all(v is not None for v in result['counts'].values())
+    packaged = sorted(resource.name for resource in files('sec_pipeline.migrations').iterdir()
+                      if re.fullmatch(r'\d{3}_[a-z0-9_]+\.sql', resource.name))
+    result['ready'] = result['migrations'] == packaged and all(v is not None for v in result['counts'].values())
     return result
