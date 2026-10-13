@@ -1,22 +1,64 @@
-# Shared SEC Filing Database
+# Shared S&P 500 SEC Filing Database
 
-This project stores information about company reports filed with the U.S. Securities and Exchange Commission (SEC). The database is online, so approved teammates can view the same information from their own computers.
+This project provides a shared PostgreSQL database of S&P 500 companies' annual
+and quarterly SEC reports. The automated pipeline downloads original filings
+from EDGAR, extracts financial facts and statements, organizes report text into
+sections and passages, and loads the results into AWS RDS. Approved teammates
+can browse the same data in DBeaver or query it directly from Python.
+
+> **Documentation assumption:** This guide describes the completed initial
+> five-year backfill, as requested. It is not a live completion report. Use the
+> [run-status commands](docs/automated-backfill.md) to check actual import progress
+> and unresolved filings.
+
+## Dataset scope
+
+| Item | Coverage |
+| --- | --- |
+| Company universe | The S&P 500 membership snapshot dated October 13, 2026: 500 issuers and 503 share-class tickers |
+| Filing window | October 13, 2021 through October 13, 2026, inclusive, based on filing date |
+| Report types | Original **10-K** annual reports and **10-Q** quarterly reports; amendments are excluded |
+| Financial data | XBRL facts with units, periods, dimensions, and original values; primary income, balance-sheet, and cash-flow statements |
+| Report content | Cleaned report text, detected sections, and smaller text chunks with source references |
+| Issuer history | Explicitly verified predecessor relationships, retaining the original filing company and CIK |
+| Sources | Original documents and filing metadata from SEC EDGAR; index membership from a dated Wikipedia snapshot; current ticker mappings from the SEC |
+
+The universe follows companies in the current snapshot, rather than every
+company that belonged to the index at any point during the five-year period.
+A new issuer may have fewer than five years of reports. Predecessor filings are
+included only through a verified relationship; mergers and accounting-basis
+changes still matter when comparing results. See the
+[scope and predecessor-history guide](docs/automated-backfill.md).
+
+## How the pipeline works
+
+1. **Discover:** identify companies by SEC CIK and find their in-scope filings.
+2. **Download:** archive the SEC source files and record their URLs, hashes, and retrieval dates.
+3. **Extract and validate:** parse facts, statement cells, text, sections, and chunks; check source identity and correspondence.
+4. **Load:** commit each accepted filing in one database transaction and save queue progress for resumption.
+
+The importer runs as ordinary Python code; routine downloading, extraction,
+validation, and loading do not require AI calls. Failed filings remain recorded
+for investigation. Runs reuse unchanged imports for the selected version and
+database. Scheduled refreshes require a separately configured scheduler; a
+single batch invocation is not a recurring job.
+
+Source documents remain in the ingest machine's archive. The database stores
+their provenance and extracted content; connecting to RDS does not download the
+original HTML/XML files to your computer.
 
 ## Database structure and report sections
 
-**Shared AWS status, verified October 13, 2026:** migrations **001–005 are applied** to `sec_filings`. The database now has **15 tables and 10 views** in schema `sec`, and existing reader accounts can query the new objects. Existing sample records, IDs, text, values, and citation views were preserved. See the [upgrade record and maintenance procedure](docs/aws-deployment.md#schema-upgrade-october-13-2026).
+Processing sets identify the exact fact, table, report, and chunk versions used
+for a filing. **Select one processing set when analyzing a filing** so alternate
+extractions and the retained manual example are not counted twice.
 
-### What is currently in AWS
-
-| Content | Verified state on October 13, 2026 |
-| --- | --- |
-| Filing metadata | 1 company, 1 Microsoft 10-Q, 4 source documents |
-| Existing `manual-example-v1` sample | 24 facts, 3 statement excerpts, 24 table-to-fact links, 1 report excerpt, 6 chunks |
-| Report sections | 2 sections imported from the existing report metadata; classified as `unknown` and `unverified` |
-| Relational statement cells and cell-to-fact links | 0 rows; legacy statement excerpts remain in `financial_tables` |
-| Processing sets and preferred selections | 0 rows; no version has been promoted automatically |
-
-**The schema is upgraded; the stored content is still the partial manual example.** `filing_overview` shows the filing with empty selected-set fields. The preferred views (`section_catalog`, `statement_catalog`, `statement_cells`, `fact_catalog`, and `chunk_catalog`) currently return no rows because no preferred processing set has been selected. Browse the existing sample through `filing_catalog`, `fact_provenance`, `chunk_citations`, and `financial_tables`. An administrator can [record and select a processing set](docs/database-browsing.md#explicit-processing-sets) after validating its content and coverage.
+Preferred views (`section_catalog`, `statement_catalog`, `statement_cells`,
+`fact_catalog`, and `chunk_catalog`) show only explicitly selected processing
+sets. Importing a filing does not automatically make its set preferred. Browse
+all versions through `filing_catalog`, `fact_provenance`, `chunk_citations`, and
+`financial_tables`, or ask an administrator to
+[select a validated processing set](docs/database-browsing.md#explicit-processing-sets).
 
 In DBeaver, refresh **Schemas → sec** and its **Tables** and **Views** folders to see the new objects. Your existing connection and login still apply.
 
@@ -48,7 +90,8 @@ This graph shows the main relationships. Every extracted object also belongs to 
 
 | What you want | Where it resides | Convenient view |
 | --- | --- | --- |
-| Filing identity, dates, company, amendment | `companies`, `filings` | `filing_overview` |
+| Company name, CIK, display ticker, filing identity and dates | `companies`, `filings` | `filing_overview`, `filing_catalog` |
+| Verified predecessor and co-registrant relationships | `issuer_successions`, processing-set metadata | `issuer_filing_history` |
 | Original HTML/XML, source URL, hash, file locator | `source_documents`; source bytes remain in files/storage | Source columns in the catalogs |
 | Full cleaned text | `reports.full_text` | Sections expose slices of this text |
 | MD&A, risks, business, governance, other items | `report_sections` + `section_types` | `section_catalog` |
@@ -57,10 +100,10 @@ This graph shows the main relationships. Every extracted object also belongs to 
 | Exact XBRL occurrences, units, periods, dimensions | `financial_facts`; `cell_fact_links` traces cells to occurrences | `fact_catalog` |
 | Versions to use, coverage, validation checks | `filing_processing_sets`, `preferred_processing_sets` | `filing_overview` |
 
-Start with **`filing_overview`**, then use the catalogs once that filing has an explicitly preferred processing set. A filing without a preferred set remains visible in the overview; its preferred catalogs are empty, as they are for the current manual sample. Counts and validation apply to the selected scope, and a passed check does not mean the entire filing was extracted. In the queries below, the first currently returns one filing with NULL selected-set fields; the section queries return no rows.
+Start with **`filing_overview`**, then use the catalogs once that filing has an explicitly preferred processing set. A filing without a preferred set remains visible in the overview; its preferred catalogs are empty. Counts and validation apply to the selected scope, and a passed check does not mean the entire filing was extracted. The first query includes filings without preferred sets; the section queries include only selected sets.
 
 ```sql
-SELECT company_name, form, accession_number, set_key, coverage, validation_status
+SELECT company_name, ticker, cik, form, accession_number, set_key, coverage, validation_status
 FROM sec.filing_overview ORDER BY filing_date DESC;
 
 SELECT accession_number, original_title, part, item, text, source_url,
@@ -74,6 +117,22 @@ WHERE section_topic IN ('risks', 'governance');
 ```
 
 **MD&A maps to 10-Q Part I Item 2 or 10-K Part II Item 7.** Governance is usually in 10-K Part III; a filing may refer readers to a separate proxy statement, whose contents are not automatically loaded. See the [complete report map, selection workflow, migration notes, and limitations](docs/database-browsing.md) and [ready-to-run browsing queries](docs/database-browsing-queries.sql).
+
+### Company tickers and data interpretation
+
+`companies.cik` is the stable SEC issuer identifier. `companies.ticker` is a
+current display symbol matched to that same CIK using SEC ticker data. For an
+index member with multiple share classes, one SEC-confirmed index symbol is
+selected for display; the local reference retains all listed symbols. Some
+subsidiaries, operating partnerships, and predecessor issuers have no current
+SEC ticker mapping and remain NULL. Do not substitute their parent's ticker.
+See [ticker updates and selection rules](docs/company-tickers.md).
+
+Keep each financial value's unit, period, dimensions, and source beside it.
+Missing values are not zero. Untagged dashes and source discrepancies retain
+their evidence and review status. Section names are detected labels unless
+their validation status says otherwise. A completed backfill does not make all
+figures comparable or every section label independently verified.
 
 ## Choose how to connect
 
@@ -154,16 +213,22 @@ These column names may be unfamiliar:
 | Column | What it means |
 | --- | --- |
 | `company_name` | The company that submitted the report |
-| `form` | The type of report; `10-Q` means a quarterly report |
+| `ticker` | A current SEC-matched display symbol, when one is available |
+| `cik` | The company's stable SEC identifier |
+| `form` | `10-Q` means a quarterly report; `10-K` means an annual report |
 | `filing_date` | The date the report was filed |
 | `accession_number` | The report's unique reference number |
 | `source_document_count` | How many original source files are recorded for that report |
 
-**What you should see:** the initial sample is one Microsoft quarterly report, reference `0001193125-26-191507`, with **4** in `source_document_count`.
+**What you should see in the completed dataset:** annual and quarterly filings
+across the company universe and filing window above. Filter by CIK or ticker,
+then sort by filing date. The catalog counts include all stored extraction
+versions; use a processing set for analysis of a single version.
 
-The example loaded on October 6, 2026 contains **24 financial facts, 3 statement excerpts, 1 report excerpt, and 6 text chunks**, labeled `manual-example-v1`. These are selected real values and passages from the Microsoft filing; the team's complete extraction pipeline is still being built. The [example guide](docs/manual-example.md) explains how to read the values, run six ready-to-use queries, and check the expected results.
-
-This example is in the **shared AWS database**. A local database created with the developer setup starts with filing details and four source-file records only. In either database, source-file records contain links and file details; connecting does not download the original documents.
+The original `manual-example-v1` Microsoft example remains available as a small
+learning exercise. Its [guide and fixed sample queries](docs/manual-example.md)
+are separate from the full dataset. A local development database contains only
+what you have loaded into it; creating it does not copy the shared AWS data.
 
 The next time you want to use the database, open DBeaver, connect to the saved connection, and open **filing_catalog → Data** again.
 
@@ -179,7 +244,7 @@ Clicking the small arrow beside a table expands details such as its columns. To 
 
 | Table | What you will find there |
 | --- | --- |
-| **companies** | Company names and identification numbers |
+| **companies** | Company names, stable SEC CIKs, and current display tickers where available |
 | **filings** | The reports each company filed, including dates and reference numbers |
 | **source_documents** | Details and source links for the original files belonging to each report |
 | **reports** | Processed text extracted from the original documents |
@@ -187,24 +252,31 @@ Clicking the small arrow beside a table expands details such as its columns. To 
 | **financial_facts** | Individual financial figures, such as revenue, with their dates, units, and sources |
 | **financial_tables** | Extracted financial statement tables |
 | **financial_table_facts** | Links showing which financial figures belong to which statement tables |
-| **report_sections**, **section_types** | Named report sections and consistent topic labels; the sample currently has 2 unverified sections |
-| **filing_processing_sets**, **preferred_processing_sets** | Explicit version selections, coverage, and checks; currently empty |
-| **table_cells**, **cell_fact_links** | Statement cells and their verified fact references; currently empty for the legacy sample |
+| **report_sections**, **section_types** | Named report sections, topic labels, source locations, and validation status |
+| **filing_processing_sets**, **preferred_processing_sets** | Exact extraction versions, coverage and checks; optional preferred choices for browsing |
+| **table_cells**, **cell_fact_links** | Statement cells and their links to source XBRL facts |
+| **cell_source_observations** | Evidence for source-only statement markers that are not invented financial facts |
+| **issuer_successions** | Verified links between current and predecessor issuers |
 | **schema_migrations** | The database's technical update history; you can skip this when browsing the data |
 
-One company can have many filings. Each filing can have several source documents. As the team processes those documents, it adds report text, smaller text sections, and financial figures to the related tables.
+One company can have many filings, and each filing can have several source
+documents. Related tables hold its text, sections, statements, facts, and
+citations. `companies` also includes related registrants and predecessors, so
+its row count need not equal the number of companies in the index snapshot.
 
 Columns ending in **`_id`** connect related records. For example, a filing's **company_id** matches the **id** of its company, and a source document's **filing_id** matches the **id** of its filing. These long identifiers let the database keep the relationships clear.
 
-#### Try this with the Microsoft sample
+#### Trace a company report to its sources
 
-1. Open **companies → Data** and find Microsoft.
-2. Open **filings → Data** and find report reference `0001193125-26-191507` in the **accession_number** column.
-3. Open **source_documents → Data** to see the four original-file records from the imported sample. The **source_url** column contains the original web addresses.
-4. Under **sec → Views**, open **fact_provenance → Data** for financial figures and their sources, or **chunk_citations → Data** for text passages and citations.
-5. Under **sec → Tables**, open **financial_tables → Data** and read **readable_text** for the statement excerpts. Return to **Views → filing_catalog → Data** for the combined overview.
+1. Open **companies → Data** and find a company, for example Microsoft (`MSFT`, CIK `0000789019`).
+2. Open **filing_catalog → Data** and filter by that CIK. Choose a 10-K or 10-Q and note its accession number and filing ID.
+3. Find that filing's rows in **filing_processing_sets** and note the selected source IDs and extraction versions.
+4. Open **source_documents → Data** and filter by the filing ID. **source_url** points to each original SEC document.
+5. Use **fact_provenance** for values and sources, **chunk_citations** for text and citations, or **financial_tables.readable_text** for statements. Apply the filing and processing-version filters from step 3.
 
-These tables and views can contain multiple filings and extraction versions. The [six sample queries](docs/manual-example-queries.sql) select the Microsoft filing and `manual-example-v1` for you, so their expected counts remain useful as the team adds more data. Query 1 shows the counts; query 2 shows the 24 facts; query 6 shows the six passages and checks that they match the stored report excerpt.
+For a smaller exercise with fixed expected results, use the
+[six manual-example queries](docs/manual-example-queries.sql). They explicitly
+select `manual-example-v1` and do not measure full-dataset coverage.
 
 When reading a financial figure, keep its **unit and period** beside it. For example, a value stored in dollars differs from a statement displayed in millions, and a three-month amount differs from a nine-month amount even when they end on the same date. The [example guide](docs/manual-example.md#read-the-values-correctly) explains both cases. If you see **Permission denied**, ask the administrator for access to the specific table or view.
 
@@ -230,12 +302,17 @@ If you opened **chunks** and only see a list of column names such as `id`, `fili
 ```sql
 SELECT current_database() AS database_name, current_user AS username;
 
-SELECT company_name, form, filing_date, accession_number, source_document_count
+SELECT company_name, ticker, cik, form, filing_date, accession_number,
+       reporting_period_end, source_document_count
 FROM sec.filing_catalog
-WHERE accession_number = '0001193125-26-191507';
+WHERE cik = '0000789019'
+ORDER BY filing_date DESC, accession_number DESC
+LIMIT 20;
 ```
 
-**Expected result:** the first query shows `sec_filings` and your assigned username. The second shows one Microsoft 10-Q with four source documents. Both statements only read data. You can also paste and run individual queries from the [six sample queries](docs/manual-example-queries.sql).
+**Expected result:** the first query shows `sec_filings` and your assigned
+username. The second lists up to 20 Microsoft filings, newest first. Substitute
+another company's CIK to browse its reports. Both statements only read data.
 
 To save query results as a CSV:
 
@@ -290,15 +367,19 @@ Use the same host, port, database, and personal login as DBeaver if you use both
 
 ### B3. Run your first query
 
-Save the following as **`database_workflow.py`** in the repository root. It checks the connection, finds the Microsoft filing, and loads its example financial facts into a pandas DataFrame, a table you can work with in Python.
+Save the following as **`database_workflow.py`** in the repository root. It finds
+Microsoft's latest quarterly filing with a passed processing set and loads that
+set's financial facts into a pandas DataFrame. It uses the preferred set when
+available, otherwise the most recently stored passed set, and prints the choice
+so you can inspect its version and coverage.
 
 ```python
 import pandas as pd
 from psycopg.rows import dict_row
 from sec_pipeline.database import connect
 
-accession = "0001193125-26-191507"
-version = "manual-example-v1"
+cik = "0000789019"  # Change this to another company's SEC CIK.
+form = "10-Q"       # Use "10-K" for an annual report.
 
 with connect(".env.aws", row_factory=dict_row) as conn:
     conn.execute("SET TRANSACTION READ ONLY")
@@ -307,11 +388,24 @@ with connect(".env.aws", row_factory=dict_row) as conn:
     ).fetchone())
 
     filing = conn.execute("""
-        SELECT company_name, form, filing_date, accession_number,
-               source_document_count
-        FROM sec.filing_catalog
-        WHERE accession_number = %s
-    """, (accession,)).fetchone()
+        SELECT f.id AS filing_id, c.name AS company_name, c.cik, c.ticker,
+               f.form, f.filing_date, f.accession_number, f.reporting_period_end,
+               p.set_key, p.coverage, p.fact_source_document_id,
+               p.fact_extraction_version
+        FROM sec.filings AS f
+        JOIN sec.companies AS c ON c.id = f.company_id
+        JOIN sec.filing_processing_sets AS p ON p.filing_id = f.id
+        LEFT JOIN sec.preferred_processing_sets AS preferred
+            ON preferred.filing_id = f.id
+        WHERE c.cik = %s AND f.form = %s AND p.validation_status = 'passed'
+          AND p.fact_source_document_id IS NOT NULL
+        ORDER BY f.filing_date DESC,
+                 (p.id = preferred.processing_set_id) DESC NULLS LAST,
+                 p.created_at DESC, f.accession_number DESC, p.set_key
+        LIMIT 1
+    """, (cik, form)).fetchone()
+    if filing is None:
+        raise RuntimeError("No matching filing with a passed fact selection was found.")
     print(filing)
 
     cursor = conn.execute("""
@@ -320,9 +414,10 @@ with connect(".env.aws", row_factory=dict_row) as conn:
                dimensions, occurrence_key, accession_number, extraction_version,
                source_url, sha256
         FROM sec.fact_provenance
-        WHERE accession_number = %s AND extraction_version = %s
+        WHERE filing_id = %s AND source_document_id = %s AND extraction_version = %s
         ORDER BY concept_name, period_start, period_end, instant_date, occurrence_key
-    """, (accession, version))
+    """, (filing["filing_id"], filing["fact_source_document_id"],
+          filing["fact_extraction_version"]))
     facts = pd.DataFrame.from_records(
         cursor.fetchall(), columns=[column.name for column in cursor.description]
     )
@@ -337,17 +432,20 @@ Run it from the repository root:
 uv run --locked python database_workflow.py
 ```
 
-**Expected result for the documented sample:** `database_name` is `sec_filings`, `username` is your assigned login, the filing is Microsoft's 10-Q with four source documents, and the script loads 24 facts from `manual-example-v1`. The connection closes when the `with` block ends; `facts` remains available for analysis. `SET TRANSACTION READ ONLY` prevents this example from changing database records.
+**Expected result:** the script prints your connection identity, the selected
+filing and processing set, and its financial-fact count. The count depends on
+that filing and version; there is no fixed 24-row sample limit. The connection
+closes when the `with` block ends, while `facts` remains available for analysis.
+`SET TRANSACTION READ ONLY` prevents this example from changing database records.
 
-The [`dict_row` option](https://www.psycopg.org/psycopg3/docs/api/rows.html#psycopg.rows.dict_row) gives each result column a name. The `%s` markers pass values separately from SQL; keep using [query parameters](https://www.psycopg.org/psycopg3/docs/basic/params.html) when changing the filing or version. Do not build queries with f-strings or string concatenation.
+The [`dict_row` option](https://www.psycopg.org/psycopg3/docs/api/rows.html#psycopg.rows.dict_row) gives each result column a name. The `%s` markers pass values separately from SQL; keep using [query parameters](https://www.psycopg.org/psycopg3/docs/basic/params.html) when changing the company or report type. Do not build queries with f-strings or string concatenation. For a reproducible analysis, record the printed accession and processing-set key and select that exact set on subsequent runs.
 
 ### B4. Use the results in your workflow
 
-Add analysis below the query in the same script. For example, inspect USD facts for the three months ending March 31, 2026:
+Add analysis below the query in the same script. For example, inspect USD
+duration facts ending on the selected report's period-end date:
 
 ```python
-from datetime import date
-
 def is_usd(unit):
     return (
         isinstance(unit, dict)
@@ -356,16 +454,20 @@ def is_usd(unit):
     )
 
 
-quarterly_usd = facts.loc[
+period_usd = facts.loc[
     facts["unit"].apply(is_usd)
     & facts["period_kind"].eq("duration")
-    & facts["period_start"].eq(date(2026, 1, 1))
-    & facts["period_end"].eq(date(2026, 3, 31))
+    & facts["period_end"].eq(filing["reporting_period_end"])
 ]
-print(quarterly_usd[["concept_name", "numeric_value", "dimensions"]])
+print(period_usd[["concept_name", "numeric_value", "period_start", "period_end", "dimensions"]])
 ```
 
-Financial values arrive as Python `Decimal` values to preserve precision. Keep the unit, dates, dimensions, and source columns with each value; different concepts or dimensions should not be added together automatically. Missing values are not zero. See [how to read the sample values](docs/manual-example.md#read-the-values-correctly).
+Financial values arrive as Python `Decimal` values to preserve precision. The
+same end date can have quarterly, year-to-date, and annual durations; check
+`period_start` before comparing or combining values. Keep units, dimensions, and
+sources beside each amount. Different concepts or dimensions should not be added
+together automatically. Missing values are not zero. See
+[how to read financial values](docs/manual-example.md#read-the-values-correctly).
 
 For a local CSV, append this to the same script:
 
@@ -373,14 +475,20 @@ For a local CSV, append this to the same script:
 from pathlib import Path
 
 Path("data/processed").mkdir(parents=True, exist_ok=True)
-facts.to_csv("data/processed/msft-facts.csv", index=False, mode="x")
+filename = f"{filing['cik']}-{filing['accession_number']}-{filing['fact_extraction_version']}.csv"
+facts.to_csv(Path("data/processed") / filename, index=False, mode="x")
 ```
 
 The export folder is ignored by Git. `mode="x"` prevents overwriting an existing file; choose a new filename for another export. The CSV is a local copy and does not update PostgreSQL. It stores structured fields such as units and dimensions as text; use the DataFrame for calculations that need those fields.
 
 In VS Code, select this repository's `.venv\Scripts\python.exe` interpreter on Windows. In a notebook, use a kernel backed by the same environment. Keep the working directory at the repository root so the settings and certificate paths resolve correctly.
 
-For other tasks, query `sec.chunk_citations` for text and citations or `sec.financial_tables` for statement excerpts. The [six sample queries](docs/manual-example-queries.sql) show the relevant joins and version filters. For writing extracted results, use the [project's loader contracts and transactions](docs/database.md#python-transactions) with an approved write-capable account.
+For other tasks, query `sec.chunk_citations` for text and citations or
+`sec.financial_tables` for statements, filtering to the selected report or
+table-source ID and version. The [database browsing queries](docs/database-browsing-queries.sql)
+show the relevant joins. For writing extracted results, use the
+[loader contracts and transactions](docs/database.md#python-transactions) with
+an approved write-capable account.
 
 ### B5. Troubleshoot Python connections
 
@@ -391,7 +499,7 @@ For other tasks, query `sec.chunk_citations` for text and citations or `sec.fina
 | **Set a non-placeholder password** | Replace `CHANGE_ME` in `.env.aws` and check that the file is in your working directory. |
 | Python connects to the wrong database | Use `connect(".env.aws")`; plain `connect()` uses the local `.env`. Existing process `PG*` environment variables override matching file settings. `DATABASE_URL` is not read by this helper. |
 | **Certificate error**, **timeout**, or **authentication failed** | Check the certificate path, host, port, and assigned credentials. The connection troubleshooting below also applies to Python. |
-| The script loads **0 facts** | Confirm you connected to shared RDS and used the exact accession and version above. A local database may contain only filing metadata. |
+| No matching filing is found, or **0 facts** are returned | Check the CIK, report type, connection target, and available processing sets. A local database contains only the data loaded into that instance. |
 | **Permission denied** when writing | Personal reader accounts allow queries. Ask Michael for the appropriate loader access before writing shared results. |
 
 ## Use DBeaver and Python together
@@ -413,21 +521,41 @@ For occasional manual work, a DBeaver CSV export may be enough. For a repeatable
 | A **certificate** or **SSL** error | Check the certificate's saved location: DBeaver selects it in the SSL tab; Python uses `PGSSLROOTCERT`. Use the host address exactly as shown above and keep `verify-full` enabled. |
 | **Permission denied** | You connected, but your login is not allowed to open that item. Send its name to the administrator. |
 | You cannot find **sec** or **filing_catalog** | Check that you opened `sec_filings`, then **Schemas → sec → Views**. Ask the administrator if it is missing. |
-| The new tables or views are missing in DBeaver | Refresh **Schemas → sec**, then its **Tables** and **Views** folders. The shared database has migrations 001–005; a separate local database needs its own migration. |
-| Preferred catalogs contain no rows | Check `filing_overview.set_key`. A NULL value means no preferred processing set is selected; this is the current sample's expected state. Use `fact_provenance`, `chunk_citations`, and `financial_tables` to browse the existing sample. |
-| Other views contain no rows | Press **F5**, clear old filters, and confirm you selected the shared RDS database. The manual example includes 24 facts and 6 chunks; the separate local database may contain only filing metadata. |
+| The new tables or views are missing in DBeaver | Refresh **Schemas → sec**, then its **Tables** and **Views** folders. Ask the administrator to check this database's migration ledger; local and shared databases are separate instances. |
+| Preferred catalogs contain no rows | Check `filing_overview.set_key`. NULL means no preferred processing set is selected. Browse all versions through `fact_provenance`, `chunk_citations`, and `financial_tables`, using explicit filing/source/version filters. |
+| A company's ticker is NULL | Its profile may need a ticker refresh, or the issuer may have no current SEC mapping. Check the CIK and the [ticker guide](docs/company-tickers.md); do not infer a parent or successor ticker. |
+| Other views contain no rows | Press **F5**, clear old filters, and confirm the shared RDS connection. Check the requested filing and processing set. A local database is not automatically synchronized with AWS. |
 
 When asking for help, include the error message and which step you reached. Keep your password out of messages and screenshots.
 
 ## For developers and administrators
 
-These guides are optional if you only want to view the data:
+On the ingest machine, use the saved queue to check the initial backfill:
 
+```powershell
+uv run --locked python scripts/backfill_sec.py --status --universe data/backfill/2026-10-13/universe.json --state data/backfill/2026-10-13/queue.json --since 2021-10-13 --until 2026-10-13
+```
+
+Queue and source files are local operational artifacts, not data automatically
+provided to every reader by cloning this repository. Live database counts and
+processing-set coverage should be checked separately. Completion means every
+in-scope accession is accounted for at the intended destination and processing
+version; a successful small batch or one passing parser check does not establish
+that condition. Review-required records retain their explicit quality flags.
+
+These guides cover ingestion, maintenance, and the data contracts:
+
+- [Automated discovery, import, resumption, and current run status](docs/automated-backfill.md)
+- [Company ticker refresh and existing-record updates](docs/company-tickers.md)
+- [Report sections, processing sets, and database browsing](docs/database-browsing.md)
+- [SQL browsing examples](docs/database-browsing-queries.sql)
 - [GitHub tutorial: personal branches, commits, and pull requests to main](docs/github-tutorial.md)
 - [Python access, SQL examples, and project commands](docs/developer-usage.md)
-- [Manual data example: six queries and expected results](docs/manual-example.md)
+- [Optional manual example: six queries and fixed expected results](docs/manual-example.md)
 - [Database structure and local setup](docs/database.md)
 - [AWS deployment and maintenance](docs/aws-deployment.md)
 - [Team implementation plan](docs/team-implementation-plan.md)
 
-This is a QMSS practicum project using public SEC filings. Additional tools for verifying source files and exporting income statements are described in the developer guide.
+This is a QMSS practicum project using public SEC filings. Source provenance,
+version selection, and validation evidence remain attached to the extracted
+data so downstream analysis can trace a value or passage to its original report.
