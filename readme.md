@@ -4,7 +4,23 @@ This project stores information about company reports filed with the U.S. Securi
 
 ## Database structure and report sections
 
-The schema below is available after migrations **001–005**. Merging this code does not upgrade the shared AWS database; the administrator must apply the migrations separately. Existing example views and extraction versions remain available.
+**Shared AWS status, verified October 13, 2026:** migrations **001–005 are applied** to `sec_filings`. The database now has **15 tables and 10 views** in schema `sec`, and existing reader accounts can query the new objects. Existing sample records, IDs, text, values, and citation views were preserved. See the [upgrade record and maintenance procedure](docs/aws-deployment.md#schema-upgrade-october-13-2026).
+
+### What is currently in AWS
+
+| Content | Verified state on October 13, 2026 |
+| --- | --- |
+| Filing metadata | 1 company, 1 Microsoft 10-Q, 4 source documents |
+| Existing `manual-example-v1` sample | 24 facts, 3 statement excerpts, 24 table-to-fact links, 1 report excerpt, 6 chunks |
+| Report sections | 2 sections imported from the existing report metadata; classified as `unknown` and `unverified` |
+| Relational statement cells and cell-to-fact links | 0 rows; legacy statement excerpts remain in `financial_tables` |
+| Processing sets and preferred selections | 0 rows; no version has been promoted automatically |
+
+**The schema is upgraded; the stored content is still the partial manual example.** `filing_overview` shows the filing with empty selected-set fields. The preferred views (`section_catalog`, `statement_catalog`, `statement_cells`, `fact_catalog`, and `chunk_catalog`) currently return no rows because no preferred processing set has been selected. Browse the existing sample through `filing_catalog`, `fact_provenance`, `chunk_citations`, and `financial_tables`. An administrator can [record and select a processing set](docs/database-browsing.md#explicit-processing-sets) after validating its content and coverage.
+
+In DBeaver, refresh **Schemas → sec** and its **Tables** and **Views** folders to see the new objects. Your existing connection and login still apply.
+
+### Structure and browsing
 
 ```mermaid
 erDiagram
@@ -41,7 +57,7 @@ This graph shows the main relationships. Every extracted object also belongs to 
 | Exact XBRL occurrences, units, periods, dimensions | `financial_facts`; `cell_fact_links` traces cells to occurrences | `fact_catalog` |
 | Versions to use, coverage, validation checks | `filing_processing_sets`, `preferred_processing_sets` | `filing_overview` |
 
-Start with **`filing_overview`**, then use the catalogs for that filing's explicitly preferred processing set. A filing without a preferred set remains visible in the overview; its preferred catalogs are empty. Counts and validation apply to the selected scope, and a passed check does not mean the entire filing was extracted.
+Start with **`filing_overview`**, then use the catalogs once that filing has an explicitly preferred processing set. A filing without a preferred set remains visible in the overview; its preferred catalogs are empty, as they are for the current manual sample. Counts and validation apply to the selected scope, and a passed check does not mean the entire filing was extracted. In the queries below, the first currently returns one filing with NULL selected-set fields; the section queries return no rows.
 
 ```sql
 SELECT company_name, form, accession_number, set_key, coverage, validation_status
@@ -171,9 +187,9 @@ Clicking the small arrow beside a table expands details such as its columns. To 
 | **financial_facts** | Individual financial figures, such as revenue, with their dates, units, and sources |
 | **financial_tables** | Extracted financial statement tables |
 | **financial_table_facts** | Links showing which financial figures belong to which statement tables |
-| **report_sections**, **section_types** | Named report sections and consistent topic labels, available after migration 002 |
-| **filing_processing_sets**, **preferred_processing_sets** | Explicit version selections, coverage, and checks, available after migration 003 |
-| **table_cells**, **cell_fact_links** | Statement cells and their verified fact references, available after migration 004 |
+| **report_sections**, **section_types** | Named report sections and consistent topic labels; the sample currently has 2 unverified sections |
+| **filing_processing_sets**, **preferred_processing_sets** | Explicit version selections, coverage, and checks; currently empty |
+| **table_cells**, **cell_fact_links** | Statement cells and their verified fact references; currently empty for the legacy sample |
 | **schema_migrations** | The database's technical update history; you can skip this when browsing the data |
 
 One company can have many filings. Each filing can have several source documents. As the team processes those documents, it adds report text, smaller text sections, and financial figures to the related tables.
@@ -397,7 +413,9 @@ For occasional manual work, a DBeaver CSV export may be enough. For a repeatable
 | A **certificate** or **SSL** error | Check the certificate's saved location: DBeaver selects it in the SSL tab; Python uses `PGSSLROOTCERT`. Use the host address exactly as shown above and keep `verify-full` enabled. |
 | **Permission denied** | You connected, but your login is not allowed to open that item. Send its name to the administrator. |
 | You cannot find **sec** or **filing_catalog** | Check that you opened `sec_filings`, then **Schemas → sec → Views**. Ask the administrator if it is missing. |
-| Some views contain no rows | Press **F5**, clear old filters, and confirm you selected the shared RDS database. The manual example includes 24 facts and 6 chunks; the separate local database may contain only filing metadata. |
+| The new tables or views are missing in DBeaver | Refresh **Schemas → sec**, then its **Tables** and **Views** folders. The shared database has migrations 001–005; a separate local database needs its own migration. |
+| Preferred catalogs contain no rows | Check `filing_overview.set_key`. A NULL value means no preferred processing set is selected; this is the current sample's expected state. Use `fact_provenance`, `chunk_citations`, and `financial_tables` to browse the existing sample. |
+| Other views contain no rows | Press **F5**, clear old filters, and confirm you selected the shared RDS database. The manual example includes 24 facts and 6 chunks; the separate local database may contain only filing metadata. |
 
 When asking for help, include the error message and which step you reached. Keep your password out of messages and screenshots.
 

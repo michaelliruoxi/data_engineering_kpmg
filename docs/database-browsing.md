@@ -93,7 +93,7 @@ Apply `sec-db migrate` to the intended database after taking the normal deployme
 - `companies.cik` is identity; `register_company()` resolves existing companies without overwriting their profile. `update_company_profile()` explicitly changes name/ticker. `filings.company_name_as_filed` captures new manifest names; historical rows remain NULL until supplied, rather than copying today's name into history.
 - `source_documents.title`, `document_type`, and `storage_uri` are optional display/storage fields. Updating a locator does not change source provenance; selected source URL/hash/size/role stay protected.
 
-The shared RDS instance is not modified by this PR. An administrator must apply migrations and grant the team's reader role SELECT on the new browsing views. This change adds no users or grants.
+The shared RDS database was upgraded through migration 005 on **October 13, 2026**, and `sec_reader` has SELECT access to all 25 tables/views, including the new catalogs. The existing manual example was preserved; its two legacy sections are `unknown`/`unverified`, and no processing set or relational statement cells were created. Preferred catalogs therefore remain empty until a passed set is explicitly selected. See the [verified deployment record](aws-deployment.md#schema-upgrade-october-13-2026). Other database instances still require their own backup, migration, and reader-permission checks.
 
 ## Design boundary
 
