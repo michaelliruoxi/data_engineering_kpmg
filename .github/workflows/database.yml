@@ -33,6 +33,9 @@ jobs:
       SEC_FACTS_BRIDGE_SAMPLE: '1'
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: '.python-version'
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.8.22'
