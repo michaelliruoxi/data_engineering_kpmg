@@ -331,7 +331,7 @@ def test_part_i_skips_index_table_of_contents():
     )
 
     assert part_i["offset_start"] == expected_start
-    
+
     part_ii = next(
         section
         for section in sections
@@ -355,4 +355,105 @@ def test_part_i_skips_index_table_of_contents():
     )
 
     assert item_1["offset_start"] == expected_item_1_start
+
+def test_detect_sections_with_table_separators():
+    """Detect Part and Item headings containing table separators."""
+
+    text = "\n".join([
+        "PART I. | FINANCIAL INFORMATION |",
+        "ITEM 1. | FINANCIAL STATEMENTS |",
+        "Financial statement content.",
+        "ITEM 2. MANAGEMENT'S DISCUSSION |",
+        "Management discussion content.",
+        "PART II. OTHER INFORMATION |",
+        "ITEM 1. LEGAL PROCEEDINGS |",
+        "Legal proceedings content.",
+    ])
+
+    sections = detect_sections(text)
+
+    section_ids = {
+        section["section_id"]
+        for section in sections
+    }
+
+    assert "part-i" in section_ids
+    assert "part-i-item-1" in section_ids
+    assert "part-i-item-2" in section_ids
+    assert "part-ii" in section_ids
+    assert "part-ii-item-1" in section_ids
+
+def test_clean_report_skips_hidden_and_empty_table_rows(tmp_path):
+    """Skip hidden and empty rows while preserving real table data."""
+
+    html = """
+    <html>
+      <body>
+        <table>
+          <tr style="visibility:collapse">
+            <td>Hidden information</td>
+          </tr>
+          <tr style="display:none">
+            <td>Also hidden</td>
+          </tr>
+          <tr>
+            <td></td>
+            <td>   </td>
+          </tr>
+          <tr>
+            <td><p>Revenue</p></td>
+            <td><p>100</p></td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+
+    html_path = tmp_path / "test_hidden_rows.html"
+    html_path.write_text(html, encoding="utf-8")
+
+    report = clean_report(html_path)
+
+    assert "Hidden information" not in report.full_text
+    assert "Also hidden" not in report.full_text
+    assert report.full_text == "Revenue | 100 |"
+
+def test_part_i_ignores_repeated_page_header():
+    """Use the real Part I heading, not a repeated page header."""
+
+    text = "\n".join([
+        "PART I. FINANCIAL INFORMATION",
+        "ITEM 1. FINANCIAL STATEMENTS",
+        "Actual financial statement content.",
+        "PART I. FINANCIAL INFORMATION",
+        "More financial statement content.",
+        "ITEM 2. MANAGEMENT'S DISCUSSION",
+        "Actual management discussion content.",
+        "PART II. OTHER INFORMATION",
+        "ITEM 1. LEGAL PROCEEDINGS",
+        "Actual legal proceedings content.",
+    ])
+
+    sections = detect_sections(text)
+
+    part_i = next(
+        section
+        for section in sections
+        if section["section_id"] == "part-i"
+    )
+
+    expected_start = text.find(
+        "PART I. FINANCIAL INFORMATION"
+    )
+
+    assert part_i["offset_start"] == expected_start
+
+    section_ids = {
+        section["section_id"]
+        for section in sections
+    }
+
+    assert "part-i-item-1" in section_ids
+    assert "part-i-item-2" in section_ids
+    assert "part-ii" in section_ids
     

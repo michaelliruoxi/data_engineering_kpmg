@@ -46,8 +46,9 @@ def detect_sections(full_text: str) -> list[dict]:
     # Find full Part I and Part II headings.
     # Requiring the complete title helps avoid page headers.
     part_pattern = re.compile(
-        r"(?im)^PART\s+(I|II)(?:\s*[.\-–—]\s*|\s+)(FINANCIAL|OTHER)\s+INFORMATION\s*$"
-    )
+        r"(?im)^PART\s+(I|II)(?:\s*[.\-–—]\s*|\s+)"
+        r"\|?\s*(FINANCIAL|OTHER)\s+INFORMATION\s*\|?\s*$"
+)
 
     part_matches = list(part_pattern.finditer(full_text))
 
@@ -73,9 +74,13 @@ def detect_sections(full_text: str) -> list[dict]:
         ]
 
         if complete_part1_candidates:
-            part1 = complete_part1_candidates[-1]
+            if "INDEX" in full_text.upper() or "TABLE OF CONTENTS" in full_text.upper():
+                part1 = complete_part1_candidates[-1]
+            else:
+                part1 = complete_part1_candidates[0]
         else:
             part1 = part1_candidates[0]
+
 
     # Fallback if the report structure is not recognized.
     if part1 is None:
@@ -220,14 +225,27 @@ def clean_report(html_path: str | Path) -> CleanedReport:
     # Add separators between table cells.
     # Normalize table rows while preserving cell boundaries.
     for row in soup.find_all("tr"):
+
+    # Remove rows hidden by inline CSS.
+        style = re.sub(r"\s+", "", row.get("style", "").lower())
+
+        if "display:none" in style or "visibility:collapse" in style:
+            row.decompose()
+            continue
+
         cells = row.find_all(["td", "th"], recursive=False)
 
         if not cells:
             continue
 
+        # Remove rows whose cells contain no visible text.
+        if all(not cell.get_text(strip=True) for cell in cells):
+            row.decompose()
+            continue
+        # Combine cells into one readable table row.
         cell_texts = []
+
         for cell in cells:
-            # Keep explicit HTML line breaks inside cells.
             for br in cell.find_all("br"):
                 br.replace_with("\n")
 
@@ -236,7 +254,7 @@ def clean_report(html_path: str | Path) -> CleanedReport:
 
         row.replace_with(
             soup.new_string(" | ".join(cell_texts) + " |\n")
-        )
+        )       
 
     # Preserve explicit HTML line breaks.
     for br in soup.find_all("br"):
