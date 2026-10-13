@@ -46,7 +46,7 @@ def detect_sections(full_text: str) -> list[dict]:
     # Find full Part I and Part II headings.
     # Requiring the complete title helps avoid page headers.
     part_pattern = re.compile(
-        r"(?im)^PART\s+(I|II)\s*[.\-–]?\s+(FINANCIAL|OTHER)\s+INFORMATION\s*$"
+        r"(?im)^PART\s+(I|II)(?:\s*[.\-–—]\s*|\s+)(FINANCIAL|OTHER)\s+INFORMATION\s*$"
     )
 
     part_matches = list(part_pattern.finditer(full_text))
@@ -133,6 +133,14 @@ def detect_sections(full_text: str) -> list[dict]:
             for expected in expected_titles.get(item_number, [])
         )
 
+        if (
+            not valid_title
+            and item_number == "1"
+            and (part2 is None or position < part2.start())
+            and re.search(r"\bFINANCIAL STATEMENTS\b", title)
+        ):
+            valid_title = True
+
         if not valid_title:
             continue
 
@@ -205,6 +213,10 @@ def clean_report(html_path: str | Path) -> CleanedReport:
     # Add separators between table cells.
     for cell in soup.find_all(["td", "th"]):
         cell.append(" | ")
+
+    # Preserve explicit HTML line breaks.
+    for br in soup.find_all("br"):
+        br.replace_with("\n")
 
     # Preserve paragraph and row boundaries.
     for tag in soup.find_all(

@@ -203,3 +203,75 @@ def test_part_heading_with_dash():
         assert "part-ii" in section_ids
         assert "part-i-item-1" in section_ids
         assert "part-ii-item-1" in section_ids
+
+def test_part_heading_with_em_dash_and_no_spaces():
+    """Detect Part headings with different dash separators."""
+
+    for separator in ["-", "–", "—"]:
+        text = "\n".join([
+            f"PART I{separator}FINANCIAL INFORMATION",
+            "ITEM 1. FINANCIAL STATEMENTS",
+            "Financial statement content.",
+            f"PART II{separator}OTHER INFORMATION",
+            "ITEM 1. LEGAL PROCEEDINGS",
+            "Legal proceedings content.",
+        ])
+
+        sections = detect_sections(text)
+
+        section_ids = {
+            section["section_id"]
+            for section in sections
+        }
+
+        assert "part-i" in section_ids
+        assert "part-i-item-1" in section_ids
+        assert "part-ii" in section_ids
+        assert "part-ii-item-1" in section_ids
+
+def test_item_1_prefixed_financial_statements():
+    """Detect Item 1 financial statements with common prefixes."""
+
+    titles = [
+        "FINANCIAL STATEMENTS",
+        "CONDENSED CONSOLIDATED FINANCIAL STATEMENTS",
+        "UNAUDITED CONDENSED FINANCIAL STATEMENTS",
+    ]
+
+    for title in titles:
+        text = "\n".join([
+            "PART I. FINANCIAL INFORMATION",
+            f"ITEM 1. {title}",
+            "Financial statement content.",
+            "PART II. OTHER INFORMATION",
+            "ITEM 1. LEGAL PROCEEDINGS",
+            "Legal proceedings content.",
+        ])
+
+        sections = detect_sections(text)
+
+        section_ids = {
+            section["section_id"]
+            for section in sections
+        }
+
+        assert "part-i-item-1" in section_ids, title
+
+def test_clean_report_preserves_br_line_breaks(tmp_path):
+    """Preserve line breaks represented by HTML br tags."""
+
+    html = """
+    <html>
+      <body>
+        <p>Three Months Ended<br/>March 31, 2026</p>
+      </body>
+    </html>
+    """
+
+    html_path = tmp_path / "test_br.html"
+    html_path.write_text(html, encoding="utf-8")
+
+    report = clean_report(html_path)
+
+    assert "Three Months Ended\nMarch 31, 2026" in report.full_text
+    
