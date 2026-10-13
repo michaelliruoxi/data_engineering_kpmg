@@ -159,7 +159,23 @@ def main(argv=None):
     parser.add_argument("--reference-file", type=Path, help="Optional JSON reference checks and expected_counts.")
     parser.add_argument("--env-file", type=Path, help="Explicit database environment file, required for --ingest.")
     parser.add_argument("--database", help="Explicit destination database name, required for --ingest.")
+    parser.add_argument('--processing-set-key', help='Save a named selection of this import before committing.')
+    parser.add_argument('--coverage-file', type=Path, help='JSON object declaring facts/tables/reports/chunks coverage: unknown, partial, or complete.')
+    parser.add_argument('--prefer-processing-set', action='store_true', help='Select this validated import for the browsing views.')
     args = parser.parse_args(argv)
+    catalog_options = {}
+    if args.processing_set_key is not None or args.coverage_file is not None or args.prefer_processing_set:
+        if not args.ingest or not args.processing_set_key or args.coverage_file is None:
+            parser.error('Processing-set options require --ingest, --processing-set-key, and --coverage-file.')
+        try:
+            coverage = json.loads(args.coverage_file.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            parser.error('Cannot read the processing-set coverage JSON file.')
+        if (not isinstance(coverage, dict) or set(coverage) != {'facts', 'tables', 'reports', 'chunks'}
+                or any(value not in ('unknown', 'partial', 'complete') for value in coverage.values())):
+            parser.error('Coverage must declare unknown, partial, or complete for each of the four stages.')
+        catalog_options = dict(processing_set_key=args.processing_set_key, coverage=coverage,
+                               prefer_processing_set=args.prefer_processing_set)
 
     if args.dry_run or args.ingest:
         versions = {
@@ -207,6 +223,7 @@ def main(argv=None):
                                 conn, manifest_path=args.manifest, data_root=args.data_root,
                                 versions=versions, plan=plan, verify_inputs=verify_quietly,
                                 reference=reference,
+                                **catalog_options,
                             )
                     finally:
                         conn.close()

@@ -48,12 +48,14 @@ class TablesBridgeTests(unittest.TestCase):
     def test_actual_sample_links_use_bryce_records(self):
         self.assertEqual(len(self.facts.items), 1622)
         conn = self.database_for_facts()
-        with patch('sec_pipeline.tables.store_financial_table', side_effect=[UUID(int=3000+i) for i in range(3)]) as store, patch('sec_pipeline.tables.link_table_fact') as link:
+        with patch('sec_pipeline.tables.store_financial_table', side_effect=[UUID(int=3000+i) for i in range(3)]) as store, patch('sec_pipeline.tables.link_table_fact') as link, patch('sec_pipeline.tables.store_table_cells') as cells:
             result = write_tables(conn, self.context_with_facts())
         self.assertEqual(result.parsed.unresolved_cells, 0)
         self.assertEqual(len(result.stored_ids), 3)
         self.assertEqual(store.call_count, 3)
         self.assertEqual(link.call_count, 283)
+        self.assertEqual(cells.call_count, 3)
+        self.assertEqual([call.args[1] for call in cells.call_args_list], list(result.stored_ids))
         actual_ids = set(self.stored.stored_ids)
         self.assertTrue(all(call.args[3] in actual_ids for call in link.call_args_list))
         conn.commit.assert_not_called()

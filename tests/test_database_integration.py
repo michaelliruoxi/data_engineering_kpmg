@@ -274,7 +274,8 @@ class DatabaseIntegrationTests(unittest.TestCase):
             db.store_report(self.conn, replace(report_record, full_text='Changed'))
         with self.assertRaises(db.DataConflict):
             db.store_chunk(self.conn, replace(record, metadata={'changed': True}))
-        self.assertNotEqual(db.store_report(self.conn, replace(report_record, extraction_version='extract-v2', full_text='Changed')), report)
+        self.assertNotEqual(db.store_report(self.conn, replace(report_record, extraction_version='extract-v2',
+                                                               full_text='Changed', sections=[])), report)
         self.assertNotEqual(db.store_chunk(self.conn, replace(record, chunking_version='chunks-v2')), chunk)
 
     def test_table_identity_and_structure_are_versioned(self):
@@ -303,8 +304,14 @@ class DatabaseIntegrationTests(unittest.TestCase):
         writer.rollback()
         with self.assertRaises(db.DataConflict):
             with writer.transaction():
-                db.register_company(writer, record)
-                db.register_company(writer, replace(record, name='Conflicting Fixture'))
+                company = db.register_company(writer, record)
+                filing = db.FilingInput(
+                    company_id=company, accession_number='0000000999-26-000001', form='10-Q',
+                    filing_date=date(2026, 4, 29), reporting_period_end=date(2026, 3, 31),
+                    source_url='https://example.invalid/rollback/index.html',
+                )
+                db.register_filing(writer, filing)
+                db.register_filing(writer, replace(filing, form='10-K'))
         self.assertEqual(writer.execute('SELECT count(*) FROM sec.companies WHERE cik=%s', (record.cik,)).fetchone()[0], 0)
 
 
