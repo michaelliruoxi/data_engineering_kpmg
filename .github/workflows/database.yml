@@ -43,7 +43,7 @@ jobs:
       - name: Migrate dedicated local database
         run: PGDATABASE=sec_ci_test uv run --locked sec-db migrate
       - name: Pure, PostgreSQL, publication and concurrency tests
-        run: uv run --locked pytest -q
+        run: uv run --locked python -m pytest -q
       - name: Existing committed ingestion transaction tests
         run: |
           cat > .env.ci <<'EOF'
