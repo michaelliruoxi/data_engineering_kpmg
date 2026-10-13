@@ -1,6 +1,9 @@
 
 from pathlib import Path
 
+from lxml import html
+import pytest
+
 from sec_pipeline.report_cleaning import (
     clean_report,
     detect_sections,
@@ -456,4 +459,174 @@ def test_part_i_ignores_repeated_page_header():
     assert "part-i-item-1" in section_ids
     assert "part-i-item-2" in section_ids
     assert "part-ii" in section_ids
-    
+
+
+def write_source(tmp_path, source):
+    path = tmp_path / "report.html"
+    path.write_text(source, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("attributes", [
+    'style="display: none"',
+    'style="DISPLAY : NONE !important"',
+    'style="visibility: hidden"',
+    'style="visibility: collapse"',
+    'style="display: /* comment */ none"',
+    'style="display:none!important;display:block"',
+    'hidden',
+    'hidden="false"',  # HTML boolean attributes are true whenever present.
+])
+def test_hidden_elements_and_cells_are_removed_with_visible_tail(tmp_path, attributes):
+    path = write_source(tmp_path, f"""<html><body>
+      <div {attributes}><p>Hidden block</p></div>
+      <p>Visible <span {attributes}>hidden inline</span>tail.</p>
+      <table><tr><td>Revenue</td><td {attributes}>Hidden cell</td><td>42</td></tr></table>
+    </body></html>""")
+    report = clean_report(path)
+    assert "Hidden" not in report.full_text
+    assert "hidden inline" not in report.full_text
+    assert "Visible tail." in report.full_text
+    assert "Revenue | 42 |" in report.full_text
+
+
+def test_inline_visibility_declaration_precedence(tmp_path):
+    path = write_source(tmp_path, """<html><body>
+      <p style="display:none;display:block">Last declaration</p>
+      <p style="visibility:hidden;visibility:visible!important">Important visible</p>
+      <p style="display:none!important;display:block!important">Last important</p>
+    </body></html>""")
+    assert clean_report(path).full_text == (
+        "Last declaration\n\nImportant visible\n\nLast important"
+    )
+
+
+def test_visible_inline_text_and_comments_preserve_spacing(tmp_path):
+    path = write_source(tmp_path, """<html><head><title>Metadata title</title></head><body>
+      <p><span>Finan</span><b>cial</b> <span>state</span>ments<!-- not visible -->.</p>
+      <ix:header><ix:hidden>Hidden XBRL</ix:hidden></ix:header>
+      <script>Script payload</script><style>Style payload</style>
+    </body></html>""")
+    assert clean_report(path).full_text == "Financial statements."
+
+
+def test_table_cell_breaks_and_paragraphs_survive_normalization(tmp_path):
+    path = write_source(tmp_path, """<table>
+      <tr><td>Three Months Ended<br>March 31, 2026</td><td>42</td></tr>
+      <tr><td><p>First paragraph.</p><p>Second paragraph.</p></td><td>43</td></tr>
+    </table>""")
+    report = clean_report(path)
+    assert "Three Months Ended\nMarch 31, 2026 | 42 |" in report.full_text
+    assert "First paragraph.\n\nSecond paragraph. | 43 |" in report.full_text
+
+
+def test_meaningful_paragraphs_keep_one_blank_line(tmp_path):
+    path = write_source(tmp_path, """<html><body><div>
+      <p>First <span>paragraph</span>.</p><p>營收 café é 📈.</p>
+      <p>Third<br>line.</p>
+    </div></body></html>""")
+    report = clean_report(path)
+    assert report.full_text == "First paragraph.\n\n營收 café é 📈.\n\nThird\nline."
+    assert report == clean_report(path)
+
+
+def test_original_locators_choose_body_headings_and_resolve_untouched_source(tmp_path):
+    path = write_source(tmp_path, """<html><body>
+      <p hidden>Hidden preceding sibling</p>
+      <p id="cover">TABLE OF CONTENTS</p>
+      <p>PART I. FINANCIAL INFORMATION</p>
+      <p>ITEM 1. FINANCIAL STATEMENTS</p>
+      <p>PART II. OTHER INFORMATION</p>
+      <p>ITEM 1A. RISK FACTORS</p>
+      <p id="part-one"><span>PART I.</span> <b>FINANCIAL INFORMATION</b></p>
+      <p id="duplicate"><span>ITEM 1.</span> <b>FINANCIAL STATEMENTS</b></p>
+      <p>Statement body.</p>
+      <p id="part-two"><span>PART II.</span> OTHER INFORMATION</p>
+      <p id="duplicate">ITEM <b>1A.</b> RISK <span>FACTORS</span></p>
+      <p>Risk body.</p>
+    </body></html>""")
+    original = path.read_bytes()
+    document = html.document_fromstring(
+        original, parser=html.HTMLParser(encoding="utf-8", no_network=True),
+    )
+    report = clean_report(path)
+    assert path.read_bytes() == original
+    expected = {
+        "front-matter": ("cover", "/html/body/p[2]"),
+        "part-i": ("part-one", "/html/body/p[7]"),
+        "part-i-item-1": ("duplicate", "/html/body/p[8]"),
+        "part-ii": ("part-two", "/html/body/p[10]"),
+        "part-ii-item-1a": ("duplicate", "/html/body/p[11]"),
+    }
+    assert {s["section_id"] for s in report.sections} == set(expected)
+    for section in report.sections:
+        element_id, xpath = expected[section["section_id"]]
+        locator = section["source_locator"]
+        assert locator == {"source_file": path.name, "xpath": xpath, "element_id": element_id}
+        matches = document.xpath(locator["xpath"])
+        assert len(matches) == 1
+        heading = " ".join(matches[0].text_content().split())
+        assert report.full_text[section["offset_start"]:].startswith(heading)
+
+
+def test_original_row_locator_covers_heading_split_between_table_cells(tmp_path):
+    path = write_source(tmp_path, """<html><body><table>
+      <tr hidden><td>Hidden row</td></tr>
+      <tr id="part"><td>PART I.</td><td>FINANCIAL INFORMATION</td></tr>
+      <tr id="statements"><td>ITEM 1.</td><td>FINANCIAL STATEMENTS</td></tr>
+    </table><p>Content.</p></body></html>""")
+    report = clean_report(path)
+    sections = {s["section_id"]: s for s in report.sections}
+    assert sections["part-i"]["source_locator"]["xpath"] == "/html/body/table/tr[2]"
+    assert sections["part-i-item-1"]["source_locator"]["xpath"] == "/html/body/table/tr[3]"
+    assert sections["part-i-item-1"]["source_locator"]["element_id"] == "statements"
+
+
+def test_item_page_header_does_not_swallow_the_actual_heading():
+    for separator in ("\n", "\n\n", " \n"):
+        text = ("PART I. FINANCIAL INFORMATION\n\nItem 2" + separator
+                + "ITEM 2. MANAGEMENT'S DISCUSSION\n\nBody.")
+        section = next(s for s in detect_sections(text) if s["section_id"] == "part-i-item-2")
+        assert section["offset_start"] == text.index("ITEM 2.")
+
+
+def test_explicit_heading_line_breaks_keep_sections_and_original_locators(tmp_path):
+    path = write_source(tmp_path, """<html><body>
+      <p id="part-one">PART I.<br>FINANCIAL INFORMATION</p>
+      <p id="statements">ITEM 1.<br>FINANCIAL STATEMENTS</p><p>Statement body.</p>
+      <p id="part-two">PART II<br>OTHER INFORMATION</p>
+      <p id="legal">ITEM 1.<br>LEGAL PROCEEDINGS</p><p>Legal body.</p>
+    </body></html>""")
+    report = clean_report(path)
+    expected = {"part-i": "part-one", "part-i-item-1": "statements",
+                "part-ii": "part-two", "part-ii-item-1": "legal"}
+    assert {s["section_id"] for s in report.sections} == set(expected)
+    original = html.document_fromstring(
+        path.read_bytes(), parser=html.HTMLParser(encoding="utf-8", no_network=True),
+    )
+    for section in report.sections:
+        locator = section["source_locator"]
+        assert locator["element_id"] == expected[section["section_id"]]
+        assert original.xpath(locator["xpath"])[0].get("id") == locator["element_id"]
+        assert not report.full_text[section["offset_start"]].isspace()
+
+
+def test_separate_paragraphs_do_not_form_a_heading():
+    assert detect_sections("PART I.\n\nFINANCIAL INFORMATION")[0]["section_id"] == "full-report"
+    text = "PART I. FINANCIAL INFORMATION\n\nITEM 1.\n\nFINANCIAL STATEMENTS"
+    assert [s["section_id"] for s in detect_sections(text)] == ["part-i"]
+
+
+def test_empty_and_hidden_only_reports_have_no_sections(tmp_path):
+    for source in ("", "<!-- no visible content -->", "<!DOCTYPE html>",
+                   "<!DOCTYPE html>\n<!-- no visible content -->",
+                   "<html><body><p hidden>Hidden</p></body></html>"):
+        report = clean_report(write_source(tmp_path, source))
+        assert report.full_text == ""
+        assert report.sections == []
+
+
+def test_recoverable_malformed_html_retains_visible_content(tmp_path):
+    report = clean_report(write_source(tmp_path, "<p>Visible <b>bold<p>Next paragraph"))
+    assert "Visible bold" in report.full_text
+    assert "Next paragraph" in report.full_text

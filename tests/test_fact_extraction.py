@@ -8,6 +8,7 @@ SEC_DB_TEST=1 and prepare the dedicated test database as described in docs/datab
 from dataclasses import asdict, replace
 from datetime import date
 from decimal import Decimal
+import hashlib
 import io
 import json
 import os
@@ -16,7 +17,7 @@ import re
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
 
 from sec_pipeline import database as db
@@ -433,6 +434,101 @@ class InlineCorrespondenceTests(unittest.TestCase):
         # An unrecognized number format is counted, not assumed to match.
         other_format = self.check(run(INLINE_FACTS).facts, INLINE.replace("ixt:num-dot-decimal", "ixt:num-comma-decimal"))
         self.assertEqual((other_format["numeric_values_equal"], other_format["numeric_values_not_compared"]), (0, 3))
+
+
+class LoadPreflightTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.manifest_path = self.directory / "manifest.json"
+        self.xml_path = self.directory / "instance.xml"
+        self.html_path = self.directory / "filing.htm"
+        self.body = INLINE_FACTS + '<ex:Other id="html_only" contextRef="day" unitRef="usd">9</ex:Other>'
+        self.arguments = ["--manifest", str(self.manifest_path), "--data-root", str(self.directory), "--load"]
+
+    def prepare(self, *, body=None, inline=INLINE):
+        self.xml_path.write_text(HEAD.replace("SCHEMA", "https://example.invalid/ex.xsd")
+                                 + DEFINITIONS + (self.body if body is None else body)
+                                 + "</xbrli:xbrl>", encoding="utf-8")
+        self.html_path.write_text(inline, encoding="utf-8")
+        self.manifest_path.write_text(json.dumps({"files": [
+            {"role": fx.XML_ROLE, "local_path": self.xml_path.name,
+             "sha256": hashlib.sha256(self.xml_path.read_bytes()).hexdigest()},
+            {"role": fx.HTML_ROLE, "local_path": self.html_path.name},
+        ]}), encoding="utf-8")
+
+    def assert_preflight_blocked(self, *, check_html=True):
+        target = self.directory / "rejected-facts.jsonl"
+        arguments = self.arguments + ["--output", str(target)] + (["--check-html"] if check_html else [])
+        with redirect_stdout(io.StringIO()) as output, \
+                patch.object(fx, "connect", side_effect=AssertionError("failed preflight connected")) as connect, \
+                patch.object(fx, "seed_manifest") as seed, patch.object(fx, "store_facts") as store:
+            self.assertEqual(fx.main(arguments), 1)
+        connect.assert_not_called()
+        seed.assert_not_called()
+        store.assert_not_called()
+        self.assertFalse(target.exists())
+        report = json.loads(output.getvalue())
+        self.assertNotIn("loaded", report)
+        return report
+
+    def test_html_value_mismatch_blocks_loading(self):
+        self.prepare(inline=INLINE.replace(">4.27</", ">4.28</"))
+        report = self.assert_preflight_blocked()
+        self.assertEqual(report["inline_correspondence"]["mismatches"], [
+            {"occurrence_key": "eps", "problem": "value: HTML shows 4.28, XML has 4.27"}])
+
+    def test_inline_id_without_xml_fact_blocks_loading(self):
+        self.prepare(body=INLINE_FACTS)
+        report = self.assert_preflight_blocked()
+        self.assertEqual(report["inline_correspondence"]["mismatches"], [])
+        self.assertEqual(report["inline_correspondence"]["inline_ids_without_fact"], ["html_only"])
+
+    def test_xml_fact_without_inline_id_blocks_loading(self):
+        self.prepare(body=self.body + '<ex:Other id="xml_only" contextRef="day" unitRef="usd">1</ex:Other>')
+        report = self.assert_preflight_blocked()
+        self.assertEqual(report["inline_correspondence"]["mismatches"], [
+            {"occurrence_key": "xml_only", "problem": "0 inline elements share this id"}])
+
+    def test_incomplete_extraction_blocks_loading_with_or_without_html_check(self):
+        self.prepare(body=self.body.replace('id="eps" contextRef="quarter"',
+                                            'id="eps" contextRef="missing"'))
+        for check_html in (False, True):
+            with self.subTest(check_html=check_html):
+                report = self.assert_preflight_blocked(check_html=check_html)
+                self.assertEqual(report["inventory"]["failed"], 1)
+                self.assertEqual(report["failures"][0]["element_id"], "eps")
+
+    def test_successful_html_preflight_loads_real_scope_in_transaction(self):
+        self.prepare()
+        conn = MagicMock()
+        conn.__enter__.return_value = conn
+        conn.info.dbname = "mock_facts_test"
+        conn.execute.return_value.fetchone.return_value = (6,)
+        stored = fx.StoredFacts(filing_id=FILING, source_document_id=SOURCE,
+                                extraction_version="facts-v1", fact_ids={})
+
+        def store_in_transaction(connection, facts):
+            self.assertIs(connection, conn)
+            conn.transaction.return_value.__enter__.assert_called_once_with()
+            conn.transaction.return_value.__exit__.assert_not_called()
+            self.assertEqual(len(facts), 6)
+            self.assertEqual({(f.filing_id, f.source_document_id) for f in facts}, {(FILING, SOURCE)})
+            self.assertEqual(next(f.numeric_value for f in facts if f.occurrence_key == "eps"), Decimal("4.27"))
+            return stored
+
+        with redirect_stdout(io.StringIO()) as output, patch.object(fx, "connect", return_value=conn), \
+                patch.object(fx, "seed_manifest", return_value={
+                    "filing_id": FILING, "document_ids": {self.xml_path.name: SOURCE}}) as seed, \
+                patch.object(fx, "store_facts", side_effect=store_in_transaction) as store:
+            self.assertEqual(fx.main(self.arguments + ["--check-html"]), 0)
+        seed.assert_called_once_with(conn, self.manifest_path, self.directory)
+        store.assert_called_once()
+        conn.transaction.return_value.__exit__.assert_called_once_with(None, None, None)
+        conn.commit.assert_not_called()
+        conn.rollback.assert_not_called()
+        report = json.loads(output.getvalue())
+        self.assertEqual(report["inline_correspondence"]["matched"], 6)
+        self.assertEqual(report["loaded"]["facts_in_database"], 6)
 
 
 @unittest.skipUnless(SAMPLE_XML.is_file(), "The Microsoft sample files are not present.")

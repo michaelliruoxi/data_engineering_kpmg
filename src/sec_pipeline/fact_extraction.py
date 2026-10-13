@@ -750,6 +750,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.check_html:
             html_path = args.data_root / _manifest_path(manifest, HTML_ROLE)
             report["inline_correspondence"] = check_inline_correspondence(html_path, extraction.facts)
+        # Reject a failed preflight before loading can open or commit a transaction.
+        # An HTML/XML disagreement in either direction includes an inline tag with no fact.
+        correspondence = report.get("inline_correspondence", {})
+        problems = (extraction.failures or correspondence.get("mismatches")
+                    or correspondence.get("inline_ids_without_fact"))
+        if args.load and problems:
+            print(json.dumps(report, indent=2, default=str))
+            return 1
         if args.output:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             with args.output.open("x", encoding="utf-8", newline="\n") as handle:
@@ -786,11 +794,6 @@ def main(argv: list[str] | None = None) -> int:
                 report["exported_ids"] = _export_fact_ids(conn, manifest, xml_local_path,
                                                           args.version, args.export_ids)
         print(json.dumps(report, indent=2, default=str))
-        # An HTML/XML disagreement in either direction fails the run, including an inline
-        # tag whose id has no XML fact.
-        correspondence = report.get("inline_correspondence", {})
-        problems = (extraction.failures or correspondence.get("mismatches")
-                    or correspondence.get("inline_ids_without_fact"))
         return 1 if problems else 0
     except psycopg.Error as exc:
         # Connection errors and server details can contain credentials or input values.
