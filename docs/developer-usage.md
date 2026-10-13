@@ -94,8 +94,10 @@ The `sec-db` command provides `migrate`, `seed-manifest`, and `status`. Migratio
 
 ```powershell
 uv run --locked python scripts/download_sec_sample.py --verify-only
-uv run --locked python -m unittest discover -s tests -v
+uv run --locked python -m pytest tests -q -ra
 ```
+
+Use pytest to include the report-cleaning tests as well as the unittest-based suites. Live database tests still require their documented opt-in settings and a dedicated test database.
 
 The included Microsoft sample, accession `0001193125-26-191507`, is stored under `data/raw/sec/`. Its source URLs, file sizes, and SHA-256 hashes are recorded in `source_manifest.json`. Verification runs locally without SEC requests.
 

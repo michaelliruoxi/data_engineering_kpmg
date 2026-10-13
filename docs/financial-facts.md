@@ -18,6 +18,7 @@ Run from the repository root. The first command is a dry run and opens no databa
 uv run --locked python -m sec_pipeline.fact_extraction --check-html
 uv run --locked python -m sec_pipeline.fact_extraction --output data/processed/facts-v1.jsonl
 uv run --locked python -m sec_pipeline.fact_extraction --load --env-file .env
+uv run --locked python -m sec_pipeline.fact_extraction --load --check-html --env-file .env
 uv run --locked python -m sec_pipeline.fact_extraction --env-file .env --export-ids data/processed/facts-v1-ids.csv
 uv run --locked python -m unittest tests.test_fact_extraction -v
 ```
@@ -27,6 +28,7 @@ uv run --locked python -m unittest tests.test_fact_extraction -v
 - The dry run prints the inventory, any failures, and, with `--check-html`, the HTML comparison. It exits with status 1 if any occurrence failed, any fact disagreed with its inline tag, or any inline tag has no fact.
 - `--output` writes one JSON record per line to a new file and refuses to overwrite an existing one. `data/processed/` is ignored by Git. These records carry placeholder filing and source IDs.
 - `--load` is for a local database. It verifies and registers the manifest with `seed_manifest()`, then stores all facts in one transaction, so a failure leaves nothing behind. The shared database accepts it only from a login with write permission; the integrated import belongs to the task 2 runner.
+- With `--load --check-html`, extraction failures, HTML/XML mismatches, and unmatched inline tags stop the command before it opens a database connection or writes output files. The diagnostic JSON is still printed and the exit status is 1. A passing check proceeds to the normal transactional load.
 - The live database test in `tests/test_fact_extraction.py` is skipped unless `SEC_DB_TEST=1` is set. Prepare the dedicated test database as described in [the database guide](database.md#handoff-and-acceptance).
 
 ## Inventory of the supplied sample

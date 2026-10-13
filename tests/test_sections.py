@@ -124,7 +124,7 @@ class SectionsTests(unittest.TestCase):
             path.write_text("<h1>Item 1. Business</h1><p>We sell products.</p>", encoding="utf-8")
             report = clean_report(path, form="10-K")
         self.assertEqual(report.sections[0]["section_type"], "business")
-        self.assertEqual(report.sections[0]["source_locator"]["document"], "report.htm")
+        self.assertEqual(report.sections[0]["source_locator"]["source_file"], "report.htm")
 
     def test_legacy_chunk_resolution_is_report_scoped_and_checks_containment(self):
         conn = Mock()

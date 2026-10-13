@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from bs4 import BeautifulSoup
+from lxml import etree, html
 
 
 @dataclass
@@ -87,8 +87,22 @@ def detect_sections(full_text: str, form: str | None = None) -> list[dict]:
         heading = _heading_text(raw_line)
         part_match = _PART_HEADING.fullmatch(heading)
         if part_match:
+            part_last_line = index
+            # Explicit <br> line breaks can split a heading. A blank line is a
+            # paragraph boundary and must never be consumed into the heading.
+            if "INFORMATION" not in heading.upper():
+                combined = heading
+                for continuation in range(index + 1, min(index + 3, len(lines))):
+                    following = _heading_text(lines[continuation])
+                    if not following:
+                        break
+                    combined += " " + following
+                    if _PART_HEADING.fullmatch(combined) and "INFORMATION" in combined.upper():
+                        heading = combined
+                        part_last_line = continuation
+                        break
             parts.append({"offset_start": offsets[index], "part": part_match.group(1).upper(),
-                          "title": heading, "line": index})
+                          "title": heading, "line": index, "last_line": part_last_line})
             continue
         match = _ITEM_HEADING.fullmatch(heading)
         if not match:
@@ -147,7 +161,8 @@ def detect_sections(full_text: str, form: str | None = None) -> list[dict]:
                      if candidate["part"] == part and candidate["offset_start"] < first_item]
         if preceding:
             candidate = preceding[-1]
-            intervening = full_text[candidate["offset_start"] + len(lines[candidate["line"]]):first_item]
+            part_end = offsets[candidate["last_line"]] + len(lines[candidate["last_line"]])
+            intervening = full_text[part_end:first_item]
             if re.search(r"[^\s\d|.]", intervening):
                 # The only available Part label may be in a distant TOC.
                 continue
@@ -156,6 +171,16 @@ def detect_sections(full_text: str, form: str | None = None) -> list[dict]:
             boundaries.append(candidate | {"section_id": f"part-{part.lower()}",
                                              "section_type": "part_heading", "item": None})
     if not selected:
+        # A complete Part heading remains useful even when no supported Item
+        # follows it. A bare Part label alone does not establish report content.
+        standalone_parts = {}
+        for candidate in parts:
+            if "INFORMATION" in candidate["title"].upper():
+                standalone_parts.setdefault(candidate["part"], candidate)
+        boundaries = [candidate | {"section_id": f"part-{candidate['part'].lower()}",
+                                    "section_type": "part_heading", "item": None}
+                      for candidate in standalone_parts.values()]
+    if not boundaries:
         return [{"section_id": "full-report", "title": "Full Report", "section_type": "unknown",
                  "validation_status": "unverified", "offset_start": 0, "offset_end": len(full_text)}]
     boundaries.sort(key=lambda candidate: candidate["offset_start"])
@@ -180,91 +205,144 @@ def detect_sections(full_text: str, form: str | None = None) -> list[dict]:
     return sections
 
 
+# These boundaries describe readable text, not a browser CSS layout engine.
+_BLOCK_TAGS = {
+    "p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+    "section", "article", "blockquote", "pre", "address", "header", "footer",
+    "ul", "ol", "dl", "dt", "dd", "table",
+}
+_OMITTED_TAGS = {"head", "script", "style", "ix:header", "ix:hidden"}
+
+
+def _hidden(element: etree._Element) -> bool:
+    """Recognize local visibility rules without fetching stylesheets."""
+    if "hidden" in element.attrib:
+        return True
+    # Later inline declarations win; !important overrides ordinary declarations.
+    declarations = {}
+    style = re.sub(r"/\*.*?\*/", "", element.get("style", ""), flags=re.S)
+    for declaration in style.split(";"):
+        name, separator, value = declaration.partition(":")
+        if not separator:
+            continue
+        name, value = name.strip().lower(), value.strip().lower()
+        important = bool(re.search(r"!\s*important\s*$", value))
+        value = re.sub(r"!\s*important\s*$", "", value).strip()
+        previous = declarations.get(name)
+        if previous is None or important or not previous[1]:
+            declarations[name] = (value, important)
+    return (declarations.get("display", (None,))[0] == "none"
+            or declarations.get("visibility", (None,))[0] in {"hidden", "collapse"})
+
+
+def _trim_fragments(fragments):
+    """Trim cell boundaries without discarding internal line/paragraph breaks."""
+    while fragments and not fragments[0][0].strip():
+        fragments.pop(0)
+    while fragments and not fragments[-1][0].strip():
+        fragments.pop()
+    if fragments:
+        fragments[0] = (fragments[0][0].lstrip(), fragments[0][1])
+        fragments[-1] = (fragments[-1][0].rstrip(), fragments[-1][1])
+    return fragments
+
+
+def _render(element, anchor=None, row_anchor=None):
+    """Render annotated fragments while leaving the original DOM untouched."""
+    if not isinstance(element.tag, str):  # Comments and processing instructions.
+        return []
+    tag = element.tag.lower()
+    if tag in _OMITTED_TAGS or _hidden(element):
+        return []
+    if tag == "br":
+        return [("\n", row_anchor if row_anchor is not None else anchor)]
+    if tag == "tr":
+        cells = [child for child in element
+                 if isinstance(child.tag, str) and child.tag.lower() in {"td", "th"}
+                 and not _hidden(child)]
+        if cells:
+            rendered = [_trim_fragments(_render(cell, element, element)) for cell in cells]
+            if not any(rendered):
+                return []
+            fragments = [("\n", element)]
+            for cell in rendered:
+                fragments.extend(cell)
+                fragments.append((" | ", element))
+            fragments.append(("\n", element))
+            return fragments
+        return []
+
+    is_block = tag in _BLOCK_TAGS
+    if row_anchor is not None:
+        anchor = row_anchor
+    elif is_block or anchor is None:
+        anchor = element
+    fragments = [("\n\n", anchor)] if is_block else []
+    if element.text:
+        fragments.append((re.sub(r"\s+", " ", element.text), anchor))
+    for child in element:
+        fragments.extend(_render(child, anchor, row_anchor))
+        # Tail text belongs to the visible parent even when the child is hidden.
+        if child.tail:
+            fragments.append((re.sub(r"\s+", " ", child.tail), anchor))
+    if is_block:
+        fragments.append(("\n\n", anchor))
+    return fragments
+
+
+def _normalize_fragments(fragments):
+    """Normalize spaces and keep at most one blank line with source anchors."""
+    text, anchors = [], []
+    newlines = 0
+    space = False
+    for fragment, anchor in fragments:
+        for character in fragment:
+            if character.isspace():
+                if character == "\n":
+                    newlines = min(2, newlines + 1)
+                else:
+                    space = True
+                continue
+            if text:
+                separator = "\n" * newlines if newlines else (" " if space else "")
+                text.extend(separator)
+                anchors.extend([None] * len(separator))
+            text.append(character)
+            anchors.append(anchor)
+            newlines, space = 0, False
+    return "".join(text), anchors
+
+
 def clean_report(html_path: str | Path, *, form: str | None = None) -> CleanedReport:
-    """Extract and organize readable text from SEC HTML."""
+    """Render visible SEC HTML with original-node locators and final text offsets.
 
+    Locators resolve against the unchanged bytes parsed with
+    lxml.html.document_fromstring and HTMLParser(encoding="utf-8", no_network=True).
+    XPath is authoritative; an original element ID is supplementary. A section's
+    locator identifies its starting block/row, not every character in the section.
+    """
     html_path = Path(html_path)
-
-    # Read the HTML file.
-    html = html_path.read_text(
-        encoding="utf-8",
-        errors="replace",
-    )
-
-    soup = BeautifulSoup(html, "html.parser")
-
-    # Remove scripts, styles, and hidden XBRL metadata.
-    for tag in soup.find_all(
-        ["script", "style", "ix:header", "ix:hidden"]
-    ):
-        tag.decompose()
-
-    # Add separators between table cells.
-    # Normalize table rows while preserving cell boundaries.
-    for row in soup.find_all("tr"):
-
-    # Remove rows hidden by inline CSS.
-        style = re.sub(r"\s+", "", row.get("style", "").lower())
-
-        if "display:none" in style or "visibility:collapse" in style:
-            row.decompose()
-            continue
-
-        cells = row.find_all(["td", "th"], recursive=False)
-
-        if not cells:
-            continue
-
-        # Remove rows whose cells contain no visible text.
-        if all(not cell.get_text(strip=True) for cell in cells):
-            row.decompose()
-            continue
-        # Combine cells into one readable table row.
-        cell_texts = []
-
-        for cell in cells:
-            for br in cell.find_all("br"):
-                br.replace_with("\n")
-
-            cell_text = cell.get_text(separator=" ", strip=True)
-            cell_texts.append(" ".join(cell_text.split()))
-
-        row.replace_with(
-            soup.new_string(" | ".join(cell_texts) + " |\n")
-        )       
-
-    # Preserve explicit HTML line breaks.
-    for br in soup.find_all("br"):
-        br.replace_with("\n")
-
-    # Preserve paragraph and row boundaries.
-    for tag in soup.find_all(
-        ["p", "div", "tr", "li", "h1", "h2", "h3"]
-    ):
-        tag.append("\n")
-
-    # Extract text without adding extra spaces.
-    text = soup.get_text(separator="", strip=False)
-
-    # Normalize whitespace while preserving lines.
-    lines = [
-        " ".join(line.split())
-        for line in text.splitlines()
-    ]
-
-    full_text = "\n".join(
-        line for line in lines if line
-    )
-
-    # Detect report sections.
+    source = html_path.read_bytes()
+    if not source.strip():
+        return CleanedReport(full_text="", sections=[])
+    try:
+        document = html.document_fromstring(
+            source, parser=html.HTMLParser(encoding="utf-8", no_network=True),
+        )
+    except etree.ParserError:
+        # lxml has no document element for comment/doctype-only input. Do not
+        # turn other parse failures or malformed visible content into success.
+        if re.fullmatch(rb"\s*(?:(?:<!--.*?-->|<!DOCTYPE[^>]*>)\s*)*", source, re.I | re.S):
+            return CleanedReport(full_text="", sections=[])
+        raise
+    # No nodes are removed or rewritten: anchors always refer to the original DOM.
+    full_text, anchors = _normalize_fragments(_render(document))
     sections = detect_sections(full_text, form=form)
-
-    # Record the source HTML filename for each section.
+    tree = document.getroottree()
     for section in sections:
-        section.setdefault("source_locator", {})["document"] = html_path.name
-
-    # Return the result to downstream pipeline modules.
-    return CleanedReport(
-        full_text=full_text,
-        sections=sections,
-    )
+        anchor = anchors[section["offset_start"]]
+        locator = {"source_file": html_path.name, "xpath": tree.getpath(anchor)}
+        if anchor.get("id"):
+            locator["element_id"] = anchor.get("id")
+        section["source_locator"] = section.get("source_locator", {}) | locator
+    return CleanedReport(full_text=full_text, sections=sections)
