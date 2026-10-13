@@ -62,11 +62,18 @@ def detect_sections(full_text: str) -> list[dict]:
     part1 = None
 
     if part1_candidates:
-        if (
-            "TABLE OF CONTENTS" in full_text.upper()
-            and len(part1_candidates) > 1
-        ):
-            part1 = part1_candidates[-1]
+        complete_part1_candidates = [
+            candidate
+            for candidate in part1_candidates
+            if any(
+                match.group(1).upper() == "II"
+                and match.start() > candidate.start()
+                for match in part_matches
+            )
+        ]
+
+        if complete_part1_candidates:
+            part1 = complete_part1_candidates[-1]
         else:
             part1 = part1_candidates[0]
 
@@ -211,8 +218,25 @@ def clean_report(html_path: str | Path) -> CleanedReport:
         tag.decompose()
 
     # Add separators between table cells.
-    for cell in soup.find_all(["td", "th"]):
-        cell.append(" | ")
+    # Normalize table rows while preserving cell boundaries.
+    for row in soup.find_all("tr"):
+        cells = row.find_all(["td", "th"], recursive=False)
+
+        if not cells:
+            continue
+
+        cell_texts = []
+        for cell in cells:
+            # Keep explicit HTML line breaks inside cells.
+            for br in cell.find_all("br"):
+                br.replace_with("\n")
+
+            cell_text = cell.get_text(separator=" ", strip=True)
+            cell_texts.append(" ".join(cell_text.split()))
+
+        row.replace_with(
+            soup.new_string(" | ".join(cell_texts) + " |\n")
+        )
 
     # Preserve explicit HTML line breaks.
     for br in soup.find_all("br"):

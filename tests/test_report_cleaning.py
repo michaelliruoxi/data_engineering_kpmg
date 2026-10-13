@@ -274,4 +274,85 @@ def test_clean_report_preserves_br_line_breaks(tmp_path):
     report = clean_report(html_path)
 
     assert "Three Months Ended\nMarch 31, 2026" in report.full_text
+
+def test_clean_report_preserves_table_cells_on_same_row(tmp_path):
+    """Keep table cells on the same line when they contain paragraphs."""
+
+    html = """
+    <html>
+      <body>
+        <table>
+          <tr>
+            <td><p>Revenue</p></td>
+            <td><p>10</p></td>
+          </tr>
+        </table>
+      </body>
+    </html>
+    """
+
+    html_path = tmp_path / "test_table_cells.html"
+    html_path.write_text(html, encoding="utf-8")
+
+    report = clean_report(html_path)
+
+    assert "Revenue | 10 |" in report.full_text
+
+def test_part_i_skips_index_table_of_contents():
+    """Select the body Part I instead of an INDEX entry."""
+
+    text = "\n".join([
+        "INDEX",
+        "PART I. FINANCIAL INFORMATION",
+        "ITEM 1. FINANCIAL STATEMENTS",
+        "ITEM 2. MANAGEMENT'S DISCUSSION",
+        "PART II. OTHER INFORMATION",
+        "ITEM 1. LEGAL PROCEEDINGS",
+        "PART I. FINANCIAL INFORMATION",
+        "ITEM 1. CONDENSED CONSOLIDATED FINANCIAL STATEMENTS",
+        "Actual financial statement content.",
+        "ITEM 2. MANAGEMENT'S DISCUSSION",
+        "Actual management discussion content.",
+        "PART II. OTHER INFORMATION",
+        "ITEM 1. LEGAL PROCEEDINGS",
+        "Actual legal proceedings content.",
+    ])
+
+    sections = detect_sections(text)
+
+    part_i = next(
+        section
+        for section in sections
+        if section["section_id"] == "part-i"
+    )
+
+    expected_start = text.rfind(
+        "PART I. FINANCIAL INFORMATION"
+    )
+
+    assert part_i["offset_start"] == expected_start
+    
+    part_ii = next(
+        section
+        for section in sections
+        if section["section_id"] == "part-ii"
+    )
+
+    expected_part_ii_start = text.rfind(
+        "PART II. OTHER INFORMATION"
+    )
+
+    assert part_ii["offset_start"] == expected_part_ii_start
+
+    item_1 = next(
+        section
+        for section in sections
+        if section["section_id"] == "part-i-item-1"
+    )
+
+    expected_item_1_start = text.index(
+        "ITEM 1. CONDENSED CONSOLIDATED FINANCIAL STATEMENTS"
+    )
+
+    assert item_1["offset_start"] == expected_item_1_start
     
