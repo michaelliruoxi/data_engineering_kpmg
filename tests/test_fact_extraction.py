@@ -435,6 +435,59 @@ class InlineCorrespondenceTests(unittest.TestCase):
         other_format = self.check(run(INLINE_FACTS).facts, INLINE.replace("ixt:num-dot-decimal", "ixt:num-comma-decimal"))
         self.assertEqual((other_format["numeric_values_equal"], other_format["numeric_values_not_compared"]), (0, 3))
 
+    def test_fixed_zero_compares_transformed_value_for_registry_four_and_five(self):
+        facts = run(INLINE_FACTS.replace(">4.27</", ">0</")).facts
+        for namespace in ("2020-02-12", "2022-02-16"):
+            for displayed in ("—", "-", "", "No amount", "123"):
+                with self.subTest(namespace=namespace, displayed=displayed):
+                    inline = INLINE.replace("2022-02-16", namespace).replace(
+                        'format="ixt:num-dot-decimal">4.27</',
+                        f'format="ixt:fixed-zero">{displayed}</')
+                    report = self.check(facts, inline)
+                    self.assertEqual(report["mismatches"], [])
+                    self.assertEqual((report["numeric_values_equal"], report["numeric_values_not_compared"]), (3, 0))
+
+    def test_fixed_zero_rejects_nonzero_xml_value(self):
+        inline = INLINE.replace('format="ixt:num-dot-decimal">4.27</', 'format="ixt:fixed-zero">—</')
+        report = self.check(run(INLINE_FACTS).facts, inline)
+        self.assertEqual(report["mismatches"], [{"occurrence_key": "eps", "problem": "value: HTML shows 0, XML has 4.27"}])
+        self.assertEqual(report["numeric_values_not_compared"], 0)
+
+    def test_fixed_zero_does_not_accept_unrecognized_registry_namespace(self):
+        inline = INLINE.replace('format="ixt:num-dot-decimal">4.27</', 'format="ixt:fixed-zero">—</')
+        for namespace in ("https://example.invalid/transformation/2022-02-16",
+                          "http://www.xbrl.org/inlineXBRL/transformation/2011-07-31"):
+            with self.subTest(namespace=namespace):
+                changed = inline.replace("http://www.xbrl.org/inlineXBRL/transformation/2022-02-16", namespace)
+                report = self.check(run(INLINE_FACTS).facts, changed)
+                self.assertGreater(report["numeric_values_not_compared"], 0)
+
+    def test_untransformed_decimal_values_preserve_scale_sign_and_strict_lexical_form(self):
+        inline = INLINE.replace(' format="ixt:num-dot-decimal"', "").replace("11,351", "11351")
+        report = self.check(run(INLINE_FACTS).facts, inline)
+        self.assertEqual(report["mismatches"], [])
+        self.assertEqual((report["numeric_values_equal"], report["numeric_values_not_compared"]), (3, 0))
+        for malformed in ("4,27", "4 27", "4.27e0", "-4.27", "NaN", "INF"):
+            with self.subTest(malformed=malformed):
+                report = self.check(run(INLINE_FACTS).facts, inline.replace(">4.27</", f">{malformed}</"))
+                self.assertEqual(report["numeric_values_not_compared"], 1)
+
+    def test_supported_sec_numeric_words_compare_exactly(self):
+        template = INLINE.replace('xmlns:ixt=', 'xmlns:ixtsec="http://www.sec.gov/inlineXBRL/transformation/2015-08-31" xmlns:ixt=')
+        for words, number in (("one", "1"), ("TWO", "2"), ("no", "0"), ("None", "0"),
+                              ("nineteen", "19"), ("twenty-one", "21"), ("ninety nine", "99"),
+                              ("one million", "1000000")):
+            with self.subTest(words=words):
+                facts = run(INLINE_FACTS.replace(">4.27</", f">{number}</")).facts
+                inline = template.replace('format="ixt:num-dot-decimal">4.27</', f'format="ixtsec:numwordsen">{words}</')
+                report = self.check(facts, inline)
+                self.assertEqual(report["mismatches"], [])
+                self.assertEqual((report["numeric_values_equal"], report["numeric_values_not_compared"]), (3, 0))
+        for unsupported in ("one million and five", "one two", "twenty ten", "approximately two"):
+            with self.subTest(unsupported=unsupported):
+                inline = template.replace('format="ixt:num-dot-decimal">4.27</', f'format="ixtsec:numwordsen">{unsupported}</')
+                self.assertEqual(self.check(run(INLINE_FACTS).facts, inline)["numeric_values_not_compared"], 1)
+
 
 class LoadPreflightTests(unittest.TestCase):
     def setUp(self):

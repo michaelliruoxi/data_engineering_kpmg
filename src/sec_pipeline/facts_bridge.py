@@ -57,12 +57,12 @@ def parse_facts(context):
     return ParseResult(extraction.facts, rejected=extraction.failures)
 
 
-def write_facts(conn, context):
+def write_facts(conn, context, *, bulk=False):
     """Write a complete extraction through the caller's existing transaction."""
     extraction = _extract(context).require_complete()
     from .fact_extraction import store_facts
 
-    stored = store_facts(conn, extraction.facts)
+    stored = store_facts(conn, extraction.facts, bulk=True) if bulk else store_facts(conn, extraction.facts)
     if (
         stored.filing_id != context.source_ids.filing_id
         or stored.source_document_id != context.source_ids.xml_document_id

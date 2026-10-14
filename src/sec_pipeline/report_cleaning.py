@@ -5,6 +5,8 @@ from pathlib import Path
 
 from lxml import etree, html
 
+from .source_locators import source_xpath
+
 
 @dataclass
 class CleanedReport:
@@ -211,7 +213,29 @@ _BLOCK_TAGS = {
     "section", "article", "blockquote", "pre", "address", "header", "footer",
     "ul", "ol", "dl", "dt", "dd", "table",
 }
-_OMITTED_TAGS = {"head", "script", "style", "ix:header", "ix:hidden"}
+_OMITTED_TAGS = {"head", "script", "style"}
+_INLINE_NAMESPACES = {
+    "http://www.xbrl.org/2008/inlineXBRL",
+    "http://www.xbrl.org/2013/inlineXBRL",
+}
+
+
+def _omitted_inline_container(element: etree._Element) -> bool:
+    """Identify hidden inline resources by the nearest HTML xmlns declaration."""
+    tag = element.tag.lower()
+    prefix, separator, name = tag.partition(":")
+    if not separator:
+        name, prefix = prefix, None
+    if name not in {"header", "hidden"}:
+        return False
+    attribute = "xmlns:" + prefix if prefix is not None else "xmlns"
+    for ancestor in (element, *element.iterancestors()):
+        namespace = ancestor.get(attribute)
+        if namespace is not None:
+            return namespace in _INLINE_NAMESPACES
+    # Retain the established cleanup of legacy fragments with undeclared ix
+    # tags. An explicit foreign namespace always takes precedence above.
+    return prefix == "ix"
 
 
 def _hidden(element: etree._Element) -> bool:
@@ -252,7 +276,7 @@ def _render(element, anchor=None, row_anchor=None):
     if not isinstance(element.tag, str):  # Comments and processing instructions.
         return []
     tag = element.tag.lower()
-    if tag in _OMITTED_TAGS or _hidden(element):
+    if tag in _OMITTED_TAGS or _omitted_inline_container(element) or _hidden(element):
         return []
     if tag == "br":
         return [("\n", row_anchor if row_anchor is not None else anchor)]
@@ -341,7 +365,7 @@ def clean_report(html_path: str | Path, *, form: str | None = None) -> CleanedRe
     tree = document.getroottree()
     for section in sections:
         anchor = anchors[section["offset_start"]]
-        locator = {"source_file": html_path.name, "xpath": tree.getpath(anchor)}
+        locator = {"source_file": html_path.name, "xpath": source_xpath(tree, anchor)}
         if anchor.get("id"):
             locator["element_id"] = anchor.get("id")
         section["source_locator"] = section.get("source_locator", {}) | locator

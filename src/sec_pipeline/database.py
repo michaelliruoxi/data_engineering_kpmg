@@ -248,6 +248,10 @@ def register_company(conn: psycopg.Connection, record: CompanyInput) -> UUID:
     """Resolve stable CIK identity; historical filings never overwrite a current profile."""
     if conn.autocommit:
         raise DatabaseError('Write helpers require autocommit=False and caller-managed transactions.')
+    if record.ticker is None:
+        from .company_tickers import current_ticker
+
+        record = replace(record, ticker=current_ticker(record.cik))
     row = conn.execute('''INSERT INTO sec.companies (cik, name, ticker)
         VALUES (%s, %s, %s) ON CONFLICT (cik) DO NOTHING RETURNING id''',
         (record.cik, record.name, record.ticker)).fetchone()
@@ -276,7 +280,8 @@ def register_filing(conn: psycopg.Connection, record: FilingInput) -> UUID:
     if existing is None:
         return _store(conn, 'filings', record, ('accession_number',))
     previous_name = existing[1]
-    if previous_name is not None and record.company_name_as_filed not in (None, previous_name):
+    if (previous_name is not None and record.company_name_as_filed is not None
+            and record.company_name_as_filed.casefold() != previous_name.casefold()):
         raise DataConflict('Conflicting company name in the same filing.')
     filing_id = _store(conn, 'filings', replace(record, company_name_as_filed=previous_name),
                        ('accession_number',))
@@ -438,7 +443,8 @@ def status(conn: psycopg.Connection) -> dict[str, Any]:
     for table in ('companies', 'filings', 'source_documents', 'reports', 'chunks',
                   'financial_facts', 'financial_tables', 'financial_table_facts',
                   'report_sections', 'table_cells', 'cell_fact_links',
-                  'filing_processing_sets', 'preferred_processing_sets'):
+                  'filing_processing_sets', 'preferred_processing_sets', 'issuer_successions',
+                  'cell_source_observations'):
         if conn.execute('SELECT to_regclass(%s)', (f'sec.{table}',)).fetchone()[0] is None:
             result['counts'][table] = None
         else:

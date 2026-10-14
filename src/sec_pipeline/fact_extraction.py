@@ -526,7 +526,7 @@ def extract_facts(
 
 # --------------------------------------------------------------------------- loading
 
-def store_facts(conn: psycopg.Connection, facts: Sequence[FactInput]) -> StoredFacts:
+def store_facts(conn: psycopg.Connection, facts: Sequence[FactInput], *, bulk: bool = False) -> StoredFacts:
     """Store facts in the caller's transaction; return their UUIDs with explicit scope.
 
     Identical facts stored before keep their UUIDs. Changed content under the same
@@ -540,6 +540,13 @@ def store_facts(conn: psycopg.Connection, facts: Sequence[FactInput]) -> StoredF
     if len({f.occurrence_key for f in facts}) != len(facts):
         raise FactExtractionError("Occurrence keys must be unique within one extraction.")
     filing_id, source_document_id, extraction_version = next(iter(scopes))
+    if bulk:
+        from .bulk_storage import store_many
+        ids = store_many(conn, "financial_facts", facts,
+                         ("source_document_id", "extraction_version", "occurrence_key"))
+        return StoredFacts(filing_id=filing_id, source_document_id=source_document_id,
+                           extraction_version=extraction_version,
+                           fact_ids={fact.occurrence_key: ident for fact, ident in zip(facts, ids)})
     return StoredFacts(
         filing_id=filing_id, source_document_id=source_document_id,
         extraction_version=extraction_version,
@@ -618,16 +625,60 @@ def _export_fact_ids(conn: psycopg.Connection, manifest: dict[str, Any], xml_loc
 
 # ------------------------------------------------------- inline HTML correspondence
 
+def _small_english_number(value: str) -> str | None:
+    """Recognize 0-99 and a single named magnitude; defer ambiguous phrases."""
+    magnitudes = {"thousand": 1000, "million": 1000000, "billion": 1000000000, "trillion": 1000000000000}
+    normalized = " ".join(value.lower().split())
+    scaled = re.fullmatch(r"(.+) (thousand|million|billion|trillion)", normalized)
+    if scaled and not any(word in magnitudes for word in scaled[1].split()):
+        coefficient = _small_english_number(scaled[1])
+        if coefficient is not None and 1 <= int(coefficient) <= 99:
+            return str(int(coefficient) * magnitudes[scaled[2]])
+        return None
+    ones = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
+    values = {word: number for number, word in enumerate(ones)}
+    values.update(no=0, none=0)
+    tens = {word: number * 10 for number, word in enumerate(
+        "twenty thirty forty fifty sixty seventy eighty ninety".split(), 2)}
+    if normalized in values:
+        return str(values[normalized])
+    if normalized in tens:
+        return str(tens[normalized])
+    compound = re.fullmatch(r"([a-z]+)[ -]([a-z]+)", normalized)
+    if compound and compound[1] in tens and compound[2] in values and 1 <= values[compound[2]] <= 9:
+        return str(tens[compound[1]] + values[compound[2]])
+    return None
+
+
 def _inline_number(element: etree._Element) -> Decimal | None:
     """Return the value an ix:nonFraction displays, or None for an unhandled format."""
-    try:
-        namespace, local = _resolve(element.get("format"), element)
-    except _Reject:
-        return None
-    if not (namespace or "").startswith(IXT_PREFIX) or local != "num-dot-decimal":
-        return None
-    shown = re.sub(r"[,\s\xa0]", "", "".join(element.itertext()))
-    if not re.fullmatch(r"[0-9]+(\.[0-9]*)?|\.[0-9]+", shown):
+    format_name = element.get("format")
+    text_value = "".join(element.itertext())
+    namespace = local = None
+    if format_name is not None:
+        try:
+            namespace, local = _resolve(format_name, element)
+        except _Reject:
+            return None
+    if format_name is None:
+        # Without a transform the lexical decimal must already be valid. Do not
+        # silently remove grouping commas or interior whitespace.
+        shown = text_value.strip(_XML_SPACE)
+        if not re.fullmatch(r"\+?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", shown):
+            return None
+    elif local == "numwordsen" and namespace == "http://www.sec.gov/inlineXBRL/transformation/2015-08-31":
+        shown = _small_english_number(text_value)
+        if shown is None:
+            return None
+    elif local == "fixed-zero" and namespace in {IXT_PREFIX + "2020-02-12", IXT_PREFIX + "2022-02-16"}:
+        # Registry 4/5 fixed-zero accepts any text, including displayed dashes.
+        # The XML value must still equal the resulting zero in correspondence.
+        shown = "0"
+    elif local == "num-dot-decimal" and (namespace or "").startswith(IXT_PREFIX):
+        shown = re.sub(r"[,\s\xa0]", "", text_value)
+        if not re.fullmatch(r"[0-9]+(\.[0-9]*)?|\.[0-9]+", shown):
+            return None
+    else:
         return None
     # Shift the exponent directly so scaling stays exact at any size.
     _, digits, exponent = Decimal(shown).as_tuple()

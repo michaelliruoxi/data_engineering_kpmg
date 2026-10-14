@@ -1,4 +1,4 @@
-"""Verify, dry-run, or explicitly import the approved local SEC sample."""
+"""Verify, dry-run, or explicitly import an archived SEC filing."""
 
 import argparse
 from contextlib import contextmanager, redirect_stdout
@@ -13,23 +13,17 @@ import sys
 
 from lxml import etree
 
-from download_sec_sample import SampleError, load_manifest, verify_sample
+from download_sec_sample import SampleError
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def verified_inputs(manifest_path, data_root):
-    """Reuse the existing approved-sample loader and full local verification."""
-    manifest = load_manifest(manifest_path)
-    records = [manifest["index_document"], *manifest["files"]]
-    if manifest.get("status") != "verified":
-        raise SampleError("The source manifest must have verified status.")
-    for record in records:
-        if record.get("status") != "verified":
-            raise SampleError(f"Source is not marked verified: {record['local_path']}")
-    verify_sample(data_root, manifest)
-    return manifest
+    """Check each filing's identity, source relationships, and unchanged bytes."""
+    from sec_pipeline.filing_sources import verify_filing
+
+    return verify_filing(manifest_path, data_root)
 
 
 def verify_quietly(manifest_path, data_root):

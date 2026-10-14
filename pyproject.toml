@@ -1,7 +1,7 @@
 [project]
 name = "sec-pipeline"
 version = "0.1.0"
-description = "Verified SEC sample acquisition and filing-linked financial statement export"
+description = "Source-linked SEC filing extraction and transactional PostgreSQL ingestion"
 readme = "readme.md"
 authors = [
     { name = "Qiwei (Emma) Shan", email = "qs2314@columbia.edu" }

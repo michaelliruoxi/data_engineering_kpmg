@@ -5,9 +5,11 @@ dry-run, and explicit import command are available. The controller is implemente
 in `sec_pipeline.processing.run_ingestion_transaction()`, dry-run in
 `run_dry_run()`, and the import/count wrapper in `run_ingestion()`.
 The facts bridge now adapts Bryce's PR #7 parser/loader with version `facts-v1`.
-That parser must be present in the integration checkout. Production table,
-cleaner, and validation adapters still need integration; this framework does
-not yet complete the supplied filing's financial import.
+The complete `sec_pipeline.filing_adapter` now wires facts, statements, report
+cleaning, chunks, and source-grounded validation into both plans. See the
+[automated backfill guide](automated-backfill.md) for the runnable production
+commands and coverage limitations. The following sections also document the
+lower-level adapter contracts and historical component acceptance evidence.
 
 ## Available commands
 
@@ -32,7 +34,7 @@ separately verifies real transaction behavior.
 
 `--dry-run` requires an explicit adapter module and all four processing versions.
 The module must expose `get_dry_run_plan()` returning `DryRunPlan(stages,
-required_checks)`. No production adapter module is supplied yet. A missing module,
+required_checks)`. Use `sec_pipeline.filing_adapter`. A missing module,
 parser, result, or required validation check is an error; nothing is silently
 skipped or reported as a successful filing run.
 
@@ -163,10 +165,8 @@ is a component, not a complete CLI adapter module.
 
 Bryce's parser is supplied by [PR #7](https://github.com/michaelliruoxi/data_engineering_kpmg/pull/7);
 the runner/bridge is supplied by [PR #6](https://github.com/michaelliruoxi/data_engineering_kpmg/pull/6).
-As checked on October 12, both remain open and unmerged. Michael owns review and
-integration into `main`. Local component checks can combine the two revisions in
-an isolated checkout before merge; this does not establish a reviewed team baseline
-or a complete end-to-end import.
+Both components are present in the integrated checkout. Historical component
+results below are distinct from current production-adapter and database acceptance.
 
 Reference JSON is available as `context.reference`; `expected_counts` has the
 same rules as dry-run. Before commit, the wrapper requires the validator's exact
@@ -325,15 +325,13 @@ by these component checks.
 
 ## Remaining integration
 
-Assemble the available facts bridge with the actual table, cleaner, and validation
-bridges in the complete adapter module. The command, explicit destination/version/
-reference options, and stored/rejected/unresolved summaries are implemented.
-Facts use `facts-v1`; the remaining production versions, reference labels, and
-Jazzy's consumption of the in-transaction ID mapping still need agreement/checking.
-The live fixture suite verifies PostgreSQL transaction and replay behavior; the
-actual production adapters still need those checks and full acceptance on the
-supplied filing. Jace's shared login is read-only: write tests use a local writable
-database, followed by Michael's reviewed import.
+The production adapter and multi-issuer acquisition are now implemented. Live
+acceptance on October 13 verified the supplied Microsoft 10-Q and Apple's 2025
+10-K and 2026 10-Q, including committed imports, identical replay, and a deliberate
+late validation failure that preserved the pre-run database snapshot. The
+five-year S&P 500 backfill remains a separate coverage obligation; passing those
+three filings does not establish support for every issuer layout. Unsupported
+filings remain visible as failures in the resumable queue.
 
 See the [Task 2 handoff](task2-handoff.md) for the tested entry points, module-owner
 inputs, and remaining real-filing acceptance work.

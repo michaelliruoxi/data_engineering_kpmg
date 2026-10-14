@@ -431,6 +431,7 @@ class IngestionPlan:
 
     stages: PipelineStages
     required_checks: Sequence[str]
+    configuration_metadata: Callable[[Mapping[str, Any], Path], Mapping[str, Any]] | None = None
 
 
 def check_ingestion_options(
@@ -442,11 +443,13 @@ def check_ingestion_options(
         for name in ("facts", "tables", "report", "chunks", "validate")
     ):
         raise ProcessingError("All ingestion and validation adapters are required in IngestionPlan.")
+    if plan.configuration_metadata is not None and not callable(plan.configuration_metadata):
+        raise ProcessingError("Processing configuration metadata must be supplied by a callable verifier.")
     _processing_options(versions, plan.required_checks)
     _reference_options(reference)
 
 
-def store_ingestion_chunks(conn: Any, context: PipelineContext) -> WriteResult:
+def store_ingestion_chunks(conn: Any, context: PipelineContext, *, bulk=False) -> WriteResult:
     """Chunk the stored report using Ruby's real parser and storage helper."""
     from .chunking import chunk_report, store_chunks
 
@@ -457,7 +460,8 @@ def store_ingestion_chunks(conn: Any, context: PipelineContext) -> WriteResult:
         full_text=report.full_text, sections=report.sections,
         chunking_version=context.versions["chunks"],
     )
-    return WriteResult(ParseResult(chunks), store_chunks(conn, chunks))
+    stored = store_chunks(conn, chunks, bulk=True) if bulk else store_chunks(conn, chunks)
+    return WriteResult(ParseResult(chunks), stored)
 
 
 def _check_write_result(name: str, result: Any, context: PipelineContext) -> None:
@@ -565,6 +569,14 @@ def run_ingestion(
             }
             if counts[key]["expected"] is not None and counts[key]["expected"] != counts[key]["extracted"]:
                 raise ProcessingError("Extracted counts do not match reference expected_counts.")
+        extra_configuration = {}
+        if plan.configuration_metadata is not None:
+            extra_configuration = plan.configuration_metadata(context.manifest, context.data_root)
+            if (not isinstance(extra_configuration, Mapping)
+                    or {"versions", "source_hashes"} & set(extra_configuration)):
+                raise ProcessingError("Processing metadata must not replace verified versions or source hashes.")
+            extra_configuration = deepcopy(dict(extra_configuration))
+            json.dumps(extra_configuration)
         try:
             if verify_inputs(manifest_path, data_root) != manifest:
                 raise ProcessingError("Inputs changed during ingestion.")
@@ -581,6 +593,8 @@ def run_ingestion(
             "report_characters": len(context.outputs["report"].parsed.items[0].full_text),
             "validation": {"passed": True, "required_checks": list(checks), "checks": dict(validation.checks)},
         })
+        if "source_cell_counts" in extra_configuration:
+            summary["source_cell_counts"] = deepcopy(extra_configuration["source_cell_counts"])
         if processing_set_key is not None:
             from .catalog import ProcessingSetInput, store_processing_set, select_preferred_processing_set
             record = ProcessingSetInput(
@@ -594,7 +608,8 @@ def run_ingestion(
                 chunking_version=expected_versions['chunks'],
                 coverage=dict(coverage), validation_status='passed',
                 validation=summary['validation'],
-                configuration={'versions': dict(expected_versions), 'source_hashes': summary['source_hashes']},
+                configuration={'versions': dict(expected_versions), 'source_hashes': summary['source_hashes'],
+                               **extra_configuration},
             )
             set_id = store_processing_set(connection, record)
             if prefer_processing_set:
