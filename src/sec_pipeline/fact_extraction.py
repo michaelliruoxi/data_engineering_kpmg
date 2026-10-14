@@ -41,6 +41,9 @@ XSD = "http://www.w3.org/2001/XMLSchema"
 XML_NS = "http://www.w3.org/XML/1998/namespace"
 IX = "http://www.xbrl.org/2013/inlineXBRL"
 IXT_PREFIX = "http://www.xbrl.org/inlineXBRL/transformation/"
+# Filers declare the SEC transformation registry with either scheme.
+SEC_TRANSFORMATION_NAMESPACES = frozenset({"http://www.sec.gov/inlineXBRL/transformation/2015-08-31",
+                                           "https://www.sec.gov/inlineXBRL/transformation/2015-08-31"})
 
 # Failure categories, matching the team's error contract.
 MALFORMED = "malformed_source"
@@ -677,7 +680,7 @@ def _inline_number(element: etree._Element) -> Decimal | None:
         shown = text_value.strip(_XML_SPACE)
         if not re.fullmatch(r"\+?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", shown):
             return None
-    elif local == "numwordsen" and namespace == "http://www.sec.gov/inlineXBRL/transformation/2015-08-31":
+    elif local == "numwordsen" and namespace in SEC_TRANSFORMATION_NAMESPACES:
         shown = _small_english_number(text_value)
         if shown is None:
             return None
