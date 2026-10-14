@@ -12,6 +12,10 @@
 !/data/raw/sec/0001193125-26-191507/0001193125-26-191507-index.html
 /downloads/
 
+# Generated reports, previews and exports stay local.
+/output/
+/outputs/
+
 # Local environments, caches, and credentials.
 .venv/
 venv/

@@ -117,8 +117,11 @@ def _check_validation(
         raise ProcessingError("Validation checks must be a mapping.")
     if set(checks) - validation.checks.keys():
         raise ProcessingError("Required validation checks are missing.")
-    if any(value is not True for value in validation.checks.values()):
-        raise ProcessingError("Validation failed or contains unverified checks.")
+    failed = tuple(sorted(name for name, value in validation.checks.items() if value is not True))
+    if failed:
+        error = ProcessingError("Validation failed or contains unverified checks.")
+        error.failed_checks = failed
+        raise error
 
 
 def _check_manifest(manifest: Mapping[str, Any], manifest_path: Path) -> None:
@@ -225,10 +228,13 @@ def run_ingestion_transaction(
             outputs["validation"] = validation
             phase = "commit"
             completed = True
-    except ProcessingError:
+    except ProcessingError as exc:
+        exc.stage = getattr(exc, "stage", phase)
         raise
     except Exception as exc:
-        raise ProcessingError(f"Ingestion failed during {phase}.") from exc
+        error = ProcessingError(f"Ingestion failed during {phase}.")
+        error.stage = phase
+        raise error from exc
     if not completed:
         raise ProcessingError("The ingestion transaction was rolled back.")
     return context
@@ -387,10 +393,13 @@ def run_dry_run(
         if verify_inputs(manifest_path, data_root) != manifest:
             raise ProcessingError("Inputs changed during parsing.")
         _check_manifest(manifest, manifest_path)
-    except ProcessingError:
+    except ProcessingError as exc:
+        exc.stage = getattr(exc, "stage", phase)
         raise
     except Exception as exc:
-        raise ProcessingError(f"Dry-run failed during {phase}.") from exc
+        error = ProcessingError(f"Dry-run failed during {phase}.")
+        error.stage = phase
+        raise error from exc
     records = [manifest["index_document"], *manifest["files"]]
     return {
         "mode": "dry-run", "accession_number": manifest["accession_number"],
@@ -431,6 +440,7 @@ class IngestionPlan:
 
     stages: PipelineStages
     required_checks: Sequence[str]
+    configuration_metadata: Callable[[Mapping[str, Any], Path], Mapping[str, Any]] | None = None
 
 
 def check_ingestion_options(
@@ -442,11 +452,13 @@ def check_ingestion_options(
         for name in ("facts", "tables", "report", "chunks", "validate")
     ):
         raise ProcessingError("All ingestion and validation adapters are required in IngestionPlan.")
+    if plan.configuration_metadata is not None and not callable(plan.configuration_metadata):
+        raise ProcessingError("Processing configuration metadata must be supplied by a callable verifier.")
     _processing_options(versions, plan.required_checks)
     _reference_options(reference)
 
 
-def store_ingestion_chunks(conn: Any, context: PipelineContext) -> WriteResult:
+def store_ingestion_chunks(conn: Any, context: PipelineContext, *, bulk=False) -> WriteResult:
     """Chunk the stored report using Ruby's real parser and storage helper."""
     from .chunking import chunk_report, store_chunks
 
@@ -457,7 +469,8 @@ def store_ingestion_chunks(conn: Any, context: PipelineContext) -> WriteResult:
         full_text=report.full_text, sections=report.sections,
         chunking_version=context.versions["chunks"],
     )
-    return WriteResult(ParseResult(chunks), store_chunks(conn, chunks))
+    stored = store_chunks(conn, chunks, bulk=True) if bulk else store_chunks(conn, chunks)
+    return WriteResult(ParseResult(chunks), stored)
 
 
 def _check_write_result(name: str, result: Any, context: PipelineContext) -> None:
@@ -524,8 +537,11 @@ def run_ingestion(
             raise ProcessingError('Coverage and preferred selection require a processing-set key.')
     elif (not isinstance(processing_set_key, str) or not processing_set_key.strip() or not isinstance(coverage, Mapping)
           or set(coverage) != {'facts', 'tables', 'reports', 'chunks'}
-          or any(not isinstance(value, str) or value not in {'unknown', 'partial', 'complete'} for value in coverage.values())):
-        raise ProcessingError('A processing set requires a nonempty key and explicit coverage for all four stages.')
+          or any(not isinstance(value, str) or value not in ({'absent', 'unknown', 'partial', 'complete'} if stage == 'tables'
+                                                             else {'unknown', 'partial', 'complete'})
+                 for stage, value in coverage.items())):
+        raise ProcessingError('A processing set requires a nonempty key and explicit coverage for all four stages; only tables may be absent.')
+    tables_absent = coverage is not None and coverage.get('tables') == 'absent'
     if not callable(verify_inputs):
         raise ProcessingError("A local input verifier is required for ingestion.")
     expected_versions, checks = _processing_options(versions, plan.required_checks)
@@ -551,6 +567,8 @@ def run_ingestion(
         validation = plan.stages.validate(connection, context)
         _require_active_transaction(connection, "validation")
         _check_validation(validation, expected_versions, checks)
+        if tables_absent and context.outputs["tables"].parsed.items:
+            raise ProcessingError("A set with absent tables must not store statement tables.")
         counts = {}
         for name in ("facts", "tables", "report", "chunks"):
             result = context.outputs[name]
@@ -565,6 +583,14 @@ def run_ingestion(
             }
             if counts[key]["expected"] is not None and counts[key]["expected"] != counts[key]["extracted"]:
                 raise ProcessingError("Extracted counts do not match reference expected_counts.")
+        extra_configuration = {}
+        if plan.configuration_metadata is not None:
+            extra_configuration = plan.configuration_metadata(context.manifest, context.data_root)
+            if (not isinstance(extra_configuration, Mapping)
+                    or {"versions", "source_hashes"} & set(extra_configuration)):
+                raise ProcessingError("Processing metadata must not replace verified versions or source hashes.")
+            extra_configuration = deepcopy(dict(extra_configuration))
+            json.dumps(extra_configuration)
         try:
             if verify_inputs(manifest_path, data_root) != manifest:
                 raise ProcessingError("Inputs changed during ingestion.")
@@ -581,6 +607,8 @@ def run_ingestion(
             "report_characters": len(context.outputs["report"].parsed.items[0].full_text),
             "validation": {"passed": True, "required_checks": list(checks), "checks": dict(validation.checks)},
         })
+        if "source_cell_counts" in extra_configuration:
+            summary["source_cell_counts"] = deepcopy(extra_configuration["source_cell_counts"])
         if processing_set_key is not None:
             from .catalog import ProcessingSetInput, store_processing_set, select_preferred_processing_set
             record = ProcessingSetInput(
@@ -588,13 +616,14 @@ def run_ingestion(
                 set_key=processing_set_key,
                 fact_source_document_id=context.source_ids.xml_document_id,
                 fact_extraction_version=expected_versions['facts'],
-                table_source_document_id=context.source_ids.html_document_id,
-                table_extraction_version=expected_versions['tables'],
+                table_source_document_id=None if tables_absent else context.source_ids.html_document_id,
+                table_extraction_version=None if tables_absent else expected_versions['tables'],
                 report_id=context.outputs['report'].stored_ids[0],
                 chunking_version=expected_versions['chunks'],
                 coverage=dict(coverage), validation_status='passed',
                 validation=summary['validation'],
-                configuration={'versions': dict(expected_versions), 'source_hashes': summary['source_hashes']},
+                configuration={'versions': dict(expected_versions), 'source_hashes': summary['source_hashes'],
+                               **extra_configuration},
             )
             set_id = store_processing_set(connection, record)
             if prefer_processing_set:

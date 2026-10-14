@@ -26,8 +26,8 @@ def _source_path(context, role):
 def parse_tables(context):
     """Pure stage: retain inline/XML IDs; no database UUID lookup here."""
     if (context.versions.get('facts') != 'facts-v1'
-            or context.versions.get('tables') != 'tables-v1'):
-        raise ProcessingError('This bridge requires facts-v1 and tables-v1.')
+            or context.versions.get('tables') not in {'tables-v1', 'tables-v2'}):
+        raise ProcessingError('This bridge requires facts-v1 and tables-v1 or tables-v2.')
     tables = extract_tables(
         _source_path(context, 'main_inline_xbrl_filing'),
         _source_path(context, 'extracted_xbrl_instance'),
@@ -41,12 +41,12 @@ def parse_tables(context):
         t.structure['inventory'].get('unresolved', 0) for t in tables))
 
 
-def write_tables(conn, context):
+def write_tables(conn, context, *, bulk=False):
     """Resolve UUIDs from this run's facts and load within its transaction."""
     parsed = parse_tables(context)
     scope = FactScope(
         context.source_ids.filing_id, context.source_ids.xml_document_id,
         context.versions['facts'], fact_ids_for_tables(context),
     )
-    stored = load_tables(conn, parsed.items, scope)
+    stored = load_tables(conn, parsed.items, scope, bulk=True) if bulk else load_tables(conn, parsed.items, scope)
     return WriteResult(parsed, [stored[t.table_key] for t in parsed.items])

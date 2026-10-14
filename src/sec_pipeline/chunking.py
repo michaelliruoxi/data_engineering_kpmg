@@ -1,9 +1,10 @@
+from dataclasses import replace
 from typing import Any, Mapping, Sequence
 from uuid import UUID
 
 import psycopg
 
-from .database import ChunkInput, store_chunk
+from .database import ChunkInput, DatabaseError, store_chunk
 
 
 def chunk_report(
@@ -143,6 +144,65 @@ def chunk_report(
 def store_chunks(
     conn: psycopg.Connection,
     chunks: Sequence[ChunkInput],
+    *,
+    bulk: bool = False,
 ) -> list[UUID]:
-    """Store chunks using the caller's existing database transaction."""
-    return [store_chunk(conn, chunk) for chunk in chunks]
+    """Store chunks in input order using the caller's existing transaction.
+
+    Bulk mode resolves section keys once per exact filing/report scope, checks
+    every resolved range before writing, then uses bounded immutable inserts.
+    Explicit section IDs and missing section keys retain the existing database
+    constraint behavior. This helper never commits, rolls back, or opens a
+    transaction or savepoint.
+    """
+    if not bulk:
+        return [store_chunk(conn, chunk) for chunk in chunks]
+
+    from .bulk_storage import store_many
+
+    if conn.autocommit:
+        raise DatabaseError("Write helpers require autocommit=False and caller-managed transactions.")
+    if isinstance(chunks, (str, bytes, Mapping)):
+        raise DatabaseError("Bulk chunks must contain ChunkInput records.")
+    try:
+        items = tuple(chunks)
+    except TypeError as exc:
+        raise DatabaseError("Bulk chunks must contain ChunkInput records.") from exc
+    if any(type(chunk) is not ChunkInput for chunk in items):
+        raise DatabaseError("Bulk chunks must contain ChunkInput records.")
+    if not items:
+        return []
+
+    report_filings, scopes = {}, {}
+    for chunk in items:
+        previous = report_filings.setdefault(chunk.report_id, chunk.filing_id)
+        if previous != chunk.filing_id:
+            raise DatabaseError("A report cannot belong to multiple filing scopes in one chunk batch.")
+        if chunk.section_id is None:
+            key = chunk.section or chunk.metadata.get("section_id")
+            if isinstance(key, str) and key:
+                scopes.setdefault((chunk.filing_id, chunk.report_id), None)
+
+    for filing_id, report_id in scopes:
+        rows = conn.execute(
+            """SELECT id, section_key, offset_start, offset_end FROM sec.report_sections
+               WHERE report_id = %s AND filing_id = %s FOR SHARE""",
+            (report_id, filing_id),
+        ).fetchall()
+        scopes[(filing_id, report_id)] = {
+            key: (section_id, start, end) for section_id, key, start, end in rows
+        }
+
+    resolved = []
+    for chunk in items:
+        if chunk.section_id is None:
+            key = chunk.section or chunk.metadata.get("section_id")
+            if isinstance(key, str) and key:
+                section = scopes[(chunk.filing_id, chunk.report_id)].get(key)
+                if section is not None:
+                    section_id, start, end = section
+                    if chunk.offset_start < start or chunk.offset_end > end:
+                        raise DatabaseError("Chunk crosses its report section boundary.")
+                    chunk = replace(chunk, section_id=section_id)
+        resolved.append(chunk)
+    return store_many(conn, "chunks", resolved, ("report_id", "chunking_version", "chunk_index"))

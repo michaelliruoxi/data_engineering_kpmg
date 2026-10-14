@@ -46,16 +46,20 @@ _CLASSIFICATIONS = {
     'resolved_label': ('label', 'resolved'),
     'resolved': ('data', 'resolved'),
     'unresolved': ('data', 'unresolved'),
+    'source_only_marker': ('data', 'source_only'),
 }
-_METHODS = {'inline_id', 'same_row_semantic_repeat'}
+_METHODS = {'inline_id', 'same_row_semantic_repeat', 'hidden_inline_id'}
 _JSON_COLUMNS = {'source_locator', 'column_headings', 'column_period', 'evidence'}
 
 
 def relational_cells(table_id: UUID, table: FinancialTableInput):
     """Validate the cell contract before the first write; return cells and refs."""
     structure = table.structure
-    if structure.get('schema_version') != 1 or not isinstance(structure.get('rows'), list):
-        raise TableCellError('Relational cells require the table schema-v1 rows contract.')
+    version = structure.get('schema_version')
+    if (version not in {1, 2} or not isinstance(structure.get('rows'), list)
+            or (version == 2 and table.extraction_version != 'tables-v3')
+            or (table.extraction_version == 'tables-v3' and version != 2)):
+        raise TableCellError('Relational cells require schema-v1, or schema-v2 with tables-v3.')
     cells, seen, occupied = [], set(), set()
     for row in structure['rows']:
         if not isinstance(row, list):
@@ -79,6 +83,23 @@ def relational_cells(table_id: UUID, table: FinancialTableInput):
             if classification not in _CLASSIFICATIONS:
                 raise TableCellError('Unknown cell classification.')
             kind, status = _CLASSIFICATIONS[classification]
+            if status == 'source_only':
+                evidence = cell.get('source_only_evidence')
+                if (version != 2 or not isinstance(evidence, dict)
+                        or any(key in cell for key in ('numeric_value', 'raw_value', 'is_nil'))
+                        or evidence.get('verification_version') != 'source-marker-v1'
+                        or cell.get('display_text') not in {'-', '–', '—'}
+                        or evidence.get('literal') != cell.get('display_text')
+                        or evidence.get('source_xpath') != cell.get('source_xpath')
+                        or evidence.get('html_sha256') != structure.get('html_sha256')
+                        or evidence.get('direct_numeric_ids') != []
+                        or evidence.get('hidden_binding_targets') != []
+                        or evidence.get('binding_scope') != 'archived_dom_numeric_and_sec_hidden_bindings'
+                        or evidence.get('runtime_scope') != 'scripts_not_executed'
+                        or not isinstance(evidence.get('external_scripts'), list)):
+                    raise TableCellError('Source-only markers require explicit schema-v2 source evidence.')
+            elif 'source_only_evidence' in cell:
+                raise TableCellError('Only source-only cells may carry absence evidence.')
             refs = cell.get('fact_references')
             reason = cell.get('unresolved_reason')
             if not isinstance(refs, list) or any(not isinstance(ref, dict) for ref in refs):
@@ -103,6 +124,13 @@ def relational_cells(table_id: UUID, table: FinancialTableInput):
                     raise TableCellError('Every accepted reference needs inline source evidence.')
                 if ref['method'] == 'same_row_semantic_repeat' and not ref.get('repeated_from_inline_xpath'):
                     raise TableCellError('Repeated values need the verified origin locator.')
+                if ref['method'] == 'hidden_inline_id' and (
+                        version != 2 or ref.get('is_nil') is not True
+                        or ref.get('binding_property') != '-sec-ix-hidden'
+                        or ref.get('binding_target_id') != xml_id
+                        or not all(isinstance(ref.get(name), str) and ref[name].strip()
+                                   for name in ('binding_xpath', 'binding_style', 'hidden_container_xpath'))):
+                    raise TableCellError('Hidden links require schema-v2 explicit nil-binding evidence.')
                 ref_ids.append(xml_id)
             if len(set(ref_ids)) != len(ref_ids):
                 raise TableCellError('Repeated XML occurrence in one cell is ambiguous.')
@@ -150,7 +178,7 @@ def _insert_exact(conn, table_name, values, key_columns, returning='id'):
 
 
 def store_table_cells(conn, table_id: UUID, table: FinancialTableInput,
-                      xml_id_to_fact_id: dict[str, UUID]) -> dict[str, UUID]:
+                      xml_id_to_fact_id: dict[str, UUID], *, bulk=False) -> dict[str, UUID]:
     """Persist every anchor cell and verified link, with an atomic replay check.
 
     This is called after load_tables verifies the stored facts against XML. SQL
@@ -170,18 +198,46 @@ def store_table_cells(conn, table_id: UUID, table: FinancialTableInput,
     conn.execute('SELECT sec.lock_processing_filing(%s)', (table.filing_id,))
     result = {}
     with conn.transaction():
-        conn.execute('''UPDATE sec.financial_tables SET relational_cells_version = 1
-                        WHERE id = %s AND filing_id = %s AND relational_cells_version IS NULL''',
-                     (table_id, table.filing_id))
-        for cell, refs in parsed:
-            cell_id = _insert_exact(conn, 'table_cells', asdict(cell), ('table_id', 'cell_key'))
+        if table.structure['schema_version'] == 2:
+            conn.execute('''UPDATE sec.financial_tables SET relational_cells_version = 2
+                            WHERE id = %s AND filing_id = %s AND relational_cells_version IS NULL''',
+                         (table_id, table.filing_id))
+        else:
+            conn.execute('''UPDATE sec.financial_tables SET relational_cells_version = 1
+                            WHERE id = %s AND filing_id = %s AND relational_cells_version IS NULL''',
+                         (table_id, table.filing_id))
+        if bulk:
+            from .bulk_storage import store_many
+            cell_ids = store_many(conn, 'table_cells', [cell for cell, _ in parsed], ('table_id', 'cell_key'))
+        else:
+            cell_ids = [None] * len(parsed)
+        links = []
+        observations = {cell['cell_id']: cell['source_only_evidence']
+                        for row in table.structure['rows'] for cell in row
+                        if cell.get('classification') == 'source_only_marker'}
+        for (cell, refs), cell_id in zip(parsed, cell_ids):
+            if not bulk:
+                cell_id = _insert_exact(conn, 'table_cells', asdict(cell), ('table_id', 'cell_key'))
             result[cell.cell_key] = cell_id
+            if cell.resolution_status == 'source_only':
+                _insert_exact(conn, 'cell_source_observations', {
+                    'filing_id': table.filing_id, 'table_id': table_id, 'cell_id': cell_id,
+                    'source_document_id': table.source_document_id,
+                    'source_sha256': table.structure['html_sha256'],
+                    'verification_version': 'source-marker-v1', 'evidence': observations[cell.cell_key],
+                }, ('cell_id',))
             for ordinal, ref in enumerate(refs):
-                _insert_exact(conn, 'cell_fact_links', {
+                link = {
                     'filing_id': table.filing_id, 'table_id': table_id, 'cell_id': cell_id,
                     'fact_id': xml_id_to_fact_id[ref['xml_id']], 'reference_order': ordinal,
                     'link_method': ref['method'], 'evidence': ref,
-                }, ('cell_id', 'fact_id'), returning='fact_id')
+                }
+                if bulk:
+                    links.append(link)
+                else:
+                    _insert_exact(conn, 'cell_fact_links', link, ('cell_id', 'fact_id'), returning='fact_id')
+        if bulk and links:
+            store_many(conn, 'cell_fact_links', links, ('cell_id', 'fact_id'), returning='fact_id')
         stored = dict(conn.execute('SELECT cell_key, id FROM sec.table_cells WHERE table_id = %s',
                                    (table_id,)).fetchall())
         if stored != result:

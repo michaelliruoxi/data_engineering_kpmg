@@ -4,7 +4,48 @@ The shared `sec` schema is already deployed in the `sec_filings` database on Ama
 
 **For teammates:** use the [database access guide](../readme.md) and [manual example queries](manual-example.md). The provisioning, restore, and account-administration steps below are maintainer procedures; joining the project does not require creating or restoring a database.
 
-## Current deployment status: October 7, 2026
+## Schema upgrade: October 13, 2026
+
+The shared `sec_filings` database was upgraded from migration 001 through **005**, using the migration files from repository commit `2b8ed25` (the merged database-browsing update). PostgreSQL reported **17.11**, and the fresh verification connection used **`verify-full` with TLS 1.3**. The `sec` schema now contains **15 tables and 10 views**.
+
+| Migration | Added structure |
+| --- | --- |
+| `002_report_sections.sql` | Section vocabulary, report sections, and optional chunk-to-section links |
+| `003_processing_sets.sql` | Explicit processing versions, preferred selections, coverage/validation metadata, and browsing catalogs |
+| `004_table_cells.sql` | Relational statement cells, accepted cell-to-fact links, and cell views |
+| `005_document_identity.sql` | Unique filing/source-URL identity, optional document display/storage fields, and company name as filed |
+
+Before applying the update, a PostgreSQL 17.11 custom-format dump of the live `sec` schema was restored into an isolated local database. All four migrations passed there, including a repeat run that applied nothing. The existing database contract tests passed: **48 tests and 41 subtests**, covering populated upgrades, rollback on conflicting source identities, sections, processing sets, and statement cells.
+
+The AWS migration batch and reader SELECT grants were committed in one transaction after checking preservation of every original field and UUID. A new connection then verified the five migration checksums, original row hashes and citation-view definitions/results, chunk text slices, and catalog behavior. The existing **1 company, 1 filing, 4 source documents, 24 facts, 3 statement excerpts, 24 table-to-fact links, 1 report excerpt, and 6 chunks** were preserved.
+
+Migration 002 imported **2 legacy sections**, retaining `unknown` classification and `unverified` status. `table_cells`, `cell_fact_links`, `filing_processing_sets`, and `preferred_processing_sets` are empty. `filing_overview` returns the filing with NULL selected-set fields; the preferred catalogs return no rows. The upgrade does not load the full filing or select the manual example as preferred. Use the [README's current browsing instructions](../readme.md#what-is-currently-in-aws).
+
+`sec_reader` and all **11 member roles** (`sec_jace`, `sec_bryce`, `sec_jazzy`, `sec_emma`, `sec_ruby`, `sec_sally`, `rag`, `graphrag`, `agents`, `evaluation`, and `ui`) passed SELECT queries against every table/view. Effective permissions still deny data writes and schema creation. These checks used `SET LOCAL ROLE` through the maintainer connection; they do not prove login or connectivity from teammates' own machines. The existing default SELECT grant for future objects created by `postgres` remains in place.
+
+Local recovery and verification files are retained under ignored `backups/`:
+
+- `sec_filings-before-schema-005-20261013.dump` — pre-upgrade custom-format archive, SHA-256 `978794a62087e263b011e3c9817316716950277109eebb04fe60c969e8dac841`.
+- `rds-schema-001-before-20261013.json` — original records, per-relation hashes, and view definitions.
+- `rds-schema-005-rehearsal-20261013.json` — successful restore/upgrade rehearsal and preservation checks.
+- `rds-schema-005-aws-20261013.json` — committed AWS verification, migration hashes, counts, and reader checks.
+
+### Applying future schema updates
+
+1. Review the pending migration files and confirm the intended `.env.aws` target. Take a fresh, uniquely named `pg_dump --schema=sec -Fc` backup and rehearse its restore/upgrade in an isolated database. Do not restore over the populated shared database.
+2. Apply the packaged migrations using the maintainer account, then check status:
+
+   ```powershell
+   .\.venv\Scripts\python.exe -m sec_pipeline.db_cli --env-file .env.aws migrate
+   .\.venv\Scripts\python.exe -m sec_pipeline.db_cli --env-file .env.aws status
+   ```
+
+3. Check reader SELECT access to new tables/views. If necessary, run `GRANT SELECT ON ALL TABLES IN SCHEMA sec TO sec_reader;` as the administrator; do not grant reader write access. Default privileges apply to the role that creates the objects.
+4. Reconnect and compare original IDs, values, text, source evidence, and citation results against the backup. Check the new objects and migration hashes. Preserve the backup and verification receipt.
+
+`sec-db migrate` checks historical migration hashes and applies its pending batch atomically. Merging repository code does not run it on AWS. On the verified October 13 state, a repeat migration applies nothing. Choosing a preferred processing set is a separate, explicit [validation and selection step](database-browsing.md#explicit-processing-sets).
+
+## Deployment and access history: October 6–7, 2026
 
 The October 6 deployment record showed **Available** for the `sec-filings` RDS instance in `us-east-1`: PostgreSQL 17.11, `db.t4g.micro`, 20 GiB encrypted gp3 storage, one-day automated backups, and deletion protection. At that initial verification, its security group allowed TCP 5432 from the maintainer's public IPv4 `/32`. A connection using the ignored `.env.aws` file succeeded with `verify-full` and TLS 1.3. The actual master username is `postgres`. These instance and connection results are from October 6; check the live configuration before maintenance.
 
@@ -110,7 +151,7 @@ The source files and `source_manifest.json` are not contained in the database. R
 
 ## 5. Share controlled access
 
-The six current teammate logins already belong to the read-only `sec_reader` group. Reuse these accounts for onboarding. For future people or services, create separate logins and assign appropriate group roles. Reserve schema migrations, role administration, and database ownership for Michael. Keep shared imports with Michael until a reviewed loader needs a restricted write role; scope any grant to its actual tables and operations, without schema administration or overwriting source provenance.
+The six teammate logins and five team/service logins listed in the October 13 verification already belong to the read-only `sec_reader` group. Reuse these accounts for onboarding. For future people or services, create separate logins and assign appropriate group roles. Reserve schema migrations, role administration, and database ownership for Michael. Keep shared imports with Michael until a reviewed loader needs a restricted write role; scope any grant to its actual tables and operations, without schema administration or overwriting source provenance.
 
 Each team needs the endpoint, port, database name, its own login, the CA bundle, and instructions to use `verify-full`. Share credentials privately. Under the current Anywhere-IPv4 rule, teammates do not need to submit public IP addresses. Verify login and a reader query from each teammate's machine before calling onboarding complete; local success alone does not prove another team's network can connect.
 

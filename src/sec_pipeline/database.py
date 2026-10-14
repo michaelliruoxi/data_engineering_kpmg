@@ -172,13 +172,29 @@ def connect(env_file: Path | str | None = Path('.env'), **overrides: Any) -> psy
     return psycopg.connect(**(connection_settings(env_file) | overrides))
 
 
-def migrate(conn: psycopg.Connection) -> list[str]:
-    """Apply the packaged migration batch atomically and reject history drift."""
-    migrations = sorted(
+def _packaged_migrations() -> list[tuple[str, bytes]]:
+    return sorted(
         (resource.name, resource.read_bytes())
         for resource in files('sec_pipeline.migrations').iterdir()
         if re.fullmatch(r'\d{3}_[a-z0-9_]+\.sql', resource.name)
     )
+
+
+def migration_digest(content: bytes) -> str:
+    """SHA-256 of a migration with CRLF line endings normalized, as Git checks it out."""
+    return hashlib.sha256(content.replace(b'\r\n', b'\n')).hexdigest()
+
+
+def migration_checksum_matches(recorded: str, content: bytes) -> bool:
+    """Accept a ledger digest of the same migration saved with LF or CRLF line endings."""
+    normalized = content.replace(b'\r\n', b'\n')
+    return recorded in {hashlib.sha256(variant).hexdigest()
+                        for variant in (normalized, normalized.replace(b'\n', b'\r\n'), content)}
+
+
+def migrate(conn: psycopg.Connection) -> list[str]:
+    """Apply the packaged migration batch atomically and reject history drift."""
+    migrations = _packaged_migrations()
     if not migrations:
         raise DatabaseError('Packaged SQL migrations are missing.')
     applied_now: list[str] = []
@@ -194,9 +210,8 @@ def migrate(conn: psycopg.Connection) -> list[str]:
             raise DatabaseError('Database contains migrations absent from this package.')
         pending_seen = False
         for name, content in migrations:
-            digest = hashlib.sha256(content).hexdigest()
             if name in applied:
-                if applied[name] != digest:
+                if not migration_checksum_matches(applied[name], content):
                     raise DatabaseError(f'Applied migration checksum changed: {name}')
                 if pending_seen:
                     raise DatabaseError('Migration history is not a contiguous prefix.')
@@ -205,9 +220,9 @@ def migrate(conn: psycopg.Connection) -> list[str]:
         for name, content in migrations:
             if name in applied:
                 continue
-            conn.execute(content.decode('utf-8'))
+            conn.execute(content.replace(b'\r\n', b'\n').decode('utf-8'))
             conn.execute('INSERT INTO sec.schema_migrations (name, sha256) VALUES (%s, %s)',
-                         (name, hashlib.sha256(content).hexdigest()))
+                         (name, migration_digest(content)))
             applied_now.append(name)
     return applied_now
 
@@ -248,6 +263,10 @@ def register_company(conn: psycopg.Connection, record: CompanyInput) -> UUID:
     """Resolve stable CIK identity; historical filings never overwrite a current profile."""
     if conn.autocommit:
         raise DatabaseError('Write helpers require autocommit=False and caller-managed transactions.')
+    if record.ticker is None:
+        from .company_tickers import current_ticker
+
+        record = replace(record, ticker=current_ticker(record.cik))
     row = conn.execute('''INSERT INTO sec.companies (cik, name, ticker)
         VALUES (%s, %s, %s) ON CONFLICT (cik) DO NOTHING RETURNING id''',
         (record.cik, record.name, record.ticker)).fetchone()
@@ -276,7 +295,8 @@ def register_filing(conn: psycopg.Connection, record: FilingInput) -> UUID:
     if existing is None:
         return _store(conn, 'filings', record, ('accession_number',))
     previous_name = existing[1]
-    if previous_name is not None and record.company_name_as_filed not in (None, previous_name):
+    if (previous_name is not None and record.company_name_as_filed is not None
+            and record.company_name_as_filed.casefold() != previous_name.casefold()):
         raise DataConflict('Conflicting company name in the same filing.')
     filing_id = _store(conn, 'filings', replace(record, company_name_as_filed=previous_name),
                        ('accession_number',))
@@ -432,19 +452,22 @@ def status(conn: psycopg.Connection) -> dict[str, Any]:
     result: dict[str, Any] = {'database': conn.info.dbname, 'server_version': conn.info.server_version}
     if conn.execute("SELECT to_regclass('sec.schema_migrations')").fetchone()[0] is None:
         return result | {'migrations': [], 'counts': {}, 'ready': False}
-    result['migrations'] = [row[0] for row in conn.execute(
-        'SELECT name FROM sec.schema_migrations ORDER BY name').fetchall()]
+    ledger = conn.execute('SELECT name, sha256 FROM sec.schema_migrations ORDER BY name').fetchall()
+    result['migrations'] = [name for name, _ in ledger]
     result['counts'] = {}
     for table in ('companies', 'filings', 'source_documents', 'reports', 'chunks',
                   'financial_facts', 'financial_tables', 'financial_table_facts',
                   'report_sections', 'table_cells', 'cell_fact_links',
-                  'filing_processing_sets', 'preferred_processing_sets'):
+                  'filing_processing_sets', 'preferred_processing_sets', 'issuer_successions',
+                  'cell_source_observations'):
         if conn.execute('SELECT to_regclass(%s)', (f'sec.{table}',)).fetchone()[0] is None:
             result['counts'][table] = None
         else:
             result['counts'][table] = conn.execute(sql.SQL('SELECT count(*) FROM sec.{}').format(
                 sql.Identifier(table))).fetchone()[0]
-    packaged = sorted(resource.name for resource in files('sec_pipeline.migrations').iterdir()
-                      if re.fullmatch(r'\d{3}_[a-z0-9_]+\.sql', resource.name))
-    result['ready'] = result['migrations'] == packaged and all(v is not None for v in result['counts'].values())
+    packaged = dict(_packaged_migrations())
+    result['checksum_mismatches'] = [name for name, digest in ledger
+                                     if name in packaged and not migration_checksum_matches(digest, packaged[name])]
+    result['ready'] = (result['migrations'] == sorted(packaged) and not result['checksum_mismatches']
+                       and all(v is not None for v in result['counts'].values()))
     return result

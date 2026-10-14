@@ -10,6 +10,7 @@ for publication rechecks the committed seal; read-only isolation is unrestricted
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 from uuid import UUID
@@ -138,3 +139,38 @@ def select_preferred_processing_set(
             selected_at = CASE WHEN sec.preferred_processing_sets.processing_set_id
                 = EXCLUDED.processing_set_id THEN sec.preferred_processing_sets.selected_at ELSE now() END""",
         (filing_id, processing_set_id))
+
+
+def validated_processing_set_candidates(
+    conn: psycopg.Connection, set_keys: Sequence[str],
+) -> list[tuple[UUID, UUID, str]]:
+    """List, for filings without a preferred set, their best passed set.
+
+    set_keys names the acceptable sets in priority order; among sets with the
+    first available key, the newest wins. Nothing is selected by this read.
+    """
+    keys = list(set_keys) if isinstance(set_keys, Sequence) and not isinstance(set_keys, str) else []
+    if not keys or any(not isinstance(key, str) or not key.strip() for key in keys) or len(set(keys)) != len(keys):
+        raise DatabaseError("Supply one or more distinct, nonempty set keys in priority order.")
+    return [tuple(row) for row in conn.execute("""SELECT DISTINCT ON (s.filing_id) s.filing_id, s.id, s.set_key
+        FROM sec.filing_processing_sets s
+        WHERE s.validation_status = 'passed' AND s.set_key = ANY(%s)
+          AND NOT EXISTS (SELECT 1 FROM sec.preferred_processing_sets p WHERE p.filing_id = s.filing_id)
+        ORDER BY s.filing_id, array_position(%s::text[], s.set_key), s.created_at DESC, s.id""",
+        (keys, keys)).fetchall()]
+
+
+def prefer_unselected_processing_set(
+    conn: psycopg.Connection, filing_id: UUID, processing_set_id: UUID,
+) -> bool:
+    """Explicitly select a passed set only when the filing has no preferred set yet.
+
+    Unlike select_preferred_processing_set, an existing choice is never replaced.
+    Returns whether this call made the selection.
+    """
+    if conn.autocommit:
+        raise DatabaseError("Processing set writes require caller-managed transactions.")
+    conn.execute("SELECT sec.lock_processing_filing(%s)", (filing_id,))
+    return conn.execute("""INSERT INTO sec.preferred_processing_sets (filing_id, processing_set_id)
+        VALUES (%s, %s) ON CONFLICT (filing_id) DO NOTHING RETURNING filing_id""",
+        (filing_id, processing_set_id)).fetchone() is not None

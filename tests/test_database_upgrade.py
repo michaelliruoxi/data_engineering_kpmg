@@ -45,7 +45,8 @@ class DatabaseUpgradeTests(unittest.TestCase):
         self.conn.commit()
 
     def test_populated_upgrade_preserves_evidence_and_never_promotes_it(self):
-        self.assertEqual(len(db.migrate(self.conn)), 4)
+        packaged = sorted(path.name for path in (Path(db.__file__).parent / 'migrations').glob('[0-9][0-9][0-9]_*.sql'))
+        self.assertEqual(db.migrate(self.conn), packaged[1:])
         self.assertEqual(db.migrate(self.conn), [])
         self.assertEqual(self.conn.execute('SELECT id,full_text,sections FROM sec.reports').fetchone(),
                          (self.report,self.text,self.sections))

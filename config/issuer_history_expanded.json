@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "current_cik": "0002115436",
+      "predecessor_cik": "0000034088",
+      "effective_date": "2026-07-01",
+      "current_name": "ExxonMobil Holdings Corporation",
+      "predecessor_name": "Exxon Mobil Corporation",
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/2115436/000119312526291990/d71068d8k12b.htm",
+      "relationship": "successor_issuer"
+    },
+    {
+      "current_cik": "0002012383",
+      "predecessor_cik": "0001364742",
+      "effective_date": "2024-10-01",
+      "current_name": "BlackRock, Inc.",
+      "predecessor_name": "BlackRock, Inc. (renamed BlackRock Finance, Inc.)",
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/2012383/000119312524229601/d856271d8k12b.htm",
+      "relationship": "successor_issuer"
+    },
+    {
+      "current_cik": "0001996862",
+      "predecessor_cik": "0001144519",
+      "effective_date": "2023-11-01",
+      "current_name": "Bunge Global SA",
+      "predecessor_name": "Bunge Limited",
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1144519/000110465923113122/tm2329110d1_8k.htm",
+      "relationship": "successor_issuer"
+    },
+    {
+      "current_cik": "0002011641",
+      "predecessor_cik": "0001832433",
+      "effective_date": "2024-08-01",
+      "current_name": "Ferguson Enterprises Inc.",
+      "predecessor_name": "Ferguson plc (renamed Ferguson (Jersey) Limited)",
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/1832433/000119312524191090/d850112d8k.htm",
+      "relationship": "successor_issuer"
+    },
+    {
+      "current_cik": "0002041610",
+      "predecessor_cik": "0000813828",
+      "effective_date": "2025-08-07",
+      "current_name": "Paramount Skydance Corporation",
+      "predecessor_name": "Paramount Global",
+      "evidence_url": "https://www.sec.gov/Archives/edgar/data/2041610/000119312525175046/d841914d8k12b.htm",
+      "relationship": "successor_issuer"
+    }
+  ]
+}

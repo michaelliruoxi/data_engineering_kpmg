@@ -1,5 +1,6 @@
 """Offline configuration, input, and command-boundary checks."""
 
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
@@ -250,6 +251,61 @@ class OfflineInputTests(unittest.TestCase):
             with self.assertRaisesRegex(db.DatabaseError, 'missing'):
                 db.migrate(connection)
             self.assertEqual(connection.mock_calls, [])
+
+
+class FakeLedgerConnection:
+    """Records migration-ledger reads and writes without a database."""
+
+    def __init__(self, applied):
+        self.applied = dict(applied)
+        self.executed = []
+
+    @contextmanager
+    def transaction(self):
+        yield
+
+    def execute(self, query, params=None):
+        self.executed.append(query)
+        result = Mock()
+        if 'FROM sec.schema_migrations' in str(query):
+            result.fetchall.return_value = sorted(self.applied.items())
+        elif str(query).startswith('INSERT INTO sec.schema_migrations'):
+            self.applied[params[0]] = params[1]
+        return result
+
+
+class MigrationLineEndingTests(unittest.TestCase):
+    LF = b'CREATE TABLE sec.example (id int);\nCOMMENT ON TABLE sec.example IS $$x$$;\n'
+    CRLF = LF.replace(b'\n', b'\r\n')
+
+    def migrate_with(self, packaged, applied):
+        connection = FakeLedgerConnection(applied)
+        with tempfile.TemporaryDirectory() as directory, patch.object(db, 'files', return_value=Path(directory)):
+            for name, content in packaged.items():
+                (Path(directory) / name).write_bytes(content)
+            return connection, db.migrate(connection)
+
+    def test_ledger_digests_from_either_line_ending_are_accepted(self):
+        for packaged, recorded in ((self.LF, self.CRLF), (self.CRLF, self.LF),
+                                   (self.LF, self.LF), (self.CRLF, self.CRLF)):
+            with self.subTest(packaged=packaged[-2:], recorded=recorded[-2:]):
+                applied = {'001_example.sql': hashlib.sha256(recorded).hexdigest()}
+                connection, applied_now = self.migrate_with({'001_example.sql': packaged}, applied)
+                self.assertEqual(applied_now, [])
+                self.assertEqual(connection.applied, applied)
+
+    def test_changed_content_is_still_rejected(self):
+        applied = {'001_example.sql': hashlib.sha256(self.CRLF).hexdigest()}
+        changed = self.LF.replace(b'int', b'bigint')
+        with self.assertRaisesRegex(db.DatabaseError, 'checksum changed: 001_example.sql'):
+            self.migrate_with({'001_example.sql': changed}, applied)
+
+    def test_new_migrations_execute_and_record_lf_content(self):
+        connection, applied_now = self.migrate_with({'001_example.sql': self.CRLF}, {})
+        self.assertEqual(applied_now, ['001_example.sql'])
+        self.assertIn(self.LF.decode(), connection.executed)
+        self.assertEqual(connection.applied['001_example.sql'], hashlib.sha256(self.LF).hexdigest())
+        self.assertEqual(db.migration_digest(self.CRLF), db.migration_digest(self.LF))
 
 
 if __name__ == '__main__':
