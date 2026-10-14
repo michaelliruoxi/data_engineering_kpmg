@@ -625,10 +625,21 @@ def _export_fact_ids(conn: psycopg.Connection, manifest: dict[str, Any], xml_loc
 
 # ------------------------------------------------------- inline HTML correspondence
 
+_HYPHENS = str.maketrans(dict.fromkeys((0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2212), "-"))
+
+
 def _small_english_number(value: str) -> str | None:
-    """Recognize 0-99 and a single named magnitude; defer ambiguous phrases."""
+    """Recognize 0-999 and a single named magnitude; defer ambiguous phrases."""
     magnitudes = {"thousand": 1000, "million": 1000000, "billion": 1000000000, "trillion": 1000000000000}
-    normalized = " ".join(value.lower().split())
+    normalized = " ".join(value.lower().translate(_HYPHENS).split())
+    hundreds = re.fullmatch(r"([a-z]+) hundred(?: (?:and )?(.+))?", normalized)
+    if hundreds:
+        multiple = _small_english_number(hundreds[1])
+        rest = _small_english_number(hundreds[2]) if hundreds[2] else "0"
+        if multiple is None or not 1 <= int(multiple) <= 9 or rest is None or int(rest) > 99 \
+                or (hundreds[2] and int(rest) == 0):
+            return None
+        return str(int(multiple) * 100 + int(rest))
     scaled = re.fullmatch(r"(.+) (thousand|million|billion|trillion)", normalized)
     if scaled and not any(word in magnitudes for word in scaled[1].split()):
         coefficient = _small_english_number(scaled[1])
@@ -637,7 +648,7 @@ def _small_english_number(value: str) -> str | None:
         return None
     ones = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
     values = {word: number for number, word in enumerate(ones)}
-    values.update(no=0, none=0)
+    values.update(no=0, none=0, nil=0)
     tens = {word: number * 10 for number, word in enumerate(
         "twenty thirty forty fifty sixty seventy eighty ninety".split(), 2)}
     if normalized in values:

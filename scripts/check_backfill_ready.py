@@ -1,11 +1,10 @@
 """Read-only preflight for the existing terminal backfill; never apply migrations."""
-import hashlib
 from pathlib import Path
 import sys
 
 from process_filing import explicit_database_environment, ingestion_settings, check_connection_target
 from sec_pipeline.backfill import adapter_profile, open_state
-from sec_pipeline.database import connect
+from sec_pipeline.database import connect, migration_checksum_matches
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / 'data/backfill/2026-10-13/queue.json'
@@ -36,8 +35,9 @@ def main():
                 conn.execute('SET TRANSACTION READ ONLY')
                 applied = dict(conn.execute('SELECT name,sha256 FROM sec.schema_migrations').fetchall())
                 migrations = sorted((ROOT / 'src/sec_pipeline/migrations').glob('*.sql'))
-                required = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in migrations if p.name[:3].isdigit() and int(p.name[:3]) <= 9}
-                if len(required) != 9 or any(applied.get(name) != digest for name, digest in required.items()):
+                required = {p.name: p.read_bytes() for p in migrations if p.name[:3].isdigit() and int(p.name[:3]) <= 9}
+                if len(required) != 9 or any(name not in applied or not migration_checksum_matches(applied[name], content)
+                                             for name, content in required.items()):
                     raise ValueError('Applied schema differs from the tested migrations 001 through 009.')
                 for table in TABLES:
                     for privilege in ('SELECT', 'INSERT'):

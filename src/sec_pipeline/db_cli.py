@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 import sys
@@ -28,6 +29,10 @@ def main(argv: list[str] | None = None) -> int:
     preferred = commands.add_parser('prefer-processing-set', help='Select an existing validated processing set for browsing.')
     preferred.add_argument('--filing-id', type=UUID, required=True)
     preferred.add_argument('--set-id', type=UUID, required=True)
+    validated = commands.add_parser('prefer-validated', help='For filings without a preferred set, select their best passed set.')
+    validated.add_argument('--set-key', action='append', required=True,
+                           help='Acceptable set key; repeat in priority order, e.g. filing-import-v3 then filing-import-v3-text.')
+    validated.add_argument('--dry-run', action='store_true', help='Count the selections without writing them.')
     args = parser.parse_args(argv)
     try:
         record = None
@@ -58,6 +63,19 @@ def main(argv: list[str] | None = None) -> int:
                 from .catalog import select_preferred_processing_set
                 select_preferred_processing_set(conn, args.filing_id, args.set_id)
                 result = {'processing_set_id': args.set_id, 'preferred': True}
+            elif args.command == 'prefer-validated':
+                from .catalog import prefer_unselected_processing_set, validated_processing_set_candidates
+                candidates = validated_processing_set_candidates(conn, args.set_key)
+                conn.commit()
+                selected = Counter()
+                if not args.dry_run:
+                    # One short transaction per filing keeps concurrent imports unblocked.
+                    for filing_id, set_id, set_key in candidates:
+                        with conn.transaction():
+                            if prefer_unselected_processing_set(conn, filing_id, set_id):
+                                selected[set_key] += 1
+                result = {'candidates': dict(Counter(set_key for _, _, set_key in candidates)),
+                          'selected': dict(selected), 'dry_run': args.dry_run}
             else:
                 result = status(conn)
         print(json.dumps(result, indent=2, default=str))

@@ -2,3 +2,5 @@
 data/raw/sec/** -text
 # Keep migration checksums identical across Windows and Linux checkouts.
 src/sec_pipeline/migrations/*.sql text eol=lf
+# Backfill queues pin the SHA-256 of these reviewed inputs; keep their bytes exact.
+config/** -text

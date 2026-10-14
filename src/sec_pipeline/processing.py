@@ -117,8 +117,11 @@ def _check_validation(
         raise ProcessingError("Validation checks must be a mapping.")
     if set(checks) - validation.checks.keys():
         raise ProcessingError("Required validation checks are missing.")
-    if any(value is not True for value in validation.checks.values()):
-        raise ProcessingError("Validation failed or contains unverified checks.")
+    failed = tuple(sorted(name for name, value in validation.checks.items() if value is not True))
+    if failed:
+        error = ProcessingError("Validation failed or contains unverified checks.")
+        error.failed_checks = failed
+        raise error
 
 
 def _check_manifest(manifest: Mapping[str, Any], manifest_path: Path) -> None:
@@ -225,10 +228,13 @@ def run_ingestion_transaction(
             outputs["validation"] = validation
             phase = "commit"
             completed = True
-    except ProcessingError:
+    except ProcessingError as exc:
+        exc.stage = getattr(exc, "stage", phase)
         raise
     except Exception as exc:
-        raise ProcessingError(f"Ingestion failed during {phase}.") from exc
+        error = ProcessingError(f"Ingestion failed during {phase}.")
+        error.stage = phase
+        raise error from exc
     if not completed:
         raise ProcessingError("The ingestion transaction was rolled back.")
     return context
@@ -387,10 +393,13 @@ def run_dry_run(
         if verify_inputs(manifest_path, data_root) != manifest:
             raise ProcessingError("Inputs changed during parsing.")
         _check_manifest(manifest, manifest_path)
-    except ProcessingError:
+    except ProcessingError as exc:
+        exc.stage = getattr(exc, "stage", phase)
         raise
     except Exception as exc:
-        raise ProcessingError(f"Dry-run failed during {phase}.") from exc
+        error = ProcessingError(f"Dry-run failed during {phase}.")
+        error.stage = phase
+        raise error from exc
     records = [manifest["index_document"], *manifest["files"]]
     return {
         "mode": "dry-run", "accession_number": manifest["accession_number"],
@@ -528,8 +537,11 @@ def run_ingestion(
             raise ProcessingError('Coverage and preferred selection require a processing-set key.')
     elif (not isinstance(processing_set_key, str) or not processing_set_key.strip() or not isinstance(coverage, Mapping)
           or set(coverage) != {'facts', 'tables', 'reports', 'chunks'}
-          or any(not isinstance(value, str) or value not in {'unknown', 'partial', 'complete'} for value in coverage.values())):
-        raise ProcessingError('A processing set requires a nonempty key and explicit coverage for all four stages.')
+          or any(not isinstance(value, str) or value not in ({'absent', 'unknown', 'partial', 'complete'} if stage == 'tables'
+                                                             else {'unknown', 'partial', 'complete'})
+                 for stage, value in coverage.items())):
+        raise ProcessingError('A processing set requires a nonempty key and explicit coverage for all four stages; only tables may be absent.')
+    tables_absent = coverage is not None and coverage.get('tables') == 'absent'
     if not callable(verify_inputs):
         raise ProcessingError("A local input verifier is required for ingestion.")
     expected_versions, checks = _processing_options(versions, plan.required_checks)
@@ -555,6 +567,8 @@ def run_ingestion(
         validation = plan.stages.validate(connection, context)
         _require_active_transaction(connection, "validation")
         _check_validation(validation, expected_versions, checks)
+        if tables_absent and context.outputs["tables"].parsed.items:
+            raise ProcessingError("A set with absent tables must not store statement tables.")
         counts = {}
         for name in ("facts", "tables", "report", "chunks"):
             result = context.outputs[name]
@@ -602,8 +616,8 @@ def run_ingestion(
                 set_key=processing_set_key,
                 fact_source_document_id=context.source_ids.xml_document_id,
                 fact_extraction_version=expected_versions['facts'],
-                table_source_document_id=context.source_ids.html_document_id,
-                table_extraction_version=expected_versions['tables'],
+                table_source_document_id=None if tables_absent else context.source_ids.html_document_id,
+                table_extraction_version=None if tables_absent else expected_versions['tables'],
                 report_id=context.outputs['report'].stored_ids[0],
                 chunking_version=expected_versions['chunks'],
                 coverage=dict(coverage), validation_status='passed',

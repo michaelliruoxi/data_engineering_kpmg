@@ -166,11 +166,44 @@ lock prevents concurrent writers; after an interrupted process, confirm it has
 stopped before removing its `.lock` file. Atomic checkpoint replacement uses a
 short bounded retry for temporary Windows file locks.
 
+For a long unattended run on the ingest machine, `scripts\start_backfill.ps1`
+starts the `tables-v3` import in the background with timestamped logs under
+`data\backfill\2026-10-13\logs`. It refuses to start while the process named in
+the lock is still running, removes the lock only when that process has stopped,
+and runs the read-only `scripts\check_backfill_ready.py` preflight first. Use
+`-RetryFailedOnly` to revisit earlier failures before continuing the pending
+queue. Keep the machine awake; closing the session that started a foreground
+run stops it and leaves a stale lock.
+
 Exit status is **0** only when the requested phase is complete, **2** for a
 partial phase, **3** for blocked SEC access, and **1** for a setup/runtime error.
 `--status` itself exits 0 after successfully reporting an incomplete queue.
 The checkpoint's counts do not establish current database contents; live queries
 and validated processing sets provide that evidence.
+
+### When statement tables fail
+
+With `--tables-version tables-v3`, a filing whose statement tables cannot be
+extracted or validated no longer loses its other content. If the full
+`filing-import-v3` import fails for any reason other than an infrastructure
+error, the backfill imports the same sources again as `filing-import-v3-text`:
+facts, report, sections, and chunks with every check that applies to them, and
+`tables` coverage `absent`. Infrastructure errors (lost connection, network,
+disk) still stop the run with the checkpoint preserved. The full import's
+failure is stored in the set's `configuration->'tables_unavailable'` and in the
+queue entry's `result.tables_unavailable`. Such entries are
+`validated_review_required` or `ingested_review_required`.
+
+On later runs, a sealed text-only set counts as that filing's receipt, so the
+tables are not retried automatically. After repairing the table parser, run with
+`--replay` to attempt the complete import again; a successful complete import is
+stored as a separate `filing-import-v3` set. Failed entries now also record
+`error_detail`: the failing stage, the names of failed checks, and the message
+of the innermost pipeline error (database and HTTP error text is never stored,
+only its SQLSTATE).
+
+In an offline check of 40 failed filings with archived sources, 39 passed every
+text-only check; the remaining filing failed a fact correspondence check.
 
 ## Versioned statements and shared filings
 

@@ -7,6 +7,8 @@ from sec_pipeline.inline_value_transforms import numeric_value, nonnumeric_value
 
 
 XII = '{http://www.xbrl.org/inlineXBRL/transformation/2020-02-12}'
+XII22 = '{http://www.xbrl.org/inlineXBRL/transformation/2022-02-16}'
+TR3 = '{http://www.xbrl.org/inlineXBRL/transformation/2015-02-26}'
 SEC = '{http://www.sec.gov/inlineXBRL/transformation/2015-08-31}'
 
 
@@ -63,10 +65,46 @@ class InlineValueTransformTests(unittest.TestCase):
                 self.assertEqual(nonnumeric_value(text, transform), expected)
         self.assertEqual(nonnumeric_value('  literal\ntext\t'), '  literal\ntext\t')
 
+    def test_values_match_edgar_extracted_instances(self):
+        # Pairs observed in archived filings: inline text -> EDGAR's extracted XBRL value.
+        examples = [
+            ('0.5', SEC + 'duryear', 'P0Y6M'), ('0', SEC + 'duryear', 'P0Y'), ('0.13', SEC + 'duryear', 'P0Y1M17D'),
+            ('2.58', SEC + 'duryear', 'P2Y6M29D'), ('4.07', SEC + 'duryear', 'P4Y25D'), ('5.98', SEC + 'duryear', 'P5Y11M23D'),
+            ('22.3456', SEC + 'duryear', 'P22Y4M4D'), ('0', SEC + 'durmonth', 'P0M'), ('22.2', SEC + 'durmonth', 'P22M6D'),
+            ('4.9', SEC + 'durday', 'P4DT21H'), ('1.1', SEC + 'durday', 'P1DT2H'), ('364', SEC + 'durday', 'P364D'),
+            ('13', SEC + 'durweek', 'P91D'), ('53', SEC + 'durweek', 'P371D'),
+            ('Q1 2028', SEC + 'datequarterend', '2028-03-31'), ('Q4 2027', SEC + 'datequarterend', '2027-12-31'),
+            ('January 2028', XII + 'date-monthname-year-en', '2028-01'), ('Jan-24', XII22 + 'date-monthname-year-en', '2024-01'),
+            ('December, 2026', XII22 + 'date-monthname-year-en', '2026-12'), ('Sept-24', XII22 + 'date-monthname-year-en', '2024-09'),
+            ('31 December', XII + 'date-day-monthname-en', '--12-31'),
+            ('31 March 2026', XII + 'date-day-monthname-year-en', '2026-03-31'),
+            ('2026-03', XII22 + 'date-year-month', '2026-03'), ('2027-06-01', XII22 + 'date-year-month-day', '2027-06-01'),
+            ('Jan. 11, 2028', TR3 + 'datemonthdayyearen', '2028-01-11'), ('adopted', TR3 + 'booleanfalse', 'false'),
+            ('x', TR3 + 'booleantrue', 'true'), ('Ireland', SEC + 'countrynameen', 'IE'),
+            ('England', SEC + 'countrynameen', 'GB'), ('United States of America', SEC + 'countrynameen', 'US'),
+            ('Ireland', SEC + 'edgarprovcountryen', 'L2'), ('Bermuda', SEC + 'edgarprovcountryen', 'D0'),
+            ('Jersey', SEC + 'edgarprovcountryen', 'Y9'), ('Delaware', SEC + 'edgarprovcountryen', 'DE'),
+            ('Ontario', SEC + 'edgarprovcountryen', 'A6'), ('NYSE American LLC', SEC + 'exchnameen', 'NYSEAMER'),
+            ('Nasdaq', SEC + 'exchnameen', 'NASDAQ'), ('NYSE Arca, Inc.', SEC + 'exchnameen', 'NYSEArca'),
+            ('Chicago Stock Exchange, Inc.', SEC + 'exchnameen', 'CHX'),
+            ('Non‑accelerated filer', SEC + 'entityfilercategoryen', 'Non-accelerated Filer'),
+            ('five‑year', SEC + 'durwordsen', 'P5Y'),
+        ]
+        for text, transform, expected in examples:
+            with self.subTest(text=text, transform=transform):
+                kind = 'numeric' if transform.endswith('numwordsen') else 'nonnumeric'
+                validate_transform(transform, kind)
+                self.assertEqual(nonnumeric_value(text, transform), expected)
+        for text, expected in (('nil', '0'), ('one hundred', '100'), ('two hundred fifty', '250')):
+            with self.subTest(text=text):
+                self.assertEqual(numeric_value(text, SEC + 'numwordsen'), Decimal(expected))
+
     def test_nonnumeric_unsupported_or_ambiguous_inputs_fail(self):
         for text, transform in [('February 29, 2025', XII + 'date-monthname-day-year-en'),
                                 ('June 2026', XII + 'date-monthname-day-year-en'),
-                                ('22.3456', SEC + 'duryear'), ('1.1', SEC + 'durday'),
+                                ('2.5', SEC + 'durweek'), ('Q5 2028', SEC + 'datequarterend'),
+                                ('Atlantis', SEC + 'countrynameen'), ('Atlantis', SEC + 'edgarprovcountryen'),
+                                ('2026-13', XII22 + 'date-year-month'), ('31 Smarch 2026', XII + 'date-day-monthname-year-en'),
                                 ('two months three years', SEC + 'durwordsen'), ('three years extra', SEC + 'durwordsen'),
                                 ('true', SEC + 'boolballotbox'), ('☒', '{https://invalid.test}fixed-true'),
                                 ('June 30, 2026', XII + 'unknown-date')]:

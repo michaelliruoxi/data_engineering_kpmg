@@ -82,6 +82,8 @@ To include facts/tables, add `fact_source_document_id`, `fact_extraction_version
 
 The existing adapter-based ingestion CLI also accepts `--processing-set-key NAME --coverage-file coverage.json --prefer-processing-set` with `--ingest`. The coverage file contains all four keys, each `unknown`, `partial`, or `complete`; this full-pipeline path selects all four nonempty stages. It records the adapter's successful checks and source hashes, and creates/selects the set in the same transaction as output ingestion. Omit `--prefer-processing-set` to record a set without changing browsing. Use `sec-db prefer-processing-set --filing-id UUID --set-id UUID` to select an existing passed set.
 
+To select sets for many filings at once, run `sec-db prefer-validated --set-key KEY [--set-key KEY ...]`. For every filing without a preferred set, it selects the newest passed set of the first listed key that the filing has, one filing per transaction; it never replaces an existing choice, and `--dry-run` only counts. The backfill's `filing-import-v3-text` sets select facts, the report, and chunks with `tables` coverage `absent` (the reason is in `configuration->'tables_unavailable'`); list them after `filing-import-v3` so complete imports are preferred. Switching a filing that already has a set, for example to a later complete import, remains an explicit `prefer-processing-set` call.
+
 ## Migration and compatibility
 
 Apply `sec-db migrate` to the intended database after taking the normal deployment backup. Migration 001 is unchanged; 002 adds sections, 003 adds selections/catalogs, 004 adds cells, and 005 adds source identity/profile fields. The migrator applies the pending batch transactionally and checks historical file hashes.

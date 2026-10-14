@@ -36,6 +36,30 @@ def _fatal_runtime_error(error):
     return False
 
 
+def _failure_detail(error, phase):
+    """Describe a failure with pipeline-owned messages and SQLSTATE codes only.
+
+    Database and HTTP exception text can contain credentials or configuration,
+    so only exceptions defined by this package contribute their message.
+    """
+    import psycopg
+
+    detail = {"stage": getattr(error, "stage", phase), "error_type": type(error).__name__}
+    if getattr(error, "failed_checks", None):
+        detail["failed_checks"] = list(error.failed_checks)
+    cause, seen = error, {id(error)}
+    while cause.__cause__ is not None and id(cause.__cause__) not in seen:
+        cause = cause.__cause__
+        seen.add(id(cause))
+    if cause is not error:
+        detail["cause_type"] = type(cause).__name__
+    if isinstance(cause, psycopg.Error):
+        detail["sqlstate"] = cause.sqlstate
+    elif type(cause).__module__.startswith("sec_pipeline."):
+        detail["message"] = str(cause)[:300]
+    return detail
+
+
 def save_state(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -258,6 +282,46 @@ def adapter_profile(tables_version):
     raise ValueError("Unsupported table extraction version.")
 
 
+def text_fallback_profile(tables_version):
+    """The profile that loads facts and text when this version's tables fail, if any."""
+    if tables_version == "tables-v3":
+        from . import filing_adapter_v3_text
+        return filing_adapter_v3_text
+    return None
+
+
+def _stored_text_set(conn, accession, text_profile, expected):
+    """Return the recorded table failure of a sealed text-only set matching these sources."""
+    with conn.transaction():
+        row = conn.execute("""SELECT s.configuration, s.validation_status, s.counts, s.coverage, s.validation,
+            fd.local_path, fd.sha256, rd.local_path, rd.sha256, s.fact_extraction_version,
+            r.extraction_version, s.chunking_version, s.table_source_document_id, s.table_extraction_version
+            FROM sec.filing_processing_sets s JOIN sec.filings f ON f.id=s.filing_id
+            JOIN sec.source_documents fd ON fd.id=s.fact_source_document_id
+            JOIN sec.reports r ON r.id=s.report_id
+            JOIN sec.source_documents rd ON rd.id=r.source_document_id
+            WHERE f.accession_number=%s AND s.set_key=%s
+              AND fd.role='extracted_xbrl_instance' AND rd.role='main_inline_xbrl_filing'""",
+            (accession, text_profile.SET_KEY)).fetchone()
+    if not row:
+        return None
+    (configuration, status, counts, coverage, validation, fact_path, fact_sha, report_path, report_sha,
+     fact_version, report_version, chunk_version, table_document, table_version) = row
+    unavailable = configuration.get("tables_unavailable")
+    versions = expected["versions"]
+    checks = validation.get("checks", {})
+    if ({key: value for key, value in configuration.items() if key != "tables_unavailable"} != expected
+            or not isinstance(unavailable, dict) or status != "passed" or coverage != text_profile.COVERAGE
+            or table_document is not None or table_version is not None
+            or (fact_version, report_version, chunk_version) != (versions["facts"], versions["reports"], versions["chunks"])
+            or expected["source_hashes"].get(fact_path) != fact_sha
+            or expected["source_hashes"].get(report_path) != report_sha
+            or not all(counts.get(key, 0) > 0 for key in ("facts", "reports", "chunks")) or counts.get("tables") != 0
+            or not all(checks.get(check) is True for check in text_profile.REQUIRED_CHECKS)):
+        return None
+    return unavailable
+
+
 def _stored_set(conn, accession, set_key, expected):
     """Only trust committed, sealed selections in the actual receiving database."""
     with conn.transaction():
@@ -308,6 +372,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                 or entry["filing"].get("accession_number") != accession):
             raise ValueError("Queue accession keys must be canonical and match their filing records.")
     profile, set_key = adapter_profile(tables_version)
+    text_profile = text_fallback_profile(tables_version) if mode != "download" else None
     is_document_set = tables_version == "tables-v4"
     versions = profile.VERSIONS
     required_checks = profile.REQUIRED_SOURCE_CHECKS if is_document_set else profile.REQUIRED_CHECKS
@@ -341,6 +406,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             raise ValueError("Queue accession keys must be canonical and match their filing records.")
         manifest_path = data_root / "data" / "raw" / "sec" / accession / "source_manifest.json"
         counted = False
+        tables_unavailable = None
         phase = "source acquisition"
         try:
             if not manifest_path.exists():
@@ -379,7 +445,14 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             if mode != "download" and is_document_set:
                 expected = profile.configuration_from_manifest(manifest, hashlib.sha256(manifest_path.read_bytes()).hexdigest())
             elif mode != "download" and hasattr(profile, "configuration_metadata"):
-                expected.update(profile.configuration_metadata(manifest, data_root))
+                try:
+                    expected.update(profile.configuration_metadata(manifest, data_root))
+                except Exception as exc:
+                    # The v3 receipt identity parses every table; a table failure
+                    # leaves the facts and text to the text-only fallback.
+                    if text_profile is None or _fatal_runtime_error(exc):
+                        raise
+                    tables_unavailable = _failure_detail(exc, phase)
             previous = entry.get("result", {})
             if (mode == "dry-run" and not is_document_set and not replay and entry.get("status") in {"validated", "ingested"}
                     and previous.get("versions") == versions and previous.get("source_hashes") == source_hashes
@@ -389,19 +462,34 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                 continue
             phase = "stored receipt verification"
             if mode == "ingest" and not replay:
+                text_receipt = None
                 if is_document_set:
                     from .backfill_v4 import stored_receipt
                     receipt = stored_receipt(connection, accession, set_key, expected, required_checks)
                     receipt_status = receipt['validation_status'] if receipt else None
                 else:
-                    receipt_status = "passed" if _stored_set(connection, accession, set_key, expected) else None
+                    receipt_status = None
+                    if tables_unavailable is None and _stored_set(connection, accession, set_key, expected):
+                        receipt_status = "passed"
+                    elif text_profile is not None:
+                        text_expected = {"versions": versions, "source_hashes": source_hashes,
+                                         **text_profile.configuration_metadata(manifest, data_root)}
+                        text_receipt = _stored_text_set(connection, accession, text_profile, text_expected)
+                        if text_receipt is not None:
+                            receipt_status = "review_required"
                 if receipt_status:
                     entry.update(status="ingested_review_required" if receipt_status == "review_required" else "ingested",
                                  destination=destination, processing_versions=dict(versions))
                     if is_document_set:
                         entry.update(result=receipt, manifest=str(manifest_path.relative_to(data_root)))
+                    elif text_receipt is not None:
+                        entry.update(manifest=str(manifest_path.relative_to(data_root)), result={
+                            "mode": "stored_receipt", "accession_number": accession, "versions": dict(versions),
+                            "source_hashes": source_hashes, "set_key": text_profile.SET_KEY,
+                            "tables_unavailable": text_receipt})
                     entry.pop("error_type", None)
                     entry.pop("error_stage", None)
+                    entry.pop("error_detail", None)
                     record_success(accession)
                     save_state(path, state)
                     continue
@@ -431,28 +519,61 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                 if is_document_set:
                     result = profile.run_dry_run(manifest_path=manifest_path, data_root=data_root)
                 else:
-                    plan = profile.get_dry_run_plan()
-                    result = run_dry_run(manifest_path=manifest_path, data_root=data_root,
-                        versions=versions, stages=plan.stages, required_checks=plan.required_checks, verify_inputs=verify_filing)
-                entry["status"] = "validated_review_required" if result.get("validation_status") == "review_required" else "validated"
+                    result = None
+                    if tables_unavailable is None:
+                        try:
+                            plan = profile.get_dry_run_plan()
+                            result = run_dry_run(manifest_path=manifest_path, data_root=data_root,
+                                versions=versions, stages=plan.stages, required_checks=plan.required_checks, verify_inputs=verify_filing)
+                        except Exception as exc:
+                            if text_profile is None or _fatal_runtime_error(exc):
+                                raise
+                            tables_unavailable = _failure_detail(exc, phase)
+                    if result is None:
+                        phase = "text-only dry-run"
+                        plan = text_profile.get_dry_run_plan()
+                        result = run_dry_run(manifest_path=manifest_path, data_root=data_root,
+                            versions=versions, stages=plan.stages, required_checks=plan.required_checks, verify_inputs=verify_filing)
+                        result.update(set_key=text_profile.SET_KEY, tables_unavailable=tables_unavailable)
+                review = result.get("validation_status") == "review_required" or "tables_unavailable" in result
+                entry["status"] = "validated_review_required" if review else "validated"
             else:
                 if is_document_set:
                     result = profile.run_ingestion(connection, manifest_path=manifest_path, data_root=data_root,
                         processing_set_key=set_key)
                 else:
-                    result = run_ingestion(connection, manifest_path=manifest_path, data_root=data_root,
-                        versions=versions, plan=profile.get_ingestion_plan(), verify_inputs=verify_filing,
-                        processing_set_key=set_key,
-                        coverage={"facts": "complete", "tables": "partial", "reports": "unknown", "chunks": "complete"})
-                entry.update(status="ingested_review_required" if result.get("validation_status") == "review_required" else "ingested",
-                             destination=destination)
+                    result = None
+                    if tables_unavailable is None:
+                        try:
+                            result = run_ingestion(connection, manifest_path=manifest_path, data_root=data_root,
+                                versions=versions, plan=profile.get_ingestion_plan(), verify_inputs=verify_filing,
+                                processing_set_key=set_key,
+                                coverage={"facts": "complete", "tables": "partial", "reports": "unknown", "chunks": "complete"})
+                        except Exception as exc:
+                            if text_profile is None or _fatal_runtime_error(exc):
+                                raise
+                            tables_unavailable = _failure_detail(exc, phase)
+                            connection.rollback()
+                    if result is None:
+                        phase = "text-only ingest"
+                        result = run_ingestion(connection, manifest_path=manifest_path, data_root=data_root,
+                            versions=versions, plan=text_profile.get_ingestion_plan(tables_unavailable),
+                            verify_inputs=verify_filing, processing_set_key=text_profile.SET_KEY,
+                            coverage=text_profile.COVERAGE)
+                        result.update(set_key=text_profile.SET_KEY, tables_unavailable=tables_unavailable)
+                review = result.get("validation_status") == "review_required" or "tables_unavailable" in result
+                entry.update(status="ingested_review_required" if review else "ingested", destination=destination)
             entry["result"] = result
             if mode != "download":
                 entry["processing_versions"] = dict(versions)
             record_success(accession)
             entry.pop("error_type", None)
             entry.pop("error_stage", None)
-            emit(json.dumps({"event": entry["status"], "accession": accession, "counts": result.get("counts")}))
+            entry.pop("error_detail", None)
+            event = {"event": entry["status"], "accession": accession, "counts": result.get("counts")}
+            if "tables_unavailable" in result:
+                event["tables"] = "absent"
+            emit(json.dumps(event))
         except AccessBlocked:
             if not counted:
                 attempted += 1
@@ -473,7 +594,10 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                 attempted += 1
                 entry["attempts"] += 1
             entry.update(status="failed", error_type=type(exc).__name__,
-                         error_stage=f"Backfill failed during {phase}.")
+                         error_stage=f"Backfill failed during {phase}.",
+                         error_detail=_failure_detail(exc, phase))
+            if tables_unavailable is not None:
+                entry["error_detail"]["full_import"] = tables_unavailable
             from .processing import ProcessingError
             if isinstance(exc, ProcessingError):
                 entry["error_stage"] = str(exc)[:250]

@@ -6,10 +6,11 @@ from EDGAR, extracts financial facts and statements, organizes report text into
 sections and passages, and loads the results into AWS RDS. Approved teammates
 can browse the same data in DBeaver or query it directly from Python.
 
-> **Documentation assumption:** This guide describes the completed initial
-> five-year backfill, as requested. It is not a live completion report. Use the
-> [run-status commands](docs/automated-backfill.md) to check actual import progress
-> and unresolved filings.
+> **Backfill status:** The initial five-year backfill is in progress, not
+> complete. At the October 13, 2026 queue checkpoint, 430 of the 9,833 queued
+> filings had been loaded. The scope below describes the intended dataset, not
+> what is loaded today; query `filing_overview` or use the
+> [run-status commands](docs/automated-backfill.md) for current progress.
 
 ## Dataset scope
 
@@ -51,14 +52,21 @@ original HTML/XML files to your computer.
 
 Processing sets identify the exact fact, table, report, and chunk versions used
 for a filing. **Select one processing set when analyzing a filing** so alternate
-extractions and the retained manual example are not counted twice.
+extractions are not counted twice.
+
+When a filing's financial statement tables cannot be extracted reliably, its
+facts, report text, sections, and chunks are still loaded, in a separate
+`filing-import-v3-text` processing set whose `coverage->>'tables'` is `absent`.
+Its `configuration->'tables_unavailable'` records why the tables were left out.
+Such a filing has sections, passages, and XBRL facts but no statement tables.
 
 Preferred views (`section_catalog`, `statement_catalog`, `statement_cells`,
-`fact_catalog`, and `chunk_catalog`) show only explicitly selected processing
-sets. Importing a filing does not automatically make its set preferred. Browse
-all versions through `filing_catalog`, `fact_provenance`, `chunk_citations`, and
-`financial_tables`, or ask an administrator to
-[select a validated processing set](docs/database-browsing.md#explicit-processing-sets).
+`fact_catalog`, and `chunk_catalog`) show only selected processing sets.
+Importing a filing does not select its set; an administrator selects validated
+sets with `sec-db prefer-validated` (see
+[selecting sets for browsing](docs/database-browsing.md#explicit-processing-sets)).
+Until then, browse all versions through `filing_catalog`, `fact_provenance`,
+`chunk_citations`, and `financial_tables`.
 
 In DBeaver, refresh **Schemas → sec** and its **Tables** and **Views** folders to see the new objects. Your existing connection and login still apply.
 
@@ -220,15 +228,18 @@ These column names may be unfamiliar:
 | `accession_number` | The report's unique reference number |
 | `source_document_count` | How many original source files are recorded for that report |
 
-**What you should see in the completed dataset:** annual and quarterly filings
-across the company universe and filing window above. Filter by CIK or ticker,
-then sort by filing date. The catalog counts include all stored extraction
-versions; use a processing set for analysis of a single version.
+**What you should see:** annual and quarterly filings loaded so far for the
+company universe and filing window above; the backfill adds more as it runs.
+Filter by CIK or ticker, then sort by filing date. The catalog counts include
+all stored extraction versions; use a processing set for analysis of a single
+version.
 
-The original `manual-example-v1` Microsoft example remains available as a small
-learning exercise. Its [guide and fixed sample queries](docs/manual-example.md)
-are separate from the full dataset. A local development database contains only
-what you have loaded into it; creating it does not copy the shared AWS data.
+The small `manual-example-v1` Microsoft rows were removed from the shared
+database on October 13, 2026. The same Microsoft filing remains available
+through its pipeline processing set, and the [example guide](docs/manual-example.md)
+still explains how to read values and trace sources. A local development
+database contains only what you have loaded into it; creating it does not copy
+the shared AWS data.
 
 The next time you want to use the database, open DBeaver, connect to the saved connection, and open **filing_catalog → Data** again.
 
@@ -274,9 +285,10 @@ Columns ending in **`_id`** connect related records. For example, a filing's **c
 4. Open **source_documents → Data** and filter by the filing ID. **source_url** points to each original SEC document.
 5. Use **fact_provenance** for values and sources, **chunk_citations** for text and citations, or **financial_tables.readable_text** for statements. Apply the filing and processing-version filters from step 3.
 
-For a smaller exercise with fixed expected results, use the
-[six manual-example queries](docs/manual-example-queries.sql). They explicitly
-select `manual-example-v1` and do not measure full-dataset coverage.
+The [six manual-example queries](docs/manual-example-queries.sql) select the
+removed `manual-example-v1` rows, so on the shared database they return the
+filing without sample rows. Use them only with a local database where you
+loaded that example.
 
 When reading a financial figure, keep its **unit and period** beside it. For example, a value stored in dollars differs from a statement displayed in millions, and a three-month amount differs from a nine-month amount even when they end on the same date. The [example guide](docs/manual-example.md#read-the-values-correctly) explains both cases. If you see **Permission denied**, ask the administrator for access to the specific table or view.
 
@@ -371,7 +383,9 @@ Save the following as **`database_workflow.py`** in the repository root. It find
 Microsoft's latest quarterly filing with a passed processing set and loads that
 set's financial facts into a pandas DataFrame. It uses the preferred set when
 available, otherwise the most recently stored passed set, and prints the choice
-so you can inspect its version and coverage.
+so you can inspect its version and coverage. Filings loaded only by the
+experimental `tables-v4` importer are recorded in `source_processing_sets` and
+are not covered by this example.
 
 ```python
 import pandas as pd
@@ -522,7 +536,8 @@ For occasional manual work, a DBeaver CSV export may be enough. For a repeatable
 | **Permission denied** | You connected, but your login is not allowed to open that item. Send its name to the administrator. |
 | You cannot find **sec** or **filing_catalog** | Check that you opened `sec_filings`, then **Schemas → sec → Views**. Ask the administrator if it is missing. |
 | The new tables or views are missing in DBeaver | Refresh **Schemas → sec**, then its **Tables** and **Views** folders. Ask the administrator to check this database's migration ledger; local and shared databases are separate instances. |
-| Preferred catalogs contain no rows | Check `filing_overview.set_key`. NULL means no preferred processing set is selected. Browse all versions through `fact_provenance`, `chunk_citations`, and `financial_tables`, using explicit filing/source/version filters. |
+| Preferred catalogs contain no rows | Check `filing_overview.set_key`. NULL means no preferred processing set is selected yet; ask the administrator to run `sec-db prefer-validated`. Meanwhile, browse all versions through `fact_provenance`, `chunk_citations`, and `financial_tables`, using explicit filing/source/version filters. |
+| A filing has sections and facts but no statements | Its set is `filing-import-v3-text`: the statement tables could not be extracted reliably, so only facts and text were loaded. `filing_overview.configuration->'tables_unavailable'` gives the reason. |
 | A company's ticker is NULL | Its profile may need a ticker refresh, or the issuer may have no current SEC mapping. Check the CIK and the [ticker guide](docs/company-tickers.md); do not infer a parent or successor ticker. |
 | Other views contain no rows | Press **F5**, clear old filters, and confirm the shared RDS connection. Check the requested filing and processing set. A local database is not automatically synchronized with AWS. |
 
@@ -543,6 +558,17 @@ in-scope accession is accounted for at the intended destination and processing
 version; a successful small batch or one passing parser check does not establish
 that condition. Review-required records retain their explicit quality flags.
 
+To make loaded filings appear in the preferred browsing views, select each
+filing's best passed set. Filings that already have a preferred set keep it;
+`--dry-run` only counts the selections:
+
+```powershell
+uv run --locked sec-db --env-file .env.aws prefer-validated --set-key filing-import-v3 --set-key filing-import-v3-text
+```
+
+Repeat it after import batches. Running it while the backfill is active is safe:
+each filing is selected in its own short transaction.
+
 These guides cover ingestion, maintenance, and the data contracts:
 
 - [Automated discovery, import, resumption, and current run status](docs/automated-backfill.md)
@@ -551,7 +577,7 @@ These guides cover ingestion, maintenance, and the data contracts:
 - [SQL browsing examples](docs/database-browsing-queries.sql)
 - [GitHub tutorial: personal branches, commits, and pull requests to main](docs/github-tutorial.md)
 - [Python access, SQL examples, and project commands](docs/developer-usage.md)
-- [Optional manual example: six queries and fixed expected results](docs/manual-example.md)
+- [Reading values and tracing sources, with the retired manual example](docs/manual-example.md)
 - [Database structure and local setup](docs/database.md)
 - [AWS deployment and maintenance](docs/aws-deployment.md)
 - [Team implementation plan](docs/team-implementation-plan.md)
