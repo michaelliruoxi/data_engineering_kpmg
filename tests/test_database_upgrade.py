@@ -19,6 +19,7 @@ class DatabaseUpgradeTests(unittest.TestCase):
         self.conn = self.enterContext(psycopg.connect(**self.options))
         # This schema belongs to the UUID-named database created above, never
         # to the user's configured app/test database.
+        self.conn.execute('DROP SCHEMA finance CASCADE')
         self.conn.execute('DROP SCHEMA sec CASCADE')
         self.conn.execute('CREATE SCHEMA sec')
         self.conn.execute('CREATE TABLE sec.schema_migrations (name text PRIMARY KEY, sha256 text NOT NULL, applied_at timestamptz DEFAULT now())')
