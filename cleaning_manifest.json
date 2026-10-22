@@ -1,0 +1,84 @@
+{
+  "accession_number": "0001193125-26-191507",
+  "source_file": "data/raw/sec/0001193125-26-191507/msft-20260331.htm",
+  "source_sha256": "a615ae0de8fe27dd8d1032978b1c810305d3cf7a864b386807cd25a73fc70d59",
+  "cleaned_text_sha256": "5867472eeb1cbfa42c71350c9e41fc739ae30432641fa9311d889eb7c0ef9a6b",
+  "git_commit": "87d7cbd3432ee2f3925fa000c38ba63e2eef264e",
+  "generated_at_utc": "2026-10-22T04:27:38.120702+00:00",
+  "section_count": 12,
+  "chunking_version": "paragraph-v1",
+  "max_chars": 1500,
+  "configured_overlap_chars": 150,
+  "validation": {
+    "section_boundaries_valid": true,
+    "chunk_offsets_valid": true,
+    "section_coverage_valid": true,
+    "chunk_overlap_valid": true,
+    "chunk_count": 174,
+    "overlap_pairs_checked": 162,
+    "min_overlap_chars": 150,
+    "max_overlap_chars": 150
+  },
+  "sections": [
+    {
+      "section_id": "front-matter",
+      "offset_start": 0,
+      "offset_end": 3936
+    },
+    {
+      "section_id": "part-i",
+      "offset_start": 3936,
+      "offset_end": 3966
+    },
+    {
+      "section_id": "part-i-item-1",
+      "offset_start": 3966,
+      "offset_end": 84532
+    },
+    {
+      "section_id": "part-i-item-2",
+      "offset_start": 84532,
+      "offset_end": 145853
+    },
+    {
+      "section_id": "part-i-item-3",
+      "offset_start": 145853,
+      "offset_end": 147909
+    },
+    {
+      "section_id": "part-i-item-4",
+      "offset_start": 147909,
+      "offset_end": 148665
+    },
+    {
+      "section_id": "part-ii",
+      "offset_start": 148665,
+      "offset_end": 148692
+    },
+    {
+      "section_id": "part-ii-item-1",
+      "offset_start": 148692,
+      "offset_end": 148893
+    },
+    {
+      "section_id": "part-ii-item-1a",
+      "offset_start": 148893,
+      "offset_end": 219780
+    },
+    {
+      "section_id": "part-ii-item-2",
+      "offset_start": 219780,
+      "offset_end": 221589
+    },
+    {
+      "section_id": "part-ii-item-5",
+      "offset_start": 221589,
+      "offset_end": 223138
+    },
+    {
+      "section_id": "part-ii-item-6",
+      "offset_start": 223138,
+      "offset_end": 225231
+    }
+  ]
+}

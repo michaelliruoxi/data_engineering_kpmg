@@ -456,4 +456,13 @@ def test_part_i_ignores_repeated_page_header():
     assert "part-i-item-1" in section_ids
     assert "part-i-item-2" in section_ids
     assert "part-ii" in section_ids
-    
+
+def test_clean_report_is_deterministic():
+    """The same HTML input should produce identical cleaning output."""
+
+    report1 = clean_report(SAMPLE_PATH)
+    report2 = clean_report(SAMPLE_PATH)
+
+    assert report1.full_text == report2.full_text
+    assert report1.sections == report2.sections
+
