@@ -1,5 +1,47 @@
 # AWS PostgreSQL deployment
 
+## Financial browsing schema: October 22, 2026
+
+Migration `010_finance_browsing.sql` adds **14 read-only views in `finance`**.
+Start with `company`, `filing`, `income_statement`, `balance_sheet`, and
+`cash_flow_statement`; use `metric_value` and `metric_evidence` for traceability.
+See the [financial browsing guide and diagram](database-finance.md).
+
+The change was rehearsed on an isolated PostgreSQL 17.11 restore of a fresh
+custom-format backup, then applied to shared RDS in one transaction. A fresh
+`verify-full` TLS connection verified the migration checksum, all new view
+names, sample financial values, and effective reader permissions.
+The final targeted PostgreSQL regression run passed **93 tests and 77 subtests**,
+including 17 finance-view cases. The three Microsoft statement queries completed
+in 0.03-0.06 seconds on the local restored dataset; these are local timings,
+not a shared-RDS performance guarantee.
+
+Preservation checks compared row counts and whole-row content fingerprints:
+**25 original data tables containing 1,579,784 rows were unchanged**, and all
+**19 existing `sec` view definitions** were unchanged. The nine historical
+migration checksums were preserved. No preferred processing selection was
+created or replaced. At verification, there were **320 companies, 448 filings,
+582 legacy processing sets, 10 source-family processing sets, and zero legacy
+preferred selections**. These are October 22 observations, not live counters.
+
+`sec_reader` and its **11 member roles** have schema USAGE and SELECT on all 14
+new views, with no schema CREATE or data-write privileges. Queries under
+`SET LOCAL ROLE` succeeded; teammate-machine login tests were not performed.
+
+The reader sample reproduced the stored Microsoft nine-month figures ending
+March 31, 2026: USD 241.832 billion revenue, 127.494 billion operating cash flow,
+80.146 billion cash PP&E purchases, and 47.348 billion derived free cash flow.
+These checks establish stored-source agreement, not independent accounting
+review or universal metric coverage. Missing/conflicting/review-required
+metrics remain NULL, with status and evidence available.
+
+Backup: `backups/sec-before-finance-20261022T042514Z.dump`, SHA-256
+`34cf068dbd8a5ca96704c72618cb9541092cc295f8038f38e67a811ec2ed42b0`.
+The local verification receipt is
+`backups/finance-schema-deployment-20261022.json`. Backup files and receipts
+remain local and are not committed.
+
+
 The shared `sec` schema is already deployed in the `sec_filings` database on Amazon RDS for PostgreSQL, with the local database and original SEC files retained. This guide records the completed setup and retains the deployment procedures for maintenance and recovery reference. Current team work uses the existing instance; outstanding teammate access is tracked separately from AWS setup.
 
 **For teammates:** use the [database access guide](../readme.md) and [manual example queries](manual-example.md). The provisioning, restore, and account-administration steps below are maintainer procedures; joining the project does not require creating or restoring a database.

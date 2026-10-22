@@ -48,83 +48,60 @@ Source documents remain in the ingest machine's archive. The database stores
 their provenance and extracted content; connecting to RDS does not download the
 original HTML/XML files to your computer.
 
-## Database structure and report sections
+## Database structure and financial reads
 
-Processing sets identify the exact fact, table, report, and chunk versions used
-for a filing. **Select one processing set when analyzing a filing** so alternate
-extractions are not counted twice.
+Start in **Schemas → finance → Views** in DBeaver after migration 010 is
+installed. This browsing schema groups the existing source data into familiar
+financial views. The `sec` schema retains the original facts, tables, report
+text, citations, and processing history.
 
-When a filing's financial statement tables cannot be extracted reliably, its
-facts, report text, sections, and chunks are still loaded, in a separate
-`filing-import-v3-text` processing set whose `coverage->>'tables'` is `absent`.
-Its `configuration->'tables_unavailable'` records why the tables were left out.
-Such a filing has sections, passages, and XBRL facts but no statement tables.
+[![Financial database entity-relationship diagram](docs/database-finance.png)](docs/database-finance.svg)
 
-Preferred views (`section_catalog`, `statement_catalog`, `statement_cells`,
-`fact_catalog`, and `chunk_catalog`) show only selected processing sets.
-Importing a filing does not select its set; an administrator selects validated
-sets with `sec-db prefer-validated` (see
-[selecting sets for browsing](docs/database-browsing.md#explicit-processing-sets)).
-Until then, browse all versions through `filing_catalog`, `fact_provenance`,
-`chunk_citations`, and `financial_tables`.
+[Open the full-size SVG](docs/database-finance.svg) · [View definitions and example queries](docs/database-finance.md)
 
-In DBeaver, refresh **Schemas → sec** and its **Tables** and **Views** folders to see the new objects. Your existing connection and login still apply.
+The diagram shows logical relationships between SQL views. `ID` and `REF`
+identify row keys and join fields; they do not add database constraints to views.
 
-### Structure and browsing
+| Start here | What it contains |
+| --- | --- |
+| `finance.company` | Company name, CIK, and current display ticker |
+| `finance.filing` | Filed reports and the exact processing version selected for browsing |
+| `finance.income_statement` | Revenue, cost of revenue, operating income, net income, and diluted EPS |
+| `finance.balance_sheet` | Cash, assets, liabilities, equity, and debt components |
+| `finance.cash_flow_statement` | Operating cash flow, cash PP&E purchases, calculated free cash flow, and dividends |
+| `finance.filing_section` / `finance.filing_chunk` | Report sections and source-linked retrieval passages |
+| `finance.metric_value` / `finance.metric_evidence` | Metric status, formulas, original fact IDs, and source evidence |
 
-```mermaid
-erDiagram
-    companies ||--o{ filings : files
-    filings ||--o{ source_documents : records
-    source_documents ||--o{ reports : extracts
-    reports ||--o{ report_sections : organizes
-    section_types ||--o{ report_sections : classifies
-    reports ||--o{ chunks : divides
-    report_sections o|--o{ chunks : locates
-    source_documents ||--o{ financial_tables : extracts
-    source_documents ||--o{ financial_facts : extracts
-    financial_tables ||--o{ table_cells : contains
-    table_cells ||--o{ cell_fact_links : cites
-    financial_facts ||--o{ cell_fact_links : supplies
-    financial_tables ||--o{ financial_table_facts : groups
-    financial_facts ||--o{ financial_table_facts : belongs_to
-    filings ||--o{ filing_processing_sets : versions
-    reports o|--o{ filing_processing_sets : selects
-    filings ||--o| preferred_processing_sets : chooses
-    filing_processing_sets ||--o| preferred_processing_sets : browses
-```
+Each statement row belongs to **one filing, processing version, exact period,
+and currency**. A quarter and a nine-month total remain separate. Repeated
+historical periods in different filings remain separate as-filed observations.
+Amounts use original currency base units; EPS is currency per share. No currency
+conversion or implicit restatement selection is performed.
 
-This graph shows the main relationships. Every extracted object also belongs to a filing; composite foreign keys prevent links between different filings or report versions. A processing set selects exact source/version pairs for facts and tables, an exact report, and a chunking version. The migration ledger, `schema_migrations`, records schema updates.
-
-| What you want | Where it resides | Convenient view |
-| --- | --- | --- |
-| Company name, CIK, display ticker, filing identity and dates | `companies`, `filings` | `filing_overview`, `filing_catalog` |
-| Verified predecessor and co-registrant relationships | `issuer_successions`, processing-set metadata | `issuer_filing_history` |
-| Original HTML/XML, source URL, hash, file locator | `source_documents`; source bytes remain in files/storage | Source columns in the catalogs |
-| Full cleaned text | `reports.full_text` | Sections expose slices of this text |
-| MD&A, risks, business, governance, other items | `report_sections` + `section_types` | `section_catalog` |
-| Searchable passages and exact citations | `chunks`, linked to report and optionally section | `chunk_catalog` |
-| Statement layout, row/column headings, displayed cells | `financial_tables`, `table_cells` | `statement_catalog`, `statement_cells` |
-| Exact XBRL occurrences, units, periods, dimensions | `financial_facts`; `cell_fact_links` traces cells to occurrences | `fact_catalog` |
-| Versions to use, coverage, validation checks | `filing_processing_sets`, `preferred_processing_sets` | `filing_overview` |
-
-Start with **`filing_overview`**, then use the catalogs once that filing has an explicitly preferred processing set. A filing without a preferred set remains visible in the overview; its preferred catalogs are empty. Counts and validation apply to the selected scope, and a passed check does not mean the entire filing was extracted. The first query includes filings without preferred sets; the section queries include only selected sets.
+Read `metric_status` with the values. Missing or conflicting values are `NULL`,
+not zero, and review-required versions withhold numeric metrics. Free cash flow
+requires matching operating cash flow and cash PP&E purchases. Debt excluding
+leases requires all three documented borrowing components.
 
 ```sql
-SELECT company_name, ticker, cik, form, accession_number, set_key, coverage, validation_status
-FROM sec.filing_overview ORDER BY filing_date DESC;
-
-SELECT accession_number, original_title, part, item, text, source_url,
-       section_validation_status, stage_coverage
-FROM sec.section_catalog
-WHERE section_type = 'mda';
-
-SELECT accession_number, original_title, text, section_validation_status
-FROM sec.section_catalog
-WHERE section_topic IN ('risks', 'governance');
+SELECT accession_number, period_start, period_end, currency,
+       revenue, net_income, eps_diluted, metric_status
+FROM finance.income_statement
+WHERE ticker = 'MSFT'
+ORDER BY filing_date DESC, period_end DESC, period_start DESC;
 ```
 
-**MD&A maps to 10-Q Part I Item 2 or 10-K Part II Item 7.** Governance is usually in 10-K Part III; a filing may refer readers to a separate proxy statement, whose contents are not automatically loaded. See the [complete report map, selection workflow, migration notes, and limitations](docs/database-browsing.md) and [ready-to-run browsing queries](docs/database-browsing-queries.sql).
+The browsing version uses an explicit legacy preference when present, otherwise
+the newest source-family version, otherwise a passed legacy version with facts.
+`selection_reason`, status, coverage, and IDs expose that choice; no original
+processing preference is changed. Current views can change after new imports.
+
+See the [financial browsing guide](docs/database-finance.md) for definitions,
+selection rules, provenance queries, and limitations. For source-level analysis,
+use the [original schema and report-section guide](docs/database-browsing.md)
+and [source browsing queries](docs/database-browsing-queries.sql). Legacy
+preferred catalogs remain available and still require an explicit selection;
+the `finance` views can be used when those catalogs are empty.
 
 ### Company tickers and data interpretation
 

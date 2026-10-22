@@ -1,5 +1,9 @@
 # Finding and using filing content
 
+For standardized financial columns and the simpler company/filing/statement map,
+start with the [financial browsing schema](database-finance.md). This guide
+describes the underlying `sec` evidence and explicit processing selections.
+
 Use `filing_overview` to choose a filing and inspect its selected processing set, if any. Use `section_catalog` for prose, `statement_cells` for financial statement presentation, and `fact_catalog` for exact source occurrences. Install migrations 001–005; the preferred catalogs need an explicitly chosen set and do not choose the latest version automatically. The overview also shows filings without a preferred set.
 
 ## Where each part of a report lives
@@ -95,7 +99,7 @@ Apply `sec-db migrate` to the intended database after taking the normal deployme
 - `companies.cik` is identity; `register_company()` resolves existing companies without overwriting their profile. `update_company_profile()` explicitly changes name/ticker. `filings.company_name_as_filed` captures new manifest names; historical rows remain NULL until supplied, rather than copying today's name into history.
 - `source_documents.title`, `document_type`, and `storage_uri` are optional display/storage fields. Updating a locator does not change source provenance; selected source URL/hash/size/role stay protected.
 
-The shared RDS database was upgraded through migration 005 on **October 13, 2026**, and `sec_reader` has SELECT access to all 25 tables/views, including the new catalogs. The existing manual example was preserved; its two legacy sections are `unknown`/`unverified`, and no processing set or relational statement cells were created. Preferred catalogs therefore remain empty until a passed set is explicitly selected. See the [verified deployment record](aws-deployment.md#schema-upgrade-october-13-2026). Other database instances still require their own backup, migration, and reader-permission checks.
+Historical deployment snapshot: the shared RDS database was upgraded through migration 005 on **October 13, 2026**, and `sec_reader` has SELECT access to all 25 tables/views, including the new catalogs. The existing manual example was preserved; its two legacy sections are `unknown`/`unverified`, and no processing set or relational statement cells were created. At that snapshot, preferred catalogs were empty until a passed set was explicitly selected. These historical counts do not describe later imports or the finance schema. See the [verified deployment record](aws-deployment.md#schema-upgrade-october-13-2026). Other database instances still require their own backup, migration, and reader-permission checks.
 
 ## Design boundary
 
