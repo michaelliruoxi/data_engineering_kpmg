@@ -14,6 +14,8 @@ explicit choice it uses only an existing `preferred_processing_sets` row from
 the legacy contract. It **never** chooses the newest candidate, converts a v4
 candidate to legacy preference, or treats successful code checks as human
 approval. With no preference it returns candidates and an unverified result.
+For unselected v4 candidates, accepted occurrence uniqueness stays unverified
+until a document set is selected; the same fact may occur in multiple sets.
 The selected row's original validation/coverage/configuration remain in the
 snapshot. A passed relationship audit is not a promotion or independent review.
 
@@ -91,7 +93,7 @@ Contract label: `draft-financial-table-id-v1`. Every result explicitly carries
 | `source_document_id` | Original HTML receipt UUID, not XML receipt |
 | `table_version` | Exact selected financial table extraction version |
 | `source_locator` | Original HTML `{xpath: ...}` locating the table/fragment/container |
-| `synthetic` | True only for labelled fixtures; opt-in required |
+| `synthetic` | Required boolean; true labels fixtures and requires opt-in; missing or malformed markers are rejected |
 
 No second table identity is generated. `table_key`, `chunk_id` and
 `parent_chunk_id` are never substituted for `table_id`. Local test UUIDs must

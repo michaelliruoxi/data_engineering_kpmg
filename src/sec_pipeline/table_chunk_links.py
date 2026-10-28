@@ -50,7 +50,8 @@ def resolve_table_chunks(chunks, tables, sources, *, input_fields=None, output_f
         chunk_id = values["chunk_id"]
         base = {"chunk_id": None if chunk_id is _MISSING else chunk_id, "table_id": None,
                 "contract": CONTRACT, "contract_status": "pending_Michael_Ruby_confirmation",
-                "synthetic": values["synthetic"] is True, "mapping_status": "rejected", "evidence": {}}
+                "synthetic": values["synthetic"] if type(values["synthetic"]) is bool else None,
+                "mapping_status": "rejected", "evidence": {}}
 
         def reject(reason):
             results.append(canonical(base | {"evidence": {"reason": reason}}))
@@ -60,6 +61,9 @@ def resolve_table_chunks(chunks, tables, sources, *, input_fields=None, output_f
             continue
         if values["chunk_type"] != "table":
             reject("not_a_table_chunk")
+            continue
+        if type(values["synthetic"]) is not bool:
+            reject("synthetic_must_be_explicit_boolean")
             continue
         if base["synthetic"] and not allow_synthetic:
             reject("synthetic_requires_explicit_opt_in")
