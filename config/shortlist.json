@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "scope_status": "pending_Emma_confirmation",
+  "scope_basis": "Repository default rolling window; filing dates, inclusive. Confirm before final acceptance.",
+  "since": "2021-10-13",
+  "until": "2026-10-13",
+  "forms": ["10-K", "10-Q"],
+  "amendments_included": false,
+  "shortlist_source": "Emma's team message dated 2026-10-27, supplied by Jace",
+  "companies": [
+    {"ticker":"AAPL","cik":"0000320193","name":"Apple Inc."},
+    {"ticker":"CASY","cik":"0000726958","name":"Casey's General Stores, Inc."},
+    {"ticker":"MCK","cik":"0000927653","name":"McKesson Corporation"},
+    {"ticker":"MDT","cik":"0001613103","name":"Medtronic plc"},
+    {"ticker":"MSFT","cik":"0000789019","name":"Microsoft Corporation"},
+    {"ticker":"MU","cik":"0000723125","name":"Micron Technology, Inc."},
+    {"ticker":"NKE","cik":"0000320187","name":"NIKE, Inc."},
+    {"ticker":"NTAP","cik":"0001002047","name":"NetApp, Inc."},
+    {"ticker":"PH","cik":"0000076334","name":"Parker-Hannifin Corporation"},
+    {"ticker":"TTWO","cik":"0000946581","name":"Take-Two Interactive Software, Inc."}
+  ]
+}
