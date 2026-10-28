@@ -207,6 +207,8 @@ def audit_snapshot(snapshot, sources):
 
     for table in snapshot["tables"]:
         structure, tid = table["structure"], table["id"]
+        if table["extraction_version"] == "tables-v4" and not document_set:
+            unverified.append({"table_id": tid, "reason": "source_document_set_unselected"})
         cells = [c for c in snapshot["table_cells"] if c["table_id"] == tid]
         links = [link for link in snapshot["cell_fact_links"] if link["table_id"] == tid]
         members = [m for m in snapshot["financial_table_facts"] if m["table_id"] == tid]
@@ -315,9 +317,9 @@ def audit_snapshot(snapshot, sources):
                 original = original_facts.get(xml_id, {}).get(fact["occurrence_key"])
                 if xml_id in original_facts and not _same_original_fact(original, fact):
                     error(table, "stored_fact_differs_from_original_XML", cell_key=key, fact_id=fact["id"])
-                if table["extraction_version"] == "tables-v4":
+                if table["extraction_version"] == "tables-v4" and document_set:
                     occurrences = [o for o in snapshot.get("fact_source_occurrences", []) if o["fact_id"] == fact["id"]
-                                   and (not document_set or o["document_set_id"] == document_set)]
+                                   and o["document_set_id"] == document_set]
                     if len(occurrences) != 1 or not _valid_occurrence(occurrences[0], ref, fact, table, document_set, tree):
                         error(table, "accepted_source_occurrence_mismatch", cell_key=key)
                 accepted_ids.add(fact["id"])

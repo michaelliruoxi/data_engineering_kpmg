@@ -206,6 +206,27 @@ def test_synthetic_opt_in_and_configurable_fields_and_repeat_stability():
         resolve(output_fields={"table_id": "chunk_id"})
 
 
+@pytest.mark.parametrize("marker", [None, "true", "false", 0, 1, [], {}])
+@pytest.mark.parametrize("allow_synthetic", [False, True])
+def test_malformed_synthetic_marker_is_never_treated_as_real(marker, allow_synthetic):
+    table, _, _, chunk = fixture()
+    chunk["synthetic"] = marker
+    result, = resolve_table_chunks([chunk], [table], {HTML: SOURCE}, allow_synthetic=allow_synthetic)
+    assert result["mapping_status"] == "rejected"
+    assert result["synthetic"] is None
+    assert result["evidence"]["reason"] == "synthetic_must_be_explicit_boolean"
+
+
+def test_missing_synthetic_marker_rejected_and_explicit_false_is_preserved():
+    table, _, _, chunk = fixture()
+    del chunk["synthetic"]
+    result, = resolve_table_chunks([chunk], [table], {HTML: SOURCE})
+    assert result["mapping_status"] == "rejected" and result["synthetic"] is None
+    chunk["synthetic"] = False
+    result, = resolve_table_chunks([chunk], [table], {HTML: SOURCE})
+    assert result["mapping_status"] == "draft_mapped" and result["synthetic"] is False
+
+
 def relationship_snapshot(table, facts):
     """Synthetic stored-row shape, separate from opt-in real PostgreSQL tests."""
     from dataclasses import asdict
@@ -296,9 +317,8 @@ def test_v4_review_binding_is_not_an_accepted_fact_link(defect):
         assert "review_occurrence_or_issue_mismatch" in {e["reason"] for e in result["errors"]}
 
 
-@pytest.mark.parametrize("defect", [None, "missing", "document_set", "filing", "source", "raw_value"])
-def test_v4_accepted_links_also_require_exact_selected_source_occurrence(defect):
-    from sec_pipeline.table_relations import audit_snapshot, fact_evidence
+def accepted_relationship_snapshot():
+    from sec_pipeline.table_relations import fact_evidence
     from tests.test_v4_table_cells import conflict_fixture
     table, fact, _ = conflict_fixture(issue=False)
     snapshot = relationship_snapshot(table, [fact])
@@ -317,8 +337,18 @@ def test_v4_accepted_links_also_require_exact_selected_source_occurrence(defect)
             "inline_mapped_value": fact_row["raw_value"], "html_sha256": table.structure["html_sha256"],
             "xml_sha256": table.structure["xml_sha256"]}}
     snapshot["fact_source_occurrences"] = [occurrence]
+    return snapshot
+
+
+@pytest.mark.parametrize("defect", [None, "missing", "duplicate", "document_set", "filing", "source", "raw_value"])
+def test_v4_accepted_links_also_require_exact_selected_source_occurrence(defect):
+    from sec_pipeline.table_relations import audit_snapshot
+    snapshot = accepted_relationship_snapshot()
+    occurrence = snapshot["fact_source_occurrences"][0]
     if defect == "missing":
         snapshot["fact_source_occurrences"] = []
+    elif defect == "duplicate":
+        snapshot["fact_source_occurrences"].append(deepcopy(occurrence) | {"id": str(UUID(int=999))})
     elif defect in {"document_set", "filing", "source"}:
         occurrence[{"document_set": "document_set_id", "filing": "filing_id", "source": "html_document_id"}[defect]] = str(UUID(int=999))
     elif defect == "raw_value":
@@ -327,3 +357,20 @@ def test_v4_accepted_links_also_require_exact_selected_source_occurrence(defect)
     assert bool(result["errors"]) == bool(defect)
     if defect:
         assert "accepted_source_occurrence_mismatch" in {e["reason"] for e in result["errors"]}
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_fact_in_multiple_document_sets_does_not_fail_candidate_audit(selected):
+    from sec_pipeline.table_relations import audit_snapshot
+    snapshot = accepted_relationship_snapshot()
+    occurrence = snapshot["fact_source_occurrences"][0]
+    snapshot["fact_source_occurrences"].append(deepcopy(occurrence) | {
+        "id": str(UUID(int=901)), "document_set_id": str(UUID(int=902))})
+    if not selected:
+        snapshot["selection"] = None
+        snapshot.pop("selected_processing_set")
+    result = audit_snapshot(snapshot, {})
+    assert result["errors"] == []
+    assert result["status"] == "unverified"  # No original source files/report.
+    reasons = {item["reason"] for item in result["unverified"]}
+    assert ("source_document_set_unselected" in reasons) is (not selected)
