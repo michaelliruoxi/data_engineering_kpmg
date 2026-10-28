@@ -48,6 +48,11 @@ Source documents remain in the ingest machine's archive. The database stores
 their provenance and extracted content; connecting to RDS does not download the
 original HTML/XML files to your computer.
 
+For the ten-company acquisition task, see the
+[shortlist inventory and Exhibit 21 guide](docs/shortlist-acquisition.md).
+It checks supplied archives, discovers historical filings, and downloads sources
+locally; database integration remains a separate handoff.
+
 ## Database structure and financial reads
 
 Start in **Schemas → finance → Views** in DBeaver after migration 010 is
