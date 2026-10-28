@@ -2,7 +2,7 @@
 from collections import Counter
 from dataclasses import asdict
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import hashlib
 from pathlib import Path
 import tempfile
@@ -15,7 +15,7 @@ from .database import DatabaseError, FactInput, FinancialTableInput
 from .source_locators import executable_xpath
 from .table_cells import relational_cells
 from .table_sections import canonical, map_table_section
-from .tables import layout_grid, verify_inline
+from .tables import layout_grid, local, same_row_repeat_reference, text, verify_inline
 
 
 def _rows(conn, statement, parameters=()):
@@ -347,8 +347,8 @@ def audit_snapshot(snapshot, sources):
                             raise ValueError("inline id/locator mismatch")
                         namespaces = {k[6:]: v for k, v in tree.getroot().attrib.items() if k.startswith("xmlns:")}
                         verify_inline(inline[0], ref, namespaces)
-                        for field, attribute in (("scale", "scale"), ("inline_sign", "sign"), ("format", "format")):
-                            if field in ref and ref[field] != inline[0].get(attribute):
+                        for field, attribute, default in (("scale", "scale", "0"), ("inline_sign", "sign", None), ("format", "format", None)):
+                            if field in ref and ref[field] != inline[0].get(attribute, default):
                                 raise ValueError("Stored scale/sign/format differs from the original inline tag")
                         target = tree.xpath(executable_xpath(expected[key]["source_locator"]["xpath"]))
                         if len(target) != 1:
@@ -360,7 +360,16 @@ def audit_snapshot(snapshot, sources):
                             target_rows = list(target[0].iterancestors("tr"))
                             if not origin_rows or not target_rows or origin_rows[0] != target_rows[0] or ref.get("repeated_from_inline_xpath") != ref["inline_xpath"]:
                                 raise ValueError("semantic repeat origin differs")
-                    except ValueError as failure:
+                            if descriptors[key]["column"] == 0 or any(local(node) == "nonfraction" for node in target[0].iter()):
+                                raise ValueError("semantic repeat target contains an inline fact")
+                            row_refs = [candidate for row in structure["rows"] for descriptor in row
+                                        if descriptor["row"] == descriptors[key]["row"]
+                                        for candidate in descriptor["fact_references"] if candidate["method"] == "inline_id"]
+                            repeated = same_row_repeat_reference(
+                                descriptors[key] | {"display_text": text(target[0])}, row_refs)
+                            if repeated != ref:
+                                raise ValueError("semantic repeat value, period or unique row evidence differs")
+                    except (ValueError, InvalidOperation, TypeError, KeyError) as failure:
                         error(table, "original_inline_evidence_mismatch", cell_key=key, detail=str(failure))
                 for link in [l for l in links if cell and l["cell_id"] == cell["id"] and l["reference_order"] == ordinal]:
                     if link.get("evidence") != ref or link.get("link_method") != ref["method"]:

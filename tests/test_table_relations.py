@@ -374,3 +374,103 @@ def test_fact_in_multiple_document_sets_does_not_fail_candidate_audit(selected):
     assert result["status"] == "unverified"  # No original source files/report.
     reasons = {item["reason"] for item in result["unverified"]}
     assert ("source_document_set_unselected" in reasons) is (not selected)
+
+
+def inline_relationship_fixture(*, scale=None, repeat=False, defect=None, negative=False):
+    from dataclasses import replace
+    from datetime import date
+    from decimal import Decimal
+    from lxml import html
+    from sec_pipeline.database import FactInput, FinancialTableInput
+    from sec_pipeline.table_relations import fact_evidence
+    from sec_pipeline.table_sections import canonical
+    from sec_pipeline.tables import layout_grid
+    from sec_pipeline.source_locators import inline_source_xpath
+
+    fact = FactInput(filing_id=UUID(FILING), source_document_id=UUID(int=900),
+        extraction_version="facts-v1", occurrence_key="F1",
+        concept_namespace="http://fasb.org/us-gaap/2026", concept_name="CashAndCashEquivalentsAtCarryingValue",
+        numeric_value=Decimal(-24 if negative else 24) * Decimal(10) ** int(scale or "0"),
+        raw_value=str((-24 if negative else 24) * 10 ** int(scale or "0")), period_kind="instant", instant_date=date(2026, 6, 30),
+        unit={"numerator": ["{http://www.xbrl.org/2003/iso4217}USD"], "denominator": []},
+        source_reference={"element_id": "F1", "context_ref": "c1", "unit_ref": "usd"})
+    facts = [fact]
+    if defect in {"ambiguous_occurrences", "ambiguous_semantics"}:
+        facts.append(replace(fact, occurrence_key="F2",
+            concept_name="RestrictedCashCurrent" if defect == "ambiguous_semantics" else fact.concept_name,
+            instant_date=date(2025, 6, 30) if defect == "ambiguous_semantics" else fact.instant_date,
+            source_reference={"element_id": "F2", "context_ref": "c2", "unit_ref": "usd"}))
+    scale_attribute = "" if scale is None else f' scale="{scale}"'
+    sign_attribute = ' sign="-"' if negative else ""
+    inline_cells = "".join(f'<td><ix:nonFraction id="{item.occurrence_key}" name="g:{item.concept_name}" '
+        f'contextRef="{item.source_reference["context_ref"]}" unitRef="usd"{scale_attribute}{sign_attribute}>24</ix:nonFraction></td>'
+        for item in facts)
+    displayed = "25" if defect == "wrong_value" else "24"
+    if negative:
+        displayed = f"({displayed})"
+    if defect == "tagged_target":
+        displayed = (f'<ix:nonFraction id="Fextra" name="g:{fact.concept_name}" '
+                     f'contextRef="c1" unitRef="usd"{scale_attribute}>24</ix:nonFraction>')
+    target = f'<td>{displayed}</td>' if repeat else ""
+    source = ('<html xmlns:ix="http://www.xbrl.org/2013/inlineXBRL" xmlns:g="http://fasb.org/us-gaap/2026">'
+              f'<body><table><tr><td>Closing cash</td>{inline_cells}{target}</tr></table></body></html>').encode()
+    tree = html.document_fromstring(source).getroottree()
+    rows, grid = layout_grid(tree.xpath('//table')[0], tree)
+    scope = {"filing_id": FILING, "xml_document_id": str(fact.source_document_id), "facts_version": "facts-v1"}
+    refs = []
+    for item in facts:
+        node = tree.xpath(f'//*[@id="{item.occurrence_key}"]')[0]
+        refs.append(fact_evidence(canonical(item.__dict__)) | {"xml_id": item.occurrence_key, "scope": scope,
+            "method": "inline_id", "inline_xpath": inline_source_xpath(tree, node),
+            "scale": scale or "0", "inline_sign": "-" if negative else None, "format": None})
+    for index, cell in enumerate(rows[0]):
+        cell.pop("_element")
+        reference = refs[index - 1] if 0 < index <= len(refs) else None
+        if repeat and index == len(rows[0]) - 1:
+            reference = refs[0] | {"method": "same_row_semantic_repeat",
+                                  "repeated_from_inline_xpath": refs[0]["inline_xpath"]}
+        cell.update(row_heading="Closing cash", column_headings=[], column_period=reference["period"] if reference else None,
+                    classification="resolved" if reference else "label", fact_references=[reference] if reference else [],
+                    unresolved_reason=None, is_total=False)
+    if repeat:
+        rows[0][-1]["column_period"] = {"startDate": "2026-01-01", "endDate": "2026-06-30"}
+    if defect == "wrong_period":
+        rows[0][-1]["column_period"] = {"instant": "2025-06-30"}
+    if defect == "missing_origin":
+        rows[0][1].update(classification="label", fact_references=[])
+    table = FinancialTableInput(filing_id=UUID(FILING), source_document_id=UUID(HTML), extraction_version="tables-v1",
+        table_key="cash_flow", statement_type="cash_flow", readable_text="Closing cash",
+        structure={"schema_version": 1, "rows": rows, "grid": grid, "fact_scope": scope,
+            "source_xpath": tree.getpath(tree.xpath('//table')[0]), "html_sha256": hashlib.sha256(source).hexdigest(),
+            "xml_sha256": "a" * 64})
+    return table, facts, source
+
+
+@pytest.mark.parametrize("scale", [None, "0", "6"])
+@pytest.mark.parametrize("wrong_scale", [False, True])
+def test_original_inline_scale_uses_extractor_default_and_rejects_mismatch(scale, wrong_scale):
+    from sec_pipeline.table_relations import audit_snapshot
+    table, facts, source = inline_relationship_fixture(scale=scale)
+    if wrong_scale:
+        table.structure["rows"][0][1]["fact_references"][0]["scale"] = "2"
+    result = audit_snapshot(relationship_snapshot(table, facts), {HTML: source})
+    assert bool(result["errors"]) is wrong_scale
+    if wrong_scale:
+        assert "original_inline_evidence_mismatch" in {error["reason"] for error in result["errors"]}
+
+
+@pytest.mark.parametrize("defect", [None, "wrong_value", "wrong_period", "ambiguous_occurrences", "ambiguous_semantics", "missing_origin", "tagged_target"])
+def test_original_semantic_repeat_requires_value_period_and_unique_direct_origin(defect):
+    from sec_pipeline.table_relations import audit_snapshot
+    table, facts, source = inline_relationship_fixture(scale="6", repeat=True, defect=defect)
+    result = audit_snapshot(relationship_snapshot(table, facts), {HTML: source})
+    assert bool(result["errors"]) is bool(defect)
+    if defect:
+        assert "original_inline_evidence_mismatch" in {error["reason"] for error in result["errors"]}
+
+
+def test_original_negative_repeat_uses_parentheses_without_applying_inline_sign_twice():
+    from sec_pipeline.table_relations import audit_snapshot
+    table, facts, source = inline_relationship_fixture(scale="6", repeat=True, negative=True)
+    result = audit_snapshot(relationship_snapshot(table, facts), {HTML: source})
+    assert result["errors"] == []

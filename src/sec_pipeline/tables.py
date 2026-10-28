@@ -1421,6 +1421,29 @@ def validate_statement_segments(tables, tree, facts, *, xml_path=None):
     return True
 
 
+def same_row_repeat_reference(cell, refs):
+    """Return the unique same-row instant/value match used by extraction."""
+    period = cell['column_period'] or {}
+    end = period.get('instant') or period.get('endDate')
+    semantic = {(f['concept'], json.dumps(f['unit'], sort_keys=True),
+                 json.dumps(f['dimensions'], sort_keys=True)) for f in refs}
+    candidates = {f['xml_id']: f for f in refs if f['period'] == {'instant': end}}
+    if len(semantic) != 1 or len(candidates) != 1:
+        return None
+    reference = next(iter(candidates.values()))
+    lexical = cell['display_text'].replace(',', '').strip()
+    if lexical.startswith('(') and lexical.endswith(')'):
+        lexical = '-' + lexical[1:-1].strip()
+    try:
+        displayed = Decimal(lexical)
+    except InvalidOperation:
+        return None
+    if displayed * Decimal(10) ** int(reference['scale']) != Decimal(reference['raw_value']):
+        return None
+    return {**reference, 'method': 'same_row_semantic_repeat',
+            'repeated_from_inline_xpath': reference['inline_xpath']}
+
+
 def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UUID,
                    xml_document_id: UUID, facts_version='facts-v1', tables_version=VERSION):
     if html_document_id == xml_document_id:
@@ -1586,24 +1609,10 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
             for cell in row:
                 if cell['unresolved_reason'] != 'untagged_financial_cell':
                     continue
-                period = cell['column_period'] or {}
-                end = period.get('instant') or period.get('endDate')
-                semantic = {(f['concept'], json.dumps(f['unit'], sort_keys=True),
-                             json.dumps(f['dimensions'], sort_keys=True)) for f in refs}
-                candidates = {f['xml_id']: f for f in refs if f['period'] == {'instant': end}}
-                if len(semantic) == 1 and len(candidates) == 1:
-                    f = next(iter(candidates.values()))
-                    lexical = cell['display_text'].replace(',', '').strip()
-                    if lexical.startswith('(') and lexical.endswith(')'):
-                        lexical = '-' + lexical[1:-1].strip()
-                    try:
-                        displayed = Decimal(lexical)
-                    except InvalidOperation:
-                        continue
-                    if displayed * Decimal(10) ** int(f['scale']) == Decimal(f['raw_value']):
-                        cell['fact_references'] = [{**f, 'method': 'same_row_semantic_repeat',
-                            'repeated_from_inline_xpath': f['inline_xpath']}]
-                        cell['classification'], cell['unresolved_reason'] = 'resolved', None
+                reference = same_row_repeat_reference(cell, refs)
+                if reference is not None:
+                    cell['fact_references'] = [reference]
+                    cell['classification'], cell['unresolved_reason'] = 'resolved', None
         for row in rows:
             for c in row:
                 del c['_element']
