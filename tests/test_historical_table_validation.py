@@ -346,6 +346,44 @@ def test_download_preserves_existing_bytes_and_different_hash_evidence(tmp_path,
     assert target.read_bytes() == b"previous bytes must survive"
 
 
+def test_interrupted_source_download_leaves_no_original_and_can_resume(tmp_path, monkeypatch):
+    import hashlib
+    from sec_pipeline import acquisition
+    data = b"complete synthetic original source"
+    class Client:
+        request_log = []
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, url): return data, {"sha256": hashlib.sha256(data).hexdigest()}
+    monkeypatch.setattr(acquisition, "SecClient", lambda **kw: Client())
+    row = requirement() | {"SHA-256": hashlib.sha256(data).hexdigest()}
+    target = tmp_path / row["local_path"]
+    original_open = Path.open
+    original_temporary = acquisition.tempfile.NamedTemporaryFile
+    class InterruptedWrite:
+        def __init__(self, handle): self.handle = handle
+        def __enter__(self): return self
+        def __exit__(self, *args): return self.handle.__exit__(*args)
+        def __getattr__(self, name): return getattr(self.handle, name)
+        def write(self, value):
+            self.handle.write(value[:3])
+            raise OSError("Synthetic interrupted source write")
+    def open_interrupted(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        return InterruptedWrite(handle) if args and args[0] == "xb" else handle
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(Path, "open", open_interrupted)
+        interrupted.setattr(acquisition.tempfile, "NamedTemporaryFile",
+            lambda *args, **kwargs: InterruptedWrite(original_temporary(*args, **kwargs)))
+        status = batch.download_required_sources([row], tmp_path, identity_approved=True)
+    assert status["files"][0]["status"] == "unavailable"
+    assert not target.exists()
+    assert not list(target.parent.glob("*.part"))
+    resumed = batch.download_required_sources([row], tmp_path, identity_approved=True)
+    assert resumed["files"][0]["status"] == "downloaded_hash_matched"
+    assert target.read_bytes() == data
+
+
 @pytest.mark.parametrize("raw,numeric,nil", [("10", "11", False), (None, "0", True), ("Infinity", "Infinity", False)])
 def test_stored_raw_numeric_mismatch_is_not_hidden_by_missing_sources(raw, numeric, nil):
     table, fact, _ = conflict_fixture(issue=False)

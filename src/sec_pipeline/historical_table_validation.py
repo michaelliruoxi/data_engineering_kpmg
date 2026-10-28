@@ -376,7 +376,7 @@ def source_requirements(inventory, companies, roots):
 
 def download_required_sources(requirements, root, *, identity_approved):
     """Reuse the SEC client; immutable new archive, no ingest, no hash changes."""
-    from .acquisition import AccessBlocked, AcquisitionError, SecClient, validate_sec_url
+    from .acquisition import AccessBlocked, AcquisitionError, SecClient, _immutable_write, validate_sec_url
     root = root.resolve()
     status = {"checked_at_utc": utc_now(), "database_writes": False, "identity_value_recorded": False,
         "requested": sum(r["minimum_relationship_source"] and r["hash_status"] == "missing" for r in requirements),
@@ -408,9 +408,7 @@ def download_required_sources(requirements, root, *, identity_approved):
                     # Mismatching bytes are retained separately, not at the
                     # receipt's canonical path and never accepted as originals.
                     target = path if entry["hash_matches"] else root / "hash-differences" / row["accession"] / (metadata["sha256"] + "-" + path.name)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with target.open("xb") as stream:
-                        stream.write(data)
+                    _immutable_write(target, data)
                     entry.update(status="downloaded_hash_matched" if entry["hash_matches"] else "downloaded_hash_mismatch_not_original", saved_path=str(target))
             except AccessBlocked:
                 entry["status"] = "SEC_access_blocked_session_stopped"
