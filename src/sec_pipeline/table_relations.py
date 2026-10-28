@@ -2,7 +2,7 @@
 from collections import Counter
 from dataclasses import asdict
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import hashlib
 from pathlib import Path
 import tempfile
@@ -15,7 +15,7 @@ from .database import DatabaseError, FactInput, FinancialTableInput
 from .source_locators import executable_xpath
 from .table_cells import relational_cells
 from .table_sections import canonical, map_table_section
-from .tables import layout_grid, verify_inline
+from .tables import layout_grid, local, same_row_repeat_reference, text, verify_inline
 
 
 def _rows(conn, statement, parameters=()):
@@ -151,6 +151,19 @@ def _same_original_fact(original, fact):
             and original["reported_precision"] == fact["reported_precision"])
 
 
+def _occurrence_matches_fact_evidence(occurrence_evidence, fact):
+    """The existing source contract permits NULL or '' for a NIL raw value.
+
+    Do not relax non-nil values, nil flags, mapped values or any other evidence.
+    FactSourceOccurrenceInput still independently validates the full occurrence.
+    """
+    wanted = fact_evidence(fact)
+    observed = dict(occurrence_evidence)
+    if fact["is_nil"] is True and observed.get("is_nil") is True and observed.get("raw_value") in (None, ""):
+        observed["raw_value"] = ""
+    return all(observed.get(key) == value for key, value in wanted.items())
+
+
 def _valid_occurrence(occurrence, ref, fact, table, document_set, tree):
     """Reuse the v4 source contract for accepted as well as review references."""
     from .source_set_storage import FactSourceOccurrenceInput
@@ -167,7 +180,7 @@ def _valid_occurrence(occurrence, ref, fact, table, document_set, tree):
              and (not document_set or occurrence["document_set_id"] == document_set)
              and occurrence["evidence"].get("html_sha256") == table["structure"]["html_sha256"]
              and occurrence["evidence"].get("xml_sha256") == table["structure"]["xml_sha256"]
-             and all(occurrence["evidence"].get(k) == v for k, v in fact_evidence(fact).items()))
+             and _occurrence_matches_fact_evidence(occurrence["evidence"], fact))
     if tree is not None:
         from .table_sections import _nodes
         original = _nodes(tree, occurrence["source_xpath"])
@@ -334,8 +347,8 @@ def audit_snapshot(snapshot, sources):
                             raise ValueError("inline id/locator mismatch")
                         namespaces = {k[6:]: v for k, v in tree.getroot().attrib.items() if k.startswith("xmlns:")}
                         verify_inline(inline[0], ref, namespaces)
-                        for field, attribute in (("scale", "scale"), ("inline_sign", "sign"), ("format", "format")):
-                            if field in ref and ref[field] != inline[0].get(attribute):
+                        for field, attribute, default in (("scale", "scale", "0"), ("inline_sign", "sign", None), ("format", "format", None)):
+                            if field in ref and ref[field] != inline[0].get(attribute, default):
                                 raise ValueError("Stored scale/sign/format differs from the original inline tag")
                         target = tree.xpath(executable_xpath(expected[key]["source_locator"]["xpath"]))
                         if len(target) != 1:
@@ -347,7 +360,16 @@ def audit_snapshot(snapshot, sources):
                             target_rows = list(target[0].iterancestors("tr"))
                             if not origin_rows or not target_rows or origin_rows[0] != target_rows[0] or ref.get("repeated_from_inline_xpath") != ref["inline_xpath"]:
                                 raise ValueError("semantic repeat origin differs")
-                    except ValueError as failure:
+                            if descriptors[key]["column"] == 0 or any(local(node) == "nonfraction" for node in target[0].iter()):
+                                raise ValueError("semantic repeat target contains an inline fact")
+                            row_refs = [candidate for row in structure["rows"] for descriptor in row
+                                        if descriptor["row"] == descriptors[key]["row"]
+                                        for candidate in descriptor["fact_references"] if candidate["method"] == "inline_id"]
+                            repeated = same_row_repeat_reference(
+                                descriptors[key] | {"display_text": text(target[0])}, row_refs)
+                            if repeated != ref:
+                                raise ValueError("semantic repeat value, period or unique row evidence differs")
+                    except (ValueError, InvalidOperation, TypeError, KeyError) as failure:
                         error(table, "original_inline_evidence_mismatch", cell_key=key, detail=str(failure))
                 for link in [l for l in links if cell and l["cell_id"] == cell["id"] and l["reference_order"] == ordinal]:
                     if link.get("evidence") != ref or link.get("link_method") != ref["method"]:
@@ -396,7 +418,7 @@ def audit_snapshot(snapshot, sources):
                              and fact.get("filing_id") == table["filing_id"] and canonical(fact_evidence(fact)) == {k: ref[k] for k in fact_evidence(fact)})
                     valid = valid and (occurrence.get("evidence", {}).get("html_sha256") == structure["html_sha256"]
                               and occurrence.get("evidence", {}).get("xml_sha256") == structure["xml_sha256"]
-                              and all(occurrence.get("evidence", {}).get(k) == v for k, v in fact_evidence(fact).items()))
+                              and _occurrence_matches_fact_evidence(occurrence.get("evidence", {}), fact))
                     valid = valid and _valid_occurrence(occurrence, ref, fact, table, document_set, tree)
                     if xml_id in original_facts:
                         valid = valid and _same_original_fact(original_facts[xml_id].get(fact.get("occurrence_key")), fact)
