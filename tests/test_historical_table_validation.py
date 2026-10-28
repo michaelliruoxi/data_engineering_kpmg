@@ -193,6 +193,52 @@ def test_multiple_versions_do_not_double_count_same_cell_link_membership():
     assert result["unique_membership_count"] == 1 and result["validation_status"] == "blocked"
 
 
+def test_failed_candidate_read_prevents_filing_source_semantics_pass(tmp_path, monkeypatch):
+    import csv
+    inv = inventory()
+    other_set = str(UUID(int=10102))
+    inv["filing_processing_sets"].append(inv["filing_processing_sets"][0] | {"id": other_set})
+    table, fact, _ = conflict_fixture(issue=False)
+    snapshot = relationship_snapshot(table, [fact])
+    snapshot.update(accession=ACCESSION, selection={"contract": "legacy", "id": SET}, chunks=[])
+    passed = {"coverage_check": {"status": "passed"}, "status": "passed",
+        "relational_checks_status": "passed_stored_evidence_only", "source_availability": [],
+        "errors": [], "unverified": [], "trace_examples": [], "section_mappings": []}
+    monkeypatch.setattr(batch, "audit_candidate", lambda *args: passed)
+    def reader(accession, selection):
+        if selection["id"] == other_set:
+            raise DatabaseError("Synthetic unavailable candidate")
+        return snapshot
+    assert batch.run_validation(inv, [], batch.COMPANIES, [], tmp_path, reader) == 2
+    with (tmp_path / "validation_summary.csv").open(newline="") as stream:
+        row, = csv.DictReader(stream)
+    assert row["candidate_checks"] == "1"
+    assert row["validation_status"] == "blocked"
+    assert row["table_coverage"] == "unverified"
+    assert row["database_relationship_status"] == "unverified"
+    assert row["original_source_semantics_status"] == "unverified"
+
+
+@pytest.mark.parametrize("wrong_scope", ["accession", "filing", "processing_set"])
+def test_replayed_snapshot_must_match_requested_candidate(tmp_path, monkeypatch, wrong_scope):
+    table, fact, _ = conflict_fixture(issue=False)
+    snapshot = relationship_snapshot(table, [fact])
+    snapshot.update(accession=ACCESSION, selection={"contract": "legacy", "id": SET})
+    if wrong_scope == "accession":
+        snapshot["accession"] = MISSING
+    elif wrong_scope == "filing":
+        snapshot["filing"]["id"] = str(UUID(int=999))
+    else:
+        snapshot["selection"]["id"] = str(UUID(int=999))
+    monkeypatch.setattr(batch, "audit_candidate", lambda *args: pytest.fail("Wrong snapshot must not be audited"))
+    assert batch.run_validation(inventory(), [], batch.COMPANIES, [], tmp_path, lambda *args: snapshot) == 2
+    status = json.loads((tmp_path / "run_status.json").read_text())
+    assert status["candidate_sets_checked"] == 0
+    assert status["status_counts"] == {"blocked": 1}
+    failure = json.loads((tmp_path / ACCESSION / f"legacy--{SET}" / "failure.json").read_text())
+    assert failure["error_type"] == "DatabaseError"
+
+
 def test_batch_keeps_missing_filing_and_unknown_company_coverage_and_stable_csv(tmp_path):
     inv = inventory()
     inv["filing_processing_sets"] = []

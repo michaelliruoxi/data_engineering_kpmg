@@ -134,6 +134,9 @@ PYTHONPATH=src pytest tests/test_historical_table_validation.py \
 Replay is explicitly labelled not a new live shared query. Source hashes,
 processing IDs and deterministic CSV content remain inspectable. Execution
 timestamps and absolute output locations are not expected to be byte-identical.
+Each replayed snapshot must match the requested accession, filing ID and processing
+selection. If any candidate cannot be read or audited, filing-level coverage and
+original-source semantics remain unverified even when the other candidates pass.
 
 ## Confirmed table-side validator correction
 

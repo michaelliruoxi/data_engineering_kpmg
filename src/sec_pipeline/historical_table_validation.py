@@ -325,14 +325,14 @@ def summarize(candidate, checks, snapshots, issues, inventory, sets=None):
             unresolved_count=sum(c["resolution_status"] == "unresolved" for c in cells.values()),
             review_required_count=sum(c["resolution_status"] == "review_required" for c in cells.values()),
             source_only_count=sum(c["resolution_status"] == "source_only" for c in cells.values()))
-    row["table_coverage"] = "failed" if any(c["coverage_check"]["status"] == "failed" for c in checks) else "passed" if checks and all(c["coverage_check"]["status"] == "passed" for c in checks) else "unverified"
+    row["table_coverage"] = "failed" if any(c["coverage_check"]["status"] == "failed" for c in checks) else "passed" if checks and len(checks) == len(sets) and all(c["coverage_check"]["status"] == "passed" for c in checks) else "unverified"
     row["source_status"] = "receipts_present_bytes_unavailable_locally" if any(a["availability"] == "missing_local_bytes" for c in checks for a in c["source_availability"]) else "available" if checks else "not_checked"
     row["validation_status"] = ("not_ingested" if not candidate.get("filing_id") else "unprocessed" if not sets else
         "failed" if any(c["status"] == "failed" for c in checks) else
         "blocked" if not checks or row["source_status"] != "available" else "unverified_selection_or_disposition")
     row["database_relationship_status"] = ("failed" if any(c.get("relational_checks_status") == "failed" for c in checks) else
         "passed_stored_evidence_only" if checks and len(checks) == len(sets) else "unverified")
-    row["original_source_semantics_status"] = "passed" if checks and all(c["status"] == "passed" for c in checks) else "unverified"
+    row["original_source_semantics_status"] = "passed" if checks and len(checks) == len(sets) and all(c["status"] == "passed" for c in checks) else "unverified"
     return row
 
 
@@ -458,7 +458,11 @@ def run_validation(inventory, inputs, companies, roots, output, snapshot_reader,
                 directory = output / accession / key
                 directory.mkdir(parents=True, exist_ok=True)
                 try:
-                    snapshot = snapshot_reader(accession, {k: selection[k] for k in ("contract", "id")})
+                    requested = {k: selection[k] for k in ("contract", "id")}
+                    snapshot = canonical(snapshot_reader(accession, requested))
+                    if (snapshot.get("accession") != accession or snapshot.get("selection") != requested
+                            or snapshot.get("filing", {}).get("id") != str(candidate["filing_id"])):
+                        raise DatabaseError("Snapshot does not match the requested filing and processing candidate.")
                     save_json(directory / "snapshot.json", snapshot)
                     check = audit_candidate(snapshot, roots)
                     check["evidence_origin"] = inventory.get("evidence_origin", "saved_shared_inventory_and_snapshot_replay_not_live")
