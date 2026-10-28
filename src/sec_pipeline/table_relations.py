@@ -151,6 +151,19 @@ def _same_original_fact(original, fact):
             and original["reported_precision"] == fact["reported_precision"])
 
 
+def _occurrence_matches_fact_evidence(occurrence_evidence, fact):
+    """The existing source contract permits NULL or '' for a NIL raw value.
+
+    Do not relax non-nil values, nil flags, mapped values or any other evidence.
+    FactSourceOccurrenceInput still independently validates the full occurrence.
+    """
+    wanted = fact_evidence(fact)
+    observed = dict(occurrence_evidence)
+    if fact["is_nil"] is True and observed.get("is_nil") is True and observed.get("raw_value") in (None, ""):
+        observed["raw_value"] = ""
+    return all(observed.get(key) == value for key, value in wanted.items())
+
+
 def _valid_occurrence(occurrence, ref, fact, table, document_set, tree):
     """Reuse the v4 source contract for accepted as well as review references."""
     from .source_set_storage import FactSourceOccurrenceInput
@@ -167,7 +180,7 @@ def _valid_occurrence(occurrence, ref, fact, table, document_set, tree):
              and (not document_set or occurrence["document_set_id"] == document_set)
              and occurrence["evidence"].get("html_sha256") == table["structure"]["html_sha256"]
              and occurrence["evidence"].get("xml_sha256") == table["structure"]["xml_sha256"]
-             and all(occurrence["evidence"].get(k) == v for k, v in fact_evidence(fact).items()))
+             and _occurrence_matches_fact_evidence(occurrence["evidence"], fact))
     if tree is not None:
         from .table_sections import _nodes
         original = _nodes(tree, occurrence["source_xpath"])
@@ -394,7 +407,7 @@ def audit_snapshot(snapshot, sources):
                              and fact.get("filing_id") == table["filing_id"] and canonical(fact_evidence(fact)) == {k: ref[k] for k in fact_evidence(fact)})
                     valid = valid and (occurrence.get("evidence", {}).get("html_sha256") == structure["html_sha256"]
                               and occurrence.get("evidence", {}).get("xml_sha256") == structure["xml_sha256"]
-                              and all(occurrence.get("evidence", {}).get(k) == v for k, v in fact_evidence(fact).items()))
+                              and _occurrence_matches_fact_evidence(occurrence.get("evidence", {}), fact))
                     valid = valid and _valid_occurrence(occurrence, ref, fact, table, document_set, tree)
                     if xml_id in original_facts:
                         valid = valid and _same_original_fact(original_facts[xml_id].get(fact.get("occurrence_key")), fact)
