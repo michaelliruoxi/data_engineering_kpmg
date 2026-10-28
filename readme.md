@@ -551,6 +551,7 @@ These guides cover ingestion, maintenance, and the data contracts:
 - [Automated discovery, import, resumption, and current run status](docs/automated-backfill.md)
 - [Company ticker refresh and existing-record updates](docs/company-tickers.md)
 - [Report sections, processing sets, and database browsing](docs/database-browsing.md)
+- [Financial table lineage, DOM section mapping, and draft shared table ID adapter](docs/financial-table-relations.md)
 - [SQL browsing examples](docs/database-browsing-queries.sql)
 - [GitHub tutorial: personal branches, commits, and pull requests to main](docs/github-tutorial.md)
 - [Python access, SQL examples, and project commands](docs/developer-usage.md)
