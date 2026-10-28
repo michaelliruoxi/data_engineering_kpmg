@@ -189,3 +189,40 @@ def test_exhibit_archive_receipt_roundtrip_and_review(filing, tmp_path, has_exhi
         (tmp_path / receipt['files'][0]['local_path']).write_bytes(b'changed')
         with pytest.raises(ValueError, match='checksum'):
             m.save_exhibits(client, manifest, tmp_path)
+
+
+def test_interrupted_source_publication_can_resume(tmp_path, monkeypatch):
+    from sec_pipeline import acquisition
+
+    target = tmp_path / 'original.html'
+    original_open = Path.open
+    original_temporary = acquisition.tempfile.NamedTemporaryFile
+
+    class InterruptedWrite:
+        def __init__(self, handle):
+            self.handle = handle
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return self.handle.__exit__(*args)
+        def __getattr__(self, name):
+            return getattr(self.handle, name)
+        def write(self, data):
+            self.handle.write(data[:3])
+            raise OSError('Source write interrupted')
+
+    def open_interrupted(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        return InterruptedWrite(handle) if args and args[0] == 'xb' else handle
+
+    monkeypatch.setattr(Path, 'open', open_interrupted)
+    monkeypatch.setattr(acquisition.tempfile, 'NamedTemporaryFile',
+                        lambda *args, **kwargs: InterruptedWrite(original_temporary(*args, **kwargs)))
+    with pytest.raises(OSError, match='interrupted'):
+        m.immutable_write(target, b'complete source bytes')
+    assert not target.exists()
+    assert not list(tmp_path.iterdir())
+
+    monkeypatch.undo()
+    m.immutable_write(target, b'complete source bytes')
+    assert target.read_bytes() == b'complete source bytes'

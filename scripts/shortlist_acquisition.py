@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 from lxml import html
 from sec_pipeline.acquisition import (
     AccessBlocked, FilingIdentity, SecClient,
-    _archive_link, discover_filings, download_filing,
+    _archive_link, _immutable_write, discover_filings, download_filing,
 )
 from sec_pipeline.filing_sources import verify_filing
 
@@ -41,14 +41,9 @@ def save_json(path, value):
 
 
 def immutable_write(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        if path.read_bytes() != data:
-            raise ValueError('Existing source bytes differ; original was not overwritten.')
-        return
-    with path.open('xb') as handle:
-        handle.write(data)
+    # Publish complete bytes atomically so an interrupted write cannot become an
+    # immutable, truncated original that prevents every later resume.
+    _immutable_write(Path(path), data)
 
 
 def load_config(path):
