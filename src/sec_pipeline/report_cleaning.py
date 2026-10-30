@@ -297,30 +297,35 @@ def _trim_fragments(fragments):
     return fragments
 
 
-def _render(element, anchor=None, row_anchor=None):
+def _render(element, anchor=None, row_anchor=None, *, track_links=False, enclosing_link=None):
     """Render annotated fragments while leaving the original DOM untouched."""
     if not isinstance(element.tag, str):  # Comments and processing instructions.
         return []
     tag = element.tag.lower()
     if tag in _OMITTED_TAGS or _omitted_inline_container(element) or _hidden(element):
         return []
+    if tag == 'a':
+        enclosing_link = element
     if tag == "br":
-        return [("\n", row_anchor if row_anchor is not None else anchor)]
+        source_anchor = row_anchor if row_anchor is not None else anchor
+        return [("\n", (source_anchor, enclosing_link) if track_links else source_anchor)]
     if tag == "tr":
         cells = [child for child in element
                  if isinstance(child.tag, str) and child.tag.lower() in {"td", "th"}
                  and not _hidden(child)]
         if cells:
             rendered = [fragments for cell in cells
-                        if (fragments := _trim_fragments(_render(cell, element, element)))]
+                        if (fragments := _trim_fragments(_render(cell, element, element,
+                            track_links=track_links, enclosing_link=enclosing_link)))]
             if not rendered:
                 return []
-            fragments = [("\n", element)]
+            fragment_anchor = (element, enclosing_link) if track_links else element
+            fragments = [("\n", fragment_anchor)]
             for index, cell in enumerate(rendered):
                 if index:
-                    fragments.append((" | ", element))
+                    fragments.append((" | ", fragment_anchor))
                 fragments.extend(cell)
-            fragments.append(("\n", element))
+            fragments.append(("\n", fragment_anchor))
             return fragments
         return []
 
@@ -329,16 +334,18 @@ def _render(element, anchor=None, row_anchor=None):
         anchor = row_anchor
     elif is_block or anchor is None:
         anchor = element
-    fragments = [("\n\n", anchor)] if is_block else []
+    fragment_anchor = (anchor, enclosing_link) if track_links else anchor
+    fragments = [("\n\n", fragment_anchor)] if is_block else []
     if element.text:
-        fragments.append((re.sub(r"\s+", " ", element.text), anchor))
+        fragments.append((re.sub(r"\s+", " ", element.text), fragment_anchor))
     for child in element:
-        fragments.extend(_render(child, anchor, row_anchor))
+        fragments.extend(_render(child, anchor, row_anchor,
+                                 track_links=track_links, enclosing_link=enclosing_link))
         # Tail text belongs to the visible parent even when the child is hidden.
         if child.tail:
-            fragments.append((re.sub(r"\s+", " ", child.tail), anchor))
+            fragments.append((re.sub(r"\s+", " ", child.tail), fragment_anchor))
     if is_block:
-        fragments.append(("\n\n", anchor))
+        fragments.append(("\n\n", fragment_anchor))
     return fragments
 
 
@@ -365,7 +372,43 @@ def _normalize_fragments(fragments):
     return "".join(text), anchors
 
 
-def _navigation_heading_offsets(full_text, anchors):
+def _paragraph_contents_offsets(full_text):
+    """Recognize compact unlinked contents entries with separate page lines."""
+    lines, offset = [], 0
+    for line in full_text.splitlines(keepends=True):
+        value = _heading_text(line)
+        if value:
+            lines.append((offset, value))
+        offset += len(line)
+    excluded = set()
+    for index, (start, title) in enumerate(lines):
+        if not re.fullmatch(r'TABLE OF CONTENTS', title, re.I):
+            continue
+        candidates, pending_parts, item_count = [], [], 0
+        for following in range(index + 1, min(index + 81, len(lines))):
+            offset, value = lines[following]
+            if offset - start > 5000 or len(value) > 240 or re.fullmatch(r'TABLE OF CONTENTS', value, re.I):
+                break
+            if _ITEM_HEADING.match(value):
+                page = lines[following + 1][1] if following + 1 < len(lines) else ''
+                if not re.fullmatch(r'\d+(?:[-–]\d+)?', page):
+                    # The first heading with body text ends the contents block.
+                    break
+                candidates.extend(pending_parts)
+                pending_parts.clear()
+                candidates.append(offset)
+                item_count += 1
+            elif _PART_HEADING.fullmatch(value):
+                # A trailing Part may introduce the actual body. Commit it
+                # only when a subsequent Item/page pair confirms TOC content.
+                pending_parts.append(offset)
+        # A lone reserved Item followed by a page footer is a body section.
+        if item_count >= 2:
+            excluded.update(candidates)
+    return excluded
+
+
+def _navigation_heading_offsets(full_text, anchors, heading_links):
     """Identify TOC headings from their original DOM, before losing blank cells.
 
     A navigation link is different from an empty named body anchor. Unlinked
@@ -373,7 +416,7 @@ def _navigation_heading_offsets(full_text, anchors):
     columns establish a compact contents table. Neither a table alone nor a
     single empty layout cell is evidence of navigation.
     """
-    excluded, tables = set(), {}
+    excluded, tables = _paragraph_contents_offsets(full_text), {}
     offset = 0
     for line in full_text.splitlines(keepends=True):
         heading = _heading_text(line)
@@ -384,12 +427,18 @@ def _navigation_heading_offsets(full_text, anchors):
         if anchor is None:
             offset += len(line)
             continue
-        links = anchor.xpath('.//a[starts-with(@href,"#")]')
-        linked_heading = any(_ITEM_HEADING.match(_heading_text(''.join(link.itertext())))
-                             or _PART_HEADING.fullmatch(_heading_text(''.join(link.itertext())))
-                             for link in links)
-        if linked_heading:
-            excluded.add(offset)
+        link = heading_links[offset]
+        if link is not None and link.get('href', '').startswith('#'):
+            # Track the link covering the heading itself. A shared table-row
+            # anchor may also contain prose links with the exact same label.
+            local_targets = {value for node in anchor.iter()
+                             for value in (node.get('id'), node.get('name')) if value}
+            local_targets.update(value for node in anchor.iterancestors()
+                                 for value in (node.get('id'), node.get('name')) if value)
+            # A heading's own permalink points within its source block and
+            # is not a table-of-contents link to a separate body section.
+            if unquote(link.get('href')[1:]) not in local_targets:
+                excluded.add(offset)
         table = next((node for node in anchor.iterancestors() if node.tag == 'table'), None)
         if table is not None:
             if table not in tables:
@@ -477,10 +526,12 @@ def clean_report(html_path: str | Path, *, form: str | None = None) -> CleanedRe
             return CleanedReport(full_text="", sections=[])
         raise
     # No nodes are removed or rewritten: anchors always refer to the original DOM.
-    full_text, anchors = _normalize_fragments(_render(document))
+    full_text, annotations = _normalize_fragments(_render(document, track_links=True))
+    anchors = [annotation[0] if annotation is not None else None for annotation in annotations]
+    heading_links = [annotation[1] if annotation is not None else None for annotation in annotations]
     form = _report_form(full_text, form)
     sections = detect_sections(full_text, form=form,
-                               excluded_heading_offsets=_navigation_heading_offsets(full_text, anchors),
+                               excluded_heading_offsets=_navigation_heading_offsets(full_text, anchors, heading_links),
                                linked_headings=_linked_exhibit_headings(document, full_text, anchors, form))
     tree = document.getroottree()
     for section in sections:

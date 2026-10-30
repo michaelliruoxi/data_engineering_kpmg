@@ -68,6 +68,20 @@ def test_toc_link_cannot_pass_as_body_heading(tmp_path):
     assert "section_starts_in_toc_link" in checks(result)
 
 
+@pytest.mark.parametrize("body", [
+    '<table><tr><td><p>Item 1A. Risk Factors</p>'
+    '<p>See <a href="#related">Item 1A. Risk Factors</a> for details.</p></td></tr></table>',
+    '<div><a id="risk"></a>Item 1A. Risk Factors<br>'
+    'See <a href="#related">Item 1A. Risk Factors</a> for details.</div>',
+    '<p id="risk"><a href="#risk">Item 1A. Risk Factors</a></p><p>Actual risks.</p>',
+])
+def test_original_heading_is_not_confused_with_later_links_or_its_permalink(tmp_path, body):
+    path = tmp_path / "risk.htm"
+    path.write_text(body)
+    result = audit_report(path, form="10-K", expected_section_ids=["part-i-item-1a"])
+    assert result["status"] == "passed", result["issues"]
+
+
 def test_repeated_pipes_and_chunk_corruption_are_observable(original):
     report = clean_report(original, form="10-Q")
     report.full_text += "\nTotal revenue | | | 100"

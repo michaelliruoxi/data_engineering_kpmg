@@ -375,11 +375,12 @@ def _presentation_value(row, columns):
     value, = values
     # Currency and sign cells belong to this value; an adjacent value or row
     # label never does, even when the physical grid has no spacer columns.
+    # Ignore token-internal spacing for recognition, retaining the source text.
     return ' '.join(c['display_text'] for c in row if c is value or (
         c['classification'] == 'formatting' and c['display_text']
-        and ((c['column'] == value['column'] - 1 and re.fullmatch(r'[$€£¥(+−–—-]+', c['display_text']))
+        and ((c['column'] == value['column'] - 1 and re.fullmatch(r'[$€£¥(+−–—-]+', re.sub(r'\s+', '', c['display_text'])))
              or (c['column'] == value['column'] + value['colspan']
-                 and re.fullmatch(r'[)%]+', c['display_text'])))))
+                 and re.fullmatch(r'[)%]+', re.sub(r'\s+', '', c['display_text']))))))
 
 
 def header_period(headers, *, context_period=None, advanced=False):

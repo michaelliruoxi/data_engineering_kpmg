@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+from urllib.parse import unquote
 from uuid import UUID
 
 from lxml import etree, html
@@ -190,6 +191,26 @@ def _compact(value):
     return re.sub(r"[\W_]+", "", value, flags=re.UNICODE).casefold()
 
 
+def _heading_starts_in_navigation(node):
+    """Inspect the first original text node, not later prose links in its row."""
+    for value in node.xpath(".//text()"):
+        if not _compact(value):
+            continue
+        parent = value.getparent()
+        if value.is_tail:
+            parent = parent.getparent()
+        if parent is None:
+            return False
+        link = next((element for element in (parent, *parent.iterancestors())
+                     if element.tag == "a" and element.get("href", "").startswith("#")), None)
+        if link is None:
+            return False
+        local_targets = {target for element in (*node.iter(), *node.iterancestors())
+                         for target in (element.get("id"), element.get("name")) if target}
+        return unquote(link.get("href")[1:]) not in local_targets
+    return False
+
+
 def audit_report(html_path, *, form, expected_section_ids=None, report=None, chunks=None):
     """Audit supplied outputs, or run the cleaner/chunker when outputs are absent.
 
@@ -263,11 +284,7 @@ def audit_report(html_path, *, form, expected_section_ids=None, report=None, chu
             # Split headings may continue in the following original block.
             if not original or not (original.startswith(heading) or heading.startswith(original)):
                 issue("heading_source_mismatch", section_id=key, xpath=xpath, title=original_title)
-            links = node.xpath(".//a[starts-with(@href, '#')]")
-            links += [a for a in node.iterancestors("a") if a.get("href", "").startswith("#")]
-            if any(_compact("".join(a.itertext())) and (
-                    heading.startswith(_compact("".join(a.itertext())))
-                    or _compact("".join(a.itertext())).startswith(heading)) for a in links):
+            if _heading_starts_in_navigation(node):
                 issue("section_starts_in_toc_link", section_id=key, xpath=xpath)
     if text[previous_end:].strip():
         issue("uncovered_report_text", start=previous_end, end=len(text))

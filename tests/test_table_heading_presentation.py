@@ -96,10 +96,46 @@ def test_different_subheadings_and_unresolved_periods_do_not_merge():
 
 def test_currency_prefix_of_next_value_does_not_attach_to_previous_value():
     rows = presentation_rows('''<table><tr><td>Amounts</td><td>42</td><td>$</td><td>15</td></tr>
-        <tr><td>Loss</td><td>(</td><td>5</td><td>)</td></tr></table>''', 0)
+        <tr><td>Loss</td><td>(</td><td>5</td><td>)</td></tr>
+        <tr><td>Rate</td><td>5</td><td>% )</td><td>4</td></tr></table>''', 0)
     assert _presentation_value(rows[0], [1]) == '42'
     assert _presentation_value(rows[0], [3]) == '$ 15'
     assert _presentation_value(rows[1], [2]) == '( 5 )'
+    assert _presentation_value(rows[2], [1]) == '5 % )'
+    assert _presentation_value(rows[2], [3]) == '4'
+
+
+@pytest.mark.parametrize('prefix,closing,expected', [
+    ('$\u00a0(', ')', '$ ( 623 )'),
+    ('− $', '', '− $ 623'),
+])
+def test_compound_currency_and_sign_cells_preserve_negative_source_amount(tmp_path, prefix, closing, expected):
+    """Move an existing sign to its adjacent layout cell, keeping XBRL intact."""
+    source = ROOT / 'data/raw/sec/0001193125-26-191507/msft-20260331.htm'
+    xml_path = source.with_name('msft-20260331_htm.xml')
+    tree = html.parse(str(source), parser=html.HTMLParser(encoding='utf-8', no_network=True))
+    negative = next(element for element in tree.xpath('//td')
+                    if ''.join(element.itertext()).strip() == '(623')
+    opening = next(element for element in negative.iter() if element.text == '(')
+    opening.text = ''
+    before, after = negative.getprevious(), negative.getnext()
+    before.clear()
+    before.text = prefix
+    after.clear()
+    after.text = closing
+    variant = tmp_path / 'compound-sign-layout.htm'
+    variant.write_bytes(html.tostring(tree))
+
+    tables = extract_tables(variant, xml_path, **SCOPE, tables_version='tables-v2')
+    income = next(table for table in tables if table.table_key == 'income_statement')
+    shown = next(row for row in income.structure['presentation_rows']
+                 if row['label'] == 'Other income (expense), net')
+    assert shown['values'] == ['942', expected, '7,253', '(3,194 )']
+    value = next(cell for row in income.structure['rows'] for cell in row
+                 if cell['row_heading'] == 'Other income (expense), net' and cell['display_text'] == '623')
+    assert value['classification'] == 'resolved'
+    assert value['fact_references'][0]['raw_value'] == '-623000000'
+    assert all(table.structure['inventory'].get('unresolved', 0) == 0 for table in tables)
 
 
 @pytest.mark.parametrize('accession,stem,liabilities,sales', [

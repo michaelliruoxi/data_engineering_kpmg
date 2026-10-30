@@ -84,10 +84,10 @@
     "Structured table header changes separately tested through V2/V3/V4 on archived Apple annual and quarterly statements."
   ],
   "code_sha256": {
-    "src/sec_pipeline/report_cleaning.py": "e1d8782132d9457eb4b18bc07cbacf03eb1f68906cebacce669048297664e248",
-    "src/sec_pipeline/report_validation.py": "1c230ed1499e3d3662e9c475a8892d831c5be89a7969a8f0900e5d8283b1f85c",
+    "src/sec_pipeline/report_cleaning.py": "0a228dd31ede26c274113cf52f614a0519c550fa22382e4f30c18cf655893c11",
+    "src/sec_pipeline/report_validation.py": "8e7e372422c71b25c6b18bbd81d1373796fffd2ecf97933114eea3ddde6594d4",
     "src/sec_pipeline/chunking.py": "71e4352d36ac309e1366cc04d28245dcb651981d58676ab226dd2e527e73dcdd",
-    "src/sec_pipeline/tables.py": "4824caadcc8c1b0ac3b8578745941f089f7e22d910056a83e5ed2b7103db7ec1"
+    "src/sec_pipeline/tables.py": "f0951a7aa20fbfd85a4c77fc47087361aa90c18d033c4770d8607d8fbe127204"
   },
   "filings": [
     {"ticker":"AAPL","form":"10-Q","accession_number":"0000320193-21-000010","filing_date":"2021-01-28","status":"passed","source_sha256":"e9c0f03b73b8858c4212b3535fa766270d3399adc53417ae16db8251d39f783e","section_count":14,"chunk_count":94,"heading_inventory_status":"passed","repeated_pipe_count":0,"source_url":"https://www.sec.gov/Archives/edgar/data/320193/000032019321000010/aapl-20201226.htm","section_ids":["front-matter","part-i","part-i-item-1","part-i-item-2","part-i-item-3","part-i-item-4","part-ii","part-ii-item-1","part-ii-item-1a","part-ii-item-2","part-ii-item-3","part-ii-item-4","part-ii-item-5","part-ii-item-6"]},
