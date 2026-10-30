@@ -69,3 +69,9 @@ jobs:
           createdb sec_relations_test
           uv run --locked python scripts/run_table_relations_local.py --host 127.0.0.1 --port 5432 --database sec_relations_test --user postgres --source-root "$PWD" --table-exports /tmp/sec-relations-exports --sections /tmp/sec-relations-exports/sections.json --output /tmp/sec-relations-evidence --test-section-proposal
           SEC_RELATIONS_DB_TEST=1 SEC_RELATIONS_DB_DATABASE=sec_relations_test SEC_RELATIONS_SOURCE_ROOT="$PWD" uv run --locked python -m pytest tests/test_table_relations_postgres.py -q -ra
+      - name: Citation integration retains missing real-producer blocker
+        run: |
+          status=0
+          uv run --locked python scripts/replay_table_citations.py --snapshot /tmp/sec-relations-evidence/snapshot.json --source-root "$PWD" --output /tmp/sec-relations-citations.json || status=$?
+          test "$status" -eq 2
+          uv run --locked python -c "import json; r=json.load(open('/tmp/sec-relations-citations.json')); assert r['status']=='incomplete'; assert len(r['citations'])==3; assert all(not c['chunks'] and len(c['trace_examples'][0]['source_receipts'])==2 for c in r['citations'])"

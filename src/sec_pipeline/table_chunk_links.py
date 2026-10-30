@@ -44,6 +44,17 @@ def resolve_table_chunks(chunks, tables, sources, *, input_fields=None, output_f
         if identifier in table_index:
             raise ValueError("Receiving table IDs must be unique.")
         table_index[identifier] = canonical(table)
+    # A producer identity cannot denote two different payloads in one batch.
+    # Exact replay duplicates are idempotent; conflicting identities reject all
+    # their occurrences instead of silently publishing contradictory citations.
+    chunks = list(chunks)
+    payloads = {}
+    for chunk in chunks:
+        identifier = _field(chunk, aliases.get("chunk_id", "chunk_id"))
+        if isinstance(identifier, str):
+            payloads.setdefault(identifier, []).append(canonical(chunk))
+    conflicting = {key for key, values in payloads.items() if any(v != values[0] for v in values[1:])}
+    emitted = set()
     results = []
     for chunk in chunks:
         values = {field: _field(chunk, aliases.get(field, field)) for field in FIELDS}
@@ -59,6 +70,14 @@ def resolve_table_chunks(chunks, tables, sources, *, input_fields=None, output_f
         if chunk_id is _MISSING or not isinstance(chunk_id, str) or not chunk_id.strip():
             reject("missing_chunk_id")
             continue
+        if chunk_id in conflicting:
+            if chunk_id not in emitted:
+                reject("conflicting_duplicate_chunk_identity")
+                emitted.add(chunk_id)
+            continue
+        if chunk_id in emitted:
+            continue
+        emitted.add(chunk_id)
         if values["chunk_type"] != "table":
             reject("not_a_table_chunk")
             continue

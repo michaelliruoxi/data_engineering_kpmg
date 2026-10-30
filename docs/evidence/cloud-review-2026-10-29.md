@@ -109,3 +109,53 @@ statically checked; PowerShell is unavailable in this cloud environment, so no
 Windows process-launch execution is claimed. Documented a read-only, fresh RDS
 FreeStorageSpace check and operator reserve outside this DB's footprint. No AWS
 login, shared RDS query, infrastructure resize or resource change was performed.
+
+## Step 5 — citation integration and real producer blocker
+
+Added read-only citation replay composing existing source/relationship audit,
+section mappings and draft table-chunk adapter. Multiple chunks per table remain
+multiple; exact repeated payloads replay idempotently, conflicting duplicate IDs
+reject instead of silently linking. Failed audits/selections/chunks suppress
+published chunk links. 137 combined citation/relationship/historical tests passed;
+79 citation/relationship tests passed after explicit source receipts were added.
+
+Real local MSFT trace is saved in `msft-local-citation-example.json`: table,
+cell, fact, original HTML/XML SHA-256 receipts and one actual local report-section
+association. Its actual producer chunk list is empty, intentionally. Three
+real table traces replay as `incomplete`, not approved. Synthetic chunk replay is
+separate and remains explicitly synthetic.
+
+Available Ruby branch `b0a3b22999493092f552b4ba34c5b4dc6c451b4a` defines report
+paragraph slices, not actual table-chunk producer records. No such records or
+additional original multi-company sources were found across available remote
+branch trees. Final producer/consumer contract and shared table→chunk schema
+remain blocked on Ruby/Michael's real samples/ID/scope confirmation. Reviewed
+migration/rollback steps are in `docs/table-citation-deployment.md`; no shared
+schema/data changes or deployment occurred.
+
+## Final aggregate checkpoint — 2026-10-30 UTC
+
+Disposable PostgreSQL 16.2, migrations 001–010, reader role present, bulk/history/
+concurrency flags enabled: **1,287 passed, 145 skipped, 906 subtests passed**.
+No errors/failures. Of those skips, 41 belong to separate runner suites (12
+full-ingestion, 7 Microsoft table replay, 22 relationship). The remaining 104
+require optional original archives unavailable here. The latter are not passed
+by synthetic tests. Dedicated table replay and relationship suites passed as
+recorded above. Hosted PostgreSQL 17 CI must be checked on the published head;
+local 16.2 is not misrepresented as hosted CI or shared RDS verification.
+
+Workspace-wide filename search (excluding credential/tool/dependency directories)
+also found no historical `shared-inventory.json`, discovery/queue, `.env.aws`, or
+source requirement audit artifacts outside the new clone. No unavailable Mac
+patch, source, credential, final scope or independent approval was fabricated.
+
+Dedicated full-ingestion runner also passed **12/12** tests; fixture cleanup
+restored the original baseline and committed source files remained unchanged.
+All 41 dedicated-runner tests skipped by the aggregate were verified separately.
+
+Independent code review caught and fixed two conservative-reporting issues:
+partial text receipts stay review-required (16 status tests), and citation traces
+no longer inherit an arbitrary singular section when candidate mappings are
+ambiguous. The final focused 182-test run passed after these fixes; real trace
+replay was regenerated. These are code-review fixes, not independent dataset
+acceptance.

@@ -1,0 +1,99 @@
+{
+  "accession": "0001193125-26-191507",
+  "actual_producer_chunk_status": "not_supplied",
+  "evidence_origin": "real committed public MSFT source replay in disposable local PostgreSQL; UUIDs local only",
+  "relationship_status": "passed",
+  "selection": {
+    "contract": "legacy",
+    "id": "a5da9c6e-0592-4901-b8a8-05bef0dafe01"
+  },
+  "shared_deployed": false,
+  "trace": {
+    "cell_id": "4d0b4411-abfe-47b1-a546-7cc0ac0b0ff9",
+    "cell_key": "r008c003",
+    "cell_xpath": "/html/body/div[15]/table/tr[9]/td[4]",
+    "chunk_status": "no_verified_table_chunk",
+    "database_scope": "caller_supplied_snapshot; IDs valid only in that receiving database",
+    "fact": {
+      "concept": "{http://fasb.org/us-gaap/2025}CashAndCashEquivalentsAtCarryingValue",
+      "context_ref": "C_eef9b0c3-cb22-498c-8a40-a6d3fe2cfb8d",
+      "dimensions": [],
+      "is_nil": false,
+      "period": {
+        "instant": "2026-03-31"
+      },
+      "raw_value": "32105000000",
+      "unit": {
+        "denominator": [],
+        "numerator": [
+          "{http://www.xbrl.org/2003/iso4217}USD"
+        ]
+      },
+      "unit_ref": "U_USD"
+    },
+    "fact_id": "b2906a0c-f1d0-4c8c-834a-193e34e9c7ee",
+    "occurrence_key": "F_4553b5f3-d33a-4978-bce2-6aba09050c2c",
+    "section_associations": [
+      {
+        "accession": "0001193125-26-191507",
+        "evidence": {
+          "candidate_count": 1,
+          "coordinates": "original DOM traversal; not cleaned text offsets",
+          "duplicate_keys": [],
+          "duplicate_positions": [],
+          "html_sha256": "a615ae0de8fe27dd8d1032978b1c810305d3cf7a864b386807cd25a73fc70d59",
+          "mapping_version": "table-section-dom-v1",
+          "missing_boundaries": [],
+          "next_section_dom_start": 51229,
+          "rejected_boundaries": [],
+          "section_dom_start": 4341,
+          "section_validation_status": "detected",
+          "table_dom_end": 9425,
+          "table_dom_start": 7719,
+          "uuid_status": "database_row"
+        },
+        "filing_id": "02186ccb-9746-4c2a-af2a-6e00ef3a58bd",
+        "mapping_status": "mapped",
+        "processing_set": {
+          "contract": "legacy",
+          "id": "a5da9c6e-0592-4901-b8a8-05bef0dafe01"
+        },
+        "report_id": "f61ad038-3031-4b44-a79b-37f079c53587",
+        "report_version": "report-v1",
+        "section_key": "part-i-item-1",
+        "section_locator": {
+          "element_id": "item_1_financial_statements",
+          "source_file": "msft-20260331.htm",
+          "xpath": "/html/body/div[9]/p[2]"
+        },
+        "section_title": "ITEM 1. FINANCIAL STATEMENTS",
+        "section_uuid": "85e147e9-88a4-44e3-8e2a-7eea0ea6cd32",
+        "source/document_set": null,
+        "source_document_id": "ab5b9280-1616-4a29-9613-58756f7c4e33",
+        "table_id": "43daf552-4c5b-4b67-833f-a5f2c3987f74",
+        "table_key": "balance_sheet",
+        "table_version": "tables-v1",
+        "table_xpath": "/html/body/div[15]/table"
+      }
+    ],
+    "section_status": "unique_mapped",
+    "source_receipts": [
+      {
+        "id": "ab5b9280-1616-4a29-9613-58756f7c4e33",
+        "role": "main_inline_xbrl_filing",
+        "sha256": "a615ae0de8fe27dd8d1032978b1c810305d3cf7a864b386807cd25a73fc70d59",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/msft-20260331.htm"
+      },
+      {
+        "id": "11b94745-4893-4f86-8d50-fde46c974381",
+        "role": "extracted_xbrl_instance",
+        "sha256": "d9c4e6b92fccf521277f96ddc8fceb95f9708495f8fa245137e5054a3947cef1",
+        "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312526191507/msft-20260331_htm.xml"
+      }
+    ],
+    "table_chunks": [],
+    "table_id": "43daf552-4c5b-4b67-833f-a5f2c3987f74",
+    "table_key": "balance_sheet",
+    "table_xpath": "/html/body/div[15]/table"
+  }
+}
