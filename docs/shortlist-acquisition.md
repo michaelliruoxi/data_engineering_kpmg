@@ -10,19 +10,18 @@ Exhibit 21 documents alongside annual filings.
 The script writes local files only. It does not connect to PostgreSQL, choose
 processing versions, extract subsidiary relationships, or load reports/chunks.
 
-## Confirm the scope and obtain the existing inventory
+## Scope and existing inventory
 
-`config/shortlist.json` currently follows the repository's inclusive **filing-date**
-window, **2021-10-13 through 2026-10-13**, for original 10-K and 10-Q filings.
-The status is `pending_Emma_confirmation`: Emma should confirm whether this is
-the intended meaning of the team's five-year / 2021–2026 request. Changing the
+`config/shortlist.json` uses the user-confirmed inclusive **filing-date**
+window, **2021-01-01 through 2026-12-31**, for original 10-K and 10-Q filings
+of every listed company. The status is `user_confirmed`. Changing the
 window or companies requires a new output directory; do not mix checkpoints.
 Amendments and predecessor-issuer traversal are not supported by this wrapper.
 
 Michael can run [export-shortlist-inventory.sql](export-shortlist-inventory.sql)
 on an existing reader connection and save its single JSON cell as
 `outputs/shared_inventory.json`. The query uses a read-only transaction and a
-broader inventory window, 2021-01-01 through 2026-10-28. It exports filing/source
+same inventory window, 2021-01-01 through 2026-12-31. It exports filing/source
 records and legacy processing-set references; it does not assess V4 processing.
 It has been checked against the repository schema but has not been run on the
 shared database. Michael still owns processing and database acceptance.

@@ -22,6 +22,7 @@ from .filing_parser_v4 import (
     REQUIRED_CHECKS, VERSIONS, ParsedFilingSet, parse_filing_set, validate_filing_set,
 )
 from .processing import ProcessingError
+from .parser_policy import policy_metadata, require_current_receipt
 from .source_set_storage import (
     DocumentMemberInput, DocumentSetInput, FactSourceOccurrenceInput, ReportMembershipInput,
     V4ProcessingSetInput, store_document_set, store_source_occurrences, store_v4_processing_set,
@@ -53,7 +54,8 @@ def configuration_from_manifest(manifest, manifest_sha256):
     _require(isinstance(manifest_sha256, str) and len(manifest_sha256) == 64
              and all(character in '0123456789abcdef' for character in manifest_sha256), 'Invalid document-set manifest hash.')
     _require(len({record['local_path'] for record in records}) == len(records), 'Source paths are repeated.')
-    return {'versions': dict(VERSIONS), 'source_hashes': {record['local_path']: record['sha256'] for record in records},
+    return {'versions': dict(VERSIONS), **policy_metadata(VERSIONS),
+            'source_hashes': {record['local_path']: record['sha256'] for record in records},
             'source_documents': {record['local_path']: {key: record[key] for key in ('role', 'source_url', 'sha256', 'size_bytes')}
                                  for record in records},
             'document_set_manifest_sha256': manifest_sha256,
@@ -232,6 +234,7 @@ def run_ingestion(conn, *, manifest_path, data_root, processing_set_key='automat
             seed = seed_manifest(conn, core_path, root)
             filing_id = seed['filing_id']
             _require(isinstance(filing_id, UUID), 'Metadata seeding returned no filing UUID.')
+            require_current_receipt(conn, filing_id, processing_set_key, VERSIONS, document_set=True)
             sources = {}
             for record in [manifest['index_document'], *manifest['files']]:
                 if record['role'] == SUPPLEMENTAL_ROLE:

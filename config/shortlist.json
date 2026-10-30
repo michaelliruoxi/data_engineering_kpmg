@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "scope_status": "pending_Emma_confirmation",
-  "scope_basis": "Repository default rolling window; filing dates, inclusive. Confirm before final acceptance.",
-  "since": "2021-10-13",
-  "until": "2026-10-13",
+  "scope_status": "user_confirmed",
+  "scope_basis": "User-confirmed 2021–2026 calendar-year window for every listed company; filing dates, inclusive.",
+  "since": "2021-01-01",
+  "until": "2026-12-31",
   "forms": ["10-K", "10-Q"],
   "amendments_included": false,
   "shortlist_source": "Emma's team message dated 2026-10-27, supplied by Jace",

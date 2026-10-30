@@ -52,6 +52,9 @@ For the ten-company acquisition task, see the
 [shortlist inventory and Exhibit 21 guide](docs/shortlist-acquisition.md).
 It checks supplied archives, discovers historical filings, and downloads sources
 locally; database integration remains a separate handoff.
+The [report section audit](docs/report-section-validation.md) verifies the
+2021–2026 shortlist against original SEC Part/Item headings, source locators,
+readable table text, and exact chunk boundaries.
 
 ## Database structure and financial reads
 

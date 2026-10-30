@@ -180,7 +180,7 @@ def test_explicit_source_cell_counts_are_returned_without_changing_legacy_summar
     assert result["source_cell_counts"]["source_only_marker"] == 2
 
 
-@pytest.mark.parametrize("metadata", [{"versions": {}}, {"source_hashes": {}}, [], None])
+@pytest.mark.parametrize("metadata", [{"versions": {}}, {"source_hashes": {}}, {"parser_revisions": {}}, [], None])
 def test_reserved_or_nonmapping_metadata_cannot_commit_or_publish_a_set(ingestion, metadata):
     with patch("sec_pipeline.catalog.store_processing_set") as store:
         with pytest.raises(ProcessingError, match="must not replace verified versions or source hashes"):

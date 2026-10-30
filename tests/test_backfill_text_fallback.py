@@ -152,10 +152,12 @@ def test_failed_fallback_keeps_both_failure_details(fallback_queue):
 
 
 def text_receipt(queue, accession, **changes):
+    from sec_pipeline.parser_policy import policy_metadata
     manifest = queue.manifests[accession]
     by_role = {record["role"]: record for record in manifest["files"]}
     xml, html = by_role["extracted_xbrl_instance"], by_role["main_inline_xbrl_filing"]
     configuration = {"versions": dict(text.VERSIONS),
+                     **policy_metadata(text.VERSIONS),
                      "source_hashes": {record["local_path"]: record["sha256"]
                                        for record in [manifest["index_document"], *manifest["files"]]},
                      **text.configuration_metadata(manifest, queue.root),
@@ -191,10 +193,12 @@ def test_sealed_text_only_set_is_reused_without_parsing(fallback_queue):
     {"chunk_version": "paragraph-v0"}, {"report_sha": "0" * 64},
 ])
 def test_text_only_receipts_must_match_their_sealed_scope(fallback_queue, changes):
+    from sec_pipeline.parser_policy import policy_metadata
     queue = fallback_queue
     accession = queue.accessions[0]
     manifest = queue.manifests[accession]
     expected = {"versions": dict(text.VERSIONS),
+                **policy_metadata(text.VERSIONS),
                 "source_hashes": {record["local_path"]: record["sha256"]
                                   for record in [manifest["index_document"], *manifest["files"]]},
                 **text.configuration_metadata(manifest, queue.root)}

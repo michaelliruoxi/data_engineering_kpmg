@@ -73,7 +73,9 @@ def queue(tmp_path, monkeypatch):
 
 
 def configuration(manifest):
+    from sec_pipeline.parser_policy import policy_metadata
     return {"versions": filing_adapter.VERSIONS,
+            **policy_metadata(filing_adapter.VERSIONS),
             "source_hashes": {record["local_path"]: record["sha256"]
                               for record in [manifest["index_document"], *manifest["files"]]}}
 

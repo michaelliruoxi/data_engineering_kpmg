@@ -13,18 +13,22 @@ import time
 from urllib.parse import urljoin
 
 from .filing_sources import verify_filing
+from .parser_policy import policy_metadata
 from .universe import load_snapshot
 
 
 def _fatal_runtime_error(error):
-    """Infrastructure failures must not be mistaken for unsupported filings."""
+    """Infrastructure or storage-policy failures cannot use a content fallback."""
     import errno
     import httpx
     import psycopg
+    from .processing import ParserRevisionConflict
 
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
+        if isinstance(error, ParserRevisionConflict):
+            return True
         state = getattr(error, 'sqlstate', None)
         if state and state[:2] in {'08', '28', '3D', '3F', '42', '53', '57', '58', 'XX'}:
             return True
@@ -440,7 +444,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                 phase = "document set verification"
                 manifest = verify_document_set(manifest_path, data_root)
             source_hashes = {r["local_path"]: r["sha256"] for r in [manifest["index_document"], *manifest["files"]]}
-            expected = {"versions": versions, "source_hashes": source_hashes}
+            expected = {"versions": versions, "source_hashes": source_hashes, **policy_metadata(versions)}
             phase = "processing metadata"
             if mode != "download" and is_document_set:
                 expected = profile.configuration_from_manifest(manifest, hashlib.sha256(manifest_path.read_bytes()).hexdigest())
@@ -456,6 +460,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             previous = entry.get("result", {})
             if (mode == "dry-run" and not is_document_set and not replay and entry.get("status") in {"validated", "ingested"}
                     and previous.get("versions") == versions and previous.get("source_hashes") == source_hashes
+                    and previous.get('parser_revisions') == expected.get('parser_revisions')
                     and previous.get("validation", {}).get("passed") is True
                     and all(previous.get("validation", {}).get("checks", {}).get(check) is True for check in required_checks)):
                 record_success(accession)
@@ -472,7 +477,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                     if tables_unavailable is None and _stored_set(connection, accession, set_key, expected):
                         receipt_status = "passed"
                     elif text_profile is not None:
-                        text_expected = {"versions": versions, "source_hashes": source_hashes,
+                        text_expected = {"versions": versions, "source_hashes": source_hashes, **policy_metadata(versions),
                                          **text_profile.configuration_metadata(manifest, data_root)}
                         text_receipt = _stored_text_set(connection, accession, text_profile, text_expected)
                         if text_receipt is not None:
@@ -598,10 +603,15 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                          error_detail=_failure_detail(exc, phase))
             if tables_unavailable is not None:
                 entry["error_detail"]["full_import"] = tables_unavailable
-            from .processing import ProcessingError
+            from .processing import ParserRevisionConflict, ProcessingError
             if isinstance(exc, ProcessingError):
                 entry["error_stage"] = str(exc)[:250]
             emit(json.dumps({"event": "failed", "accession": accession, "error_type": type(exc).__name__}))
+            if isinstance(exc, ParserRevisionConflict):
+                state['last_run'].update(stopped_reason='parser_revision_mismatch', complete=False,
+                    finished_at_utc=datetime.now(timezone.utc).isoformat())
+                save_state(path, state)
+                raise
             if rollback_failed or _fatal_runtime_error(exc):
                 state['last_run'].update(stopped_reason='infrastructure_error', complete=False,
                     finished_at_utc=datetime.now(timezone.utc).isoformat())

@@ -1,4 +1,5 @@
 import importlib.util
+from datetime import date, timedelta
 import json
 from pathlib import Path
 import pytest
@@ -38,7 +39,9 @@ def test_filing_date_boundary_and_amendment(config):
     assert m.in_scope(row,config)
     row['filing_date']=config['until']
     assert m.in_scope(row,config)
-    row['filing_date']='2021-10-12'
+    row['filing_date']=(date.fromisoformat(config['since']) - timedelta(days=1)).isoformat()
+    assert not m.in_scope(row,config)
+    row['filing_date']=(date.fromisoformat(config['until']) + timedelta(days=1)).isoformat()
     assert not m.in_scope(row,config)
     row.update(filing_date='2025-10-31',form='10-K/A')
     assert not m.in_scope(row,config)
@@ -110,7 +113,7 @@ def test_incomplete_database_window_rejected(config,tmp_path):
 
 
 def test_explicit_missing_company_is_zero_not_unknown(config,tmp_path):
-    database={'exported_at':'2026-10-28', 'export_window':{'basis':'filing_date','since':'2021-01-01','until':'2026-10-28'},
+    database={'exported_at':'2026-10-28', 'export_window':{'basis':'filing_date','since':config['since'],'until':config['until']},
               'companies':[{'requested_cik':'0000320193','company_found':False}], 'filings':[]}
     result=m.inventory(config,[tmp_path],database=database)
     assert result['companies'][0]['shared_database_count']==0
@@ -118,7 +121,7 @@ def test_explicit_missing_company_is_zero_not_unknown(config,tmp_path):
 
 
 def test_duplicate_database_accessions_rejected(config,tmp_path):
-    database={'exported_at':'2026-10-28', 'export_window':{'basis':'filing_date','since':'2021-01-01','until':'2026-10-28'},
+    database={'exported_at':'2026-10-28', 'export_window':{'basis':'filing_date','since':config['since'],'until':config['until']},
               'companies':[], 'filings':[{'accession_number':'x'},{'accession_number':'x'}]}
     with pytest.raises(ValueError,match='duplicate accessions'):
         m.inventory(config,[tmp_path],database=database)
