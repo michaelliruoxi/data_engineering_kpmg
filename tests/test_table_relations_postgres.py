@@ -46,6 +46,7 @@ def test_actual_receiving_rows_and_duplicate_occurrences_are_correct(sample):
     assert all(m["section_key"] == "part-i-item-1" and UUID(m["section_uuid"]) for m in result["section_mappings"])
     assert result["processing_validation_status"] == "unvalidated"  # Not team/human acceptance.
     assert all(t["table_chunk"] is None for t in result["trace_examples"])
+    assert {t["table_id"] for t in result["trace_examples"]} == {t["id"] for t in snapshot["tables"]}
 
 
 @pytest.mark.parametrize("defect", ["missing_table", "wrong_table_parent", "missing_fact", "wrong_fact_id",

@@ -159,3 +159,11 @@ no longer inherit an arbitrary singular section when candidate mappings are
 ambiguous. The final focused 182-test run passed after these fixes; real trace
 replay was regenerated. These are code-review fixes, not independent dataset
 acceptance.
+
+Hosted CI's first exact-head run passed aggregate, ingestion, real Microsoft
+replay and all 22 section/relationship checks, then exposed a citation coverage
+gap: the pre-existing audit capped examples globally at three. Fixed the bound
+to three **per physical table**, so later/continuation tables retain traces.
+Added a four-table regression and a real-DB table-coverage assertion. 139 focused
+tests passed; the exact failed CI replay/assertion now passes locally with three
+traces for each of the three real Microsoft tables. CI is rerun on the correction.

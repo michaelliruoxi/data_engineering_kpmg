@@ -220,6 +220,7 @@ def audit_snapshot(snapshot, sources):
 
     for table in snapshot["tables"]:
         structure, tid = table["structure"], table["id"]
+        table_trace_count = 0
         if table["extraction_version"] == "tables-v4" and not document_set:
             unverified.append({"table_id": tid, "reason": "source_document_set_unselected"})
         cells = [c for c in snapshot["table_cells"] if c["table_id"] == tid]
@@ -374,7 +375,8 @@ def audit_snapshot(snapshot, sources):
                 for link in [l for l in links if cell and l["cell_id"] == cell["id"] and l["reference_order"] == ordinal]:
                     if link.get("evidence") != ref or link.get("link_method") != ref["method"]:
                         error(table, "stored_link_evidence_mismatch", cell_key=key)
-                    if link["fact_id"] == fact["id"] and len(trace) < 3:
+                    if link["fact_id"] == fact["id"] and table_trace_count < 3:
+                        table_trace_count += 1
                         trace.append({"table_id": tid, "table_key": table["table_key"], "table_xpath": structure["source_xpath"],
                                       "cell_id": cell["id"], "cell_key": key, "cell_xpath": expected[key]["source_locator"]["xpath"],
                                       "fact_id": fact["id"], "fact": fact_evidence(fact), "occurrence_key": fact["occurrence_key"]})
