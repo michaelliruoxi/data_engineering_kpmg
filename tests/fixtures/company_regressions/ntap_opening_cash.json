@@ -1,0 +1,623 @@
+{
+  "table": {
+    "filing_id": "00000000-0000-0000-0000-000000000001",
+    "source_document_id": "00000000-0000-0000-0000-000000000002",
+    "extraction_version": "tables-v3",
+    "table_key": "cash_flow",
+    "statement_type": "cash_flow",
+    "structure": {
+      "schema_version": 2,
+      "source_value_policy": "source-marker-v1",
+      "html_sha256": "c5b5915e2e3a7751764fb6388adc284dea5e40009fc9fd31f7d5320a8371c927",
+      "xml_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "source_xpath": "/html/body/table",
+      "fact_scope": {
+        "filing_id": "00000000-0000-0000-0000-000000000001",
+        "xml_document_id": "00000000-0000-0000-0000-000000000003",
+        "facts_version": "facts-v1"
+      },
+      "rows": [
+        [
+          {
+            "cell_id": "r000c000",
+            "row": 0,
+            "column": 0,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "",
+            "source_xpath": "/html/body/table/tr[1]/td[1]",
+            "source_html_id": null,
+            "source_html": "<td/>",
+            "row_heading": "",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "header"
+          },
+          {
+            "cell_id": "r000c001",
+            "row": 0,
+            "column": 1,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "Three months ended March 31, 2026",
+            "source_xpath": "/html/body/table/tr[1]/td[2]",
+            "source_html_id": null,
+            "source_html": "<td>Three months ended March 31, 2026</td>",
+            "row_heading": "",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "header"
+          }
+        ],
+        [
+          {
+            "cell_id": "r001c000",
+            "row": 1,
+            "column": 0,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "Operating activities",
+            "source_xpath": "/html/body/table/tr[2]/td[1]",
+            "source_html_id": null,
+            "source_html": "<td>Operating activities</td>",
+            "row_heading": "Operating activities",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "label"
+          },
+          {
+            "cell_id": "r001c001",
+            "row": 1,
+            "column": 1,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "10",
+            "source_xpath": "/html/body/table/tr[2]/td[2]",
+            "source_html_id": null,
+            "source_html": "<td><ix:nonfraction id=\"operating\" name=\"g:NetCashProvidedByUsedInOperatingActivities\" contextref=\"operating-context\" unitref=\"usd\">10</ix:nonfraction></td>",
+            "row_heading": "Operating activities",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [
+              {
+                "concept": "{http://fasb.org/us-gaap/2026}NetCashProvidedByUsedInOperatingActivities",
+                "context_ref": "operating-context",
+                "unit_ref": "usd",
+                "unit": {
+                  "numerator": [
+                    "{http://www.xbrl.org/2003/iso4217}USD"
+                  ],
+                  "denominator": []
+                },
+                "raw_value": "10",
+                "is_nil": false,
+                "period": {
+                  "startDate": "2026-01-01",
+                  "endDate": "2026-03-31"
+                },
+                "dimensions": [],
+                "xml_id": "operating",
+                "method": "inline_id",
+                "inline_xpath": "/html/body/table/tr[2]/td[2]/ix:nonfraction",
+                "scope": {
+                  "filing_id": "00000000-0000-0000-0000-000000000001",
+                  "xml_document_id": "00000000-0000-0000-0000-000000000003",
+                  "facts_version": "facts-v1"
+                }
+              }
+            ],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "resolved"
+          }
+        ],
+        [
+          {
+            "cell_id": "r002c000",
+            "row": 2,
+            "column": 0,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "Investing activities",
+            "source_xpath": "/html/body/table/tr[3]/td[1]",
+            "source_html_id": null,
+            "source_html": "<td>Investing activities</td>",
+            "row_heading": "Investing activities",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "label"
+          },
+          {
+            "cell_id": "r002c001",
+            "row": 2,
+            "column": 1,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "5",
+            "source_xpath": "/html/body/table/tr[3]/td[2]",
+            "source_html_id": null,
+            "source_html": "<td><ix:nonfraction id=\"investing\" name=\"g:NetCashProvidedByUsedInInvestingActivities\" contextref=\"investing-context\" unitref=\"usd\">5</ix:nonfraction></td>",
+            "row_heading": "Investing activities",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [
+              {
+                "concept": "{http://fasb.org/us-gaap/2026}NetCashProvidedByUsedInInvestingActivities",
+                "context_ref": "investing-context",
+                "unit_ref": "usd",
+                "unit": {
+                  "numerator": [
+                    "{http://www.xbrl.org/2003/iso4217}USD"
+                  ],
+                  "denominator": []
+                },
+                "raw_value": "5",
+                "is_nil": false,
+                "period": {
+                  "startDate": "2026-01-01",
+                  "endDate": "2026-03-31"
+                },
+                "dimensions": [],
+                "xml_id": "investing",
+                "method": "inline_id",
+                "inline_xpath": "/html/body/table/tr[3]/td[2]/ix:nonfraction",
+                "scope": {
+                  "filing_id": "00000000-0000-0000-0000-000000000001",
+                  "xml_document_id": "00000000-0000-0000-0000-000000000003",
+                  "facts_version": "facts-v1"
+                }
+              }
+            ],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "resolved"
+          }
+        ],
+        [
+          {
+            "cell_id": "r003c000",
+            "row": 3,
+            "column": 0,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "Financing activities",
+            "source_xpath": "/html/body/table/tr[4]/td[1]",
+            "source_html_id": null,
+            "source_html": "<td>Financing activities</td>",
+            "row_heading": "Financing activities",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "label"
+          },
+          {
+            "cell_id": "r003c001",
+            "row": 3,
+            "column": 1,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "3",
+            "source_xpath": "/html/body/table/tr[4]/td[2]",
+            "source_html_id": null,
+            "source_html": "<td><ix:nonfraction id=\"financing\" name=\"g:NetCashProvidedByUsedInFinancingActivities\" contextref=\"financing-context\" unitref=\"usd\">3</ix:nonfraction></td>",
+            "row_heading": "Financing activities",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [
+              {
+                "concept": "{http://fasb.org/us-gaap/2026}NetCashProvidedByUsedInFinancingActivities",
+                "context_ref": "financing-context",
+                "unit_ref": "usd",
+                "unit": {
+                  "numerator": [
+                    "{http://www.xbrl.org/2003/iso4217}USD"
+                  ],
+                  "denominator": []
+                },
+                "raw_value": "3",
+                "is_nil": false,
+                "period": {
+                  "startDate": "2026-01-01",
+                  "endDate": "2026-03-31"
+                },
+                "dimensions": [],
+                "xml_id": "financing",
+                "method": "inline_id",
+                "inline_xpath": "/html/body/table/tr[4]/td[2]/ix:nonfraction",
+                "scope": {
+                  "filing_id": "00000000-0000-0000-0000-000000000001",
+                  "xml_document_id": "00000000-0000-0000-0000-000000000003",
+                  "facts_version": "facts-v1"
+                }
+              }
+            ],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "resolved"
+          }
+        ],
+        [
+          {
+            "cell_id": "r004c000",
+            "row": 4,
+            "column": 0,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "Beginning of period",
+            "source_xpath": "/html/body/table/tr[5]/td[1]",
+            "source_html_id": null,
+            "source_html": "<td>Beginning of period</td>",
+            "row_heading": "Beginning of period",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "label"
+          },
+          {
+            "cell_id": "r004c001",
+            "row": 4,
+            "column": 1,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "24",
+            "source_xpath": "/html/body/table/tr[5]/td[2]",
+            "source_html_id": null,
+            "source_html": "<td><ix:nonfraction id=\"review\" name=\"g:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents\" contextref=\"review-context\" unitref=\"usd\">24</ix:nonfraction></td>",
+            "row_heading": "Beginning of period",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [],
+            "unresolved_reason": "Fact period differs from column heading",
+            "is_total": false,
+            "classification": "unresolved"
+          }
+        ],
+        [
+          {
+            "cell_id": "r005c000",
+            "row": 5,
+            "column": 0,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "Cash, end of period",
+            "source_xpath": "/html/body/table/tr[6]/td[1]",
+            "source_html_id": null,
+            "source_html": "<td>Cash, end of period</td>",
+            "row_heading": "Cash, end of period",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "label"
+          },
+          {
+            "cell_id": "r005c001",
+            "row": 5,
+            "column": 1,
+            "rowspan": 1,
+            "colspan": 1,
+            "display_text": "30",
+            "source_xpath": "/html/body/table/tr[6]/td[2]",
+            "source_html_id": null,
+            "source_html": "<td><ix:nonfraction id=\"closing\" name=\"g:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents\" contextref=\"closing-context\" unitref=\"usd\">30</ix:nonfraction></td>",
+            "row_heading": "Cash, end of period",
+            "column_headings": [
+              "Three months ended March 31, 2026"
+            ],
+            "column_period": {
+              "startDate": "2026-01-01",
+              "endDate": "2026-03-31"
+            },
+            "fact_references": [
+              {
+                "concept": "{http://fasb.org/us-gaap/2026}CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+                "context_ref": "closing-context",
+                "unit_ref": "usd",
+                "unit": {
+                  "numerator": [
+                    "{http://www.xbrl.org/2003/iso4217}USD"
+                  ],
+                  "denominator": []
+                },
+                "raw_value": "30",
+                "is_nil": false,
+                "period": {
+                  "instant": "2026-03-31"
+                },
+                "dimensions": [],
+                "xml_id": "closing",
+                "method": "inline_id",
+                "inline_xpath": "/html/body/table/tr[6]/td[2]/ix:nonfraction",
+                "scope": {
+                  "filing_id": "00000000-0000-0000-0000-000000000001",
+                  "xml_document_id": "00000000-0000-0000-0000-000000000003",
+                  "facts_version": "facts-v1"
+                }
+              }
+            ],
+            "unresolved_reason": null,
+            "is_total": false,
+            "classification": "resolved"
+          }
+        ]
+      ],
+      "grid": [
+        [
+          "r000c000",
+          "r000c001"
+        ],
+        [
+          "r001c000",
+          "r001c001"
+        ],
+        [
+          "r002c000",
+          "r002c001"
+        ],
+        [
+          "r003c000",
+          "r003c001"
+        ],
+        [
+          "r004c000",
+          "r004c001"
+        ],
+        [
+          "r005c000",
+          "r005c001"
+        ]
+      ],
+      "inventory": {
+        "header": 2,
+        "label": 5,
+        "resolved": 4,
+        "unresolved": 1
+      }
+    },
+    "readable_text": "source cash statement"
+  },
+  "facts": [
+    {
+      "filing_id": "00000000-0000-0000-0000-000000000001",
+      "source_document_id": "00000000-0000-0000-0000-000000000003",
+      "extraction_version": "facts-v1",
+      "occurrence_key": "operating",
+      "concept_namespace": "http://fasb.org/us-gaap/2026",
+      "concept_name": "NetCashProvidedByUsedInOperatingActivities",
+      "period_kind": "duration",
+      "label": null,
+      "numeric_value": "10",
+      "raw_value": "10",
+      "is_nil": false,
+      "reported_decimals": null,
+      "reported_precision": null,
+      "unit": {
+        "numerator": [
+          "{http://www.xbrl.org/2003/iso4217}USD"
+        ],
+        "denominator": []
+      },
+      "period_start": "2026-01-01",
+      "period_end": "2026-03-31",
+      "instant_date": null,
+      "dimensions": [],
+      "source_reference": {
+        "element_id": "operating",
+        "context_ref": "operating-context",
+        "unit_ref": "usd",
+        "entity": {
+          "scheme": "http://www.sec.gov/CIK",
+          "identifier": "0000000001"
+        }
+      }
+    },
+    {
+      "filing_id": "00000000-0000-0000-0000-000000000001",
+      "source_document_id": "00000000-0000-0000-0000-000000000003",
+      "extraction_version": "facts-v1",
+      "occurrence_key": "investing",
+      "concept_namespace": "http://fasb.org/us-gaap/2026",
+      "concept_name": "NetCashProvidedByUsedInInvestingActivities",
+      "period_kind": "duration",
+      "label": null,
+      "numeric_value": "5",
+      "raw_value": "5",
+      "is_nil": false,
+      "reported_decimals": null,
+      "reported_precision": null,
+      "unit": {
+        "numerator": [
+          "{http://www.xbrl.org/2003/iso4217}USD"
+        ],
+        "denominator": []
+      },
+      "period_start": "2026-01-01",
+      "period_end": "2026-03-31",
+      "instant_date": null,
+      "dimensions": [],
+      "source_reference": {
+        "element_id": "investing",
+        "context_ref": "investing-context",
+        "unit_ref": "usd",
+        "entity": {
+          "scheme": "http://www.sec.gov/CIK",
+          "identifier": "0000000001"
+        }
+      }
+    },
+    {
+      "filing_id": "00000000-0000-0000-0000-000000000001",
+      "source_document_id": "00000000-0000-0000-0000-000000000003",
+      "extraction_version": "facts-v1",
+      "occurrence_key": "financing",
+      "concept_namespace": "http://fasb.org/us-gaap/2026",
+      "concept_name": "NetCashProvidedByUsedInFinancingActivities",
+      "period_kind": "duration",
+      "label": null,
+      "numeric_value": "3",
+      "raw_value": "3",
+      "is_nil": false,
+      "reported_decimals": null,
+      "reported_precision": null,
+      "unit": {
+        "numerator": [
+          "{http://www.xbrl.org/2003/iso4217}USD"
+        ],
+        "denominator": []
+      },
+      "period_start": "2026-01-01",
+      "period_end": "2026-03-31",
+      "instant_date": null,
+      "dimensions": [],
+      "source_reference": {
+        "element_id": "financing",
+        "context_ref": "financing-context",
+        "unit_ref": "usd",
+        "entity": {
+          "scheme": "http://www.sec.gov/CIK",
+          "identifier": "0000000001"
+        }
+      }
+    },
+    {
+      "filing_id": "00000000-0000-0000-0000-000000000001",
+      "source_document_id": "00000000-0000-0000-0000-000000000003",
+      "extraction_version": "facts-v1",
+      "occurrence_key": "review",
+      "concept_namespace": "http://fasb.org/us-gaap/2026",
+      "concept_name": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+      "period_kind": "instant",
+      "label": null,
+      "numeric_value": "24",
+      "raw_value": "24",
+      "is_nil": false,
+      "reported_decimals": null,
+      "reported_precision": null,
+      "unit": {
+        "numerator": [
+          "{http://www.xbrl.org/2003/iso4217}USD"
+        ],
+        "denominator": []
+      },
+      "period_start": null,
+      "period_end": null,
+      "instant_date": "2026-01-01",
+      "dimensions": [],
+      "source_reference": {
+        "element_id": "review",
+        "context_ref": "review-context",
+        "unit_ref": "usd",
+        "entity": {
+          "scheme": "http://www.sec.gov/CIK",
+          "identifier": "0000000001"
+        }
+      }
+    },
+    {
+      "filing_id": "00000000-0000-0000-0000-000000000001",
+      "source_document_id": "00000000-0000-0000-0000-000000000003",
+      "extraction_version": "facts-v1",
+      "occurrence_key": "closing",
+      "concept_namespace": "http://fasb.org/us-gaap/2026",
+      "concept_name": "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+      "period_kind": "instant",
+      "label": null,
+      "numeric_value": "30",
+      "raw_value": "30",
+      "is_nil": false,
+      "reported_decimals": null,
+      "reported_precision": null,
+      "unit": {
+        "numerator": [
+          "{http://www.xbrl.org/2003/iso4217}USD"
+        ],
+        "denominator": []
+      },
+      "period_start": null,
+      "period_end": null,
+      "instant_date": "2026-03-31",
+      "dimensions": [],
+      "source_reference": {
+        "element_id": "closing",
+        "context_ref": "closing-context",
+        "unit_ref": "usd",
+        "entity": {
+          "scheme": "http://www.sec.gov/CIK",
+          "identifier": "0000000001"
+        }
+      }
+    }
+  ]
+}

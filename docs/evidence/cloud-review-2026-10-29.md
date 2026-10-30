@@ -12,8 +12,7 @@ Comparing those changes requires a patch/status export from that checkout.
 
 Read PR #18 and `docs/historical-table-validation.md`. The tracked archive has
 only Microsoft sample `0001193125-26-191507`. Its three manifest-listed HTML,
-XML and XSD files match their SHA-256 receipts; the index HTML has no recorded
-hash in that manifest and is not counted as hash-verified. This sample was
+XML and XSD files and separately listed index HTML match all four SHA-256 receipts. This sample was
 explicitly excluded from the requested historical re-audit.
 
 No historical audit snapshots, private discovery manifests, queue, authorized
@@ -26,7 +25,7 @@ was attempted. The previously reported 34 processing candidates / 20 filings /
 | --- | --- |
 | Stored relationships on historical receiving DB | Not rerun: authorized read-only connection and CA or saved snapshots missing |
 | Original-source historical semantics | Not rerun: corresponding snapshots/receipts and original HTML/XML missing |
-| Committed sample receipt hashes | 3/3 manifest-listed files match |
+| Committed sample receipt hashes | 4/4 manifest-listed files (including index_document) match |
 | Validator unit/regression tests | 135 passed (`uv run --locked python -m pytest tests/test_historical_table_validation.py tests/test_table_relations.py tests/test_table_relations_cli.py -q`) |
 | Direct pytest executable | Collection failed resolving `tests`; use the documented `python -m pytest` invocation |
 
@@ -65,3 +64,37 @@ never treating queue imports as DB imports. The published finance browsing
 selection is exposed with candidate family/IDs/versions; it is not owner approval.
 The original Mac patch cannot be compared; PR #18's validation code is already
 on the verified main baseline. No other uncommitted Mac change is assumed merged.
+
+## Step 3 — CI coverage and explicit skip boundaries
+
+CI now creates `sec_reader NOLOGIN` **before** migration 010 grants, enables
+bulk-storage and issuer-history database checks, prints skip reasons (`-ra`),
+and runs the real committed Microsoft table→cell→fact/source and section
+persistence tests in their own empty disposable database. A fixture preparation
+script generates exports from hash-verified committed sources; it does not
+contact SEC or copy receiving database IDs.
+
+Three small hash-pinned **synthetic** regression models cover NKE-discovered NIL
+representation, NTAP-style opening-cash period review, and bank split/continuation
+layout. Five new fixture tests passed; these models are not real issuer source
+acceptance or a substitute for the unavailable multi-company original archive.
+
+Local disposable PostgreSQL is 16.2; hosted CI is configured for PostgreSQL 17.
+Finance reader permissions + bulk + new fixtures: 37 passed. The first full run
+used an application name equal to the test DB and correctly failed the isolation
+guard. After fixing it, 1,239 passed / 146 skipped / 2 setup errors (bulk test DB
+name was not set); the 37-test focused rerun includes those bulk checks with the
+correct name and passes. Final aggregate results are recorded below when run.
+
+Remaining archive skips are explicit: private Apple, Clorox, Citi, Fiserv,
+Coherent, XOM, Packaging Corporation and other historical split/combined/
+continuation/marker sources are absent. The normal aggregate intentionally
+skips dedicated runner suites; CI executes ingestion, Microsoft replay and
+relationship suites separately. No unavailable archive test is relabeled passed.
+
+Real Microsoft PostgreSQL replay: **7 passed**, 1,622 facts, three physical
+statements, 283 unique table/fact memberships; stable committed replay and exact
+baseline restoration. Separate real relationship/proposal suite: **22 passed**;
+2,285 anchor cells, 284 references, three persisted section mappings with replay
+and caller rollback verified. `actual_chunk=not_supplied`, shared database not
+validated/deployed. These local IDs are not shared RDS identities.
