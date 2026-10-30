@@ -423,3 +423,35 @@ is `unverified`, not pending or imported. Exit 2 also marks a failed DB read;
 exception text/connection strings are withheld. These files may contain private
 filing inventory and should remain outside Git. Current live counts have not
 been verified in the 2026-10-29 isolated cloud review.
+
+## Capacity: database ceiling versus instance free storage
+
+`start_backfill.ps1 -MaxDatabaseGiB 25` passes the same 25 GiB ceiling to both
+`check_backfill_ready.py --max-database-gib 25` and ingestion. The existing
+launcher/preflight default remains **14 GiB**. The guard stops at or above the
+ceiling, before the next filing transaction; a single transaction can still
+cross it. Choose headroom for the largest expected filing plus index/temp growth.
+
+`pg_database_size(current_database())` does **not** measure instance free space.
+Before launch, use the already authorized AWS console or read-only CloudWatch
+identity to check the **correct DB instance**'s `AWS/RDS` `FreeStorageSpace`
+(Bytes, Minimum) over the last 15 minutes, with a 60-second period. For example:
+
+```sh
+# Substitute the verified region/DB identifier and current UTC ISO timestamps.
+# This is a read-only measurement; do not use root or change infrastructure.
+aws cloudwatch get-metric-statistics --region REGION \
+  --namespace AWS/RDS --metric-name FreeStorageSpace \
+  --dimensions Name=DBInstanceIdentifier,Value=VERIFIED_INSTANCE \
+  --start-time UTC_15_MINUTES_AGO --end-time UTC_NOW \
+  --period 60 --statistics Minimum --unit Bytes
+```
+
+Stop if the latest datapoint is absent/stale (>5 minutes), or below the
+operator-approved reserve. Include other databases, WAL/logs, indexes, temp
+spill, autovacuum, and concurrent workloads in the reserve; subtract anticipated
+batch growth before deciding to proceed. Record datapoint time, minimum bytes,
+reserve and forecast outside Git. A successful DB preflight alone is **not**
+instance-capacity approval. No automated resize is performed. If CloudWatch
+access is unavailable, obtain the current measurement from the authorized
+instance owner rather than inferring it from database size.

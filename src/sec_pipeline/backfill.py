@@ -1,6 +1,7 @@
 """Durable per-accession queue for a fixed membership snapshot and date window."""
 
 from collections import Counter
+from .capacity import database_at_limit
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 import hashlib
@@ -496,7 +497,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             if mode == "ingest" and max_database_bytes is not None:
                 with connection.transaction():
                     size = connection.execute('SELECT pg_database_size(current_database())').fetchone()[0]
-                if size >= max_database_bytes:
+                if database_at_limit(size, max_database_bytes):
                     state["last_run"].update(stopped_reason="database_size_limit", observed_database_bytes=size)
                     emit(json.dumps({"event": "database_size_limit", "observed_bytes": size,
                                      "limit_bytes": max_database_bytes}))

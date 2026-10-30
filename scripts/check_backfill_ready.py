@@ -1,10 +1,12 @@
 """Read-only preflight for the existing terminal backfill; never apply migrations."""
+import argparse
 from pathlib import Path
 import sys
 
 from process_filing import explicit_database_environment, ingestion_settings, check_connection_target
 from sec_pipeline.backfill import adapter_profile, open_state
 from sec_pipeline.database import connect, migration_checksum_matches
+from sec_pipeline.capacity import DEFAULT_MAX_DATABASE_GIB, database_limit_bytes, database_at_limit
 
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / 'data/backfill/2026-10-13/queue.json'
@@ -14,7 +16,20 @@ TABLES = ('companies', 'filings', 'source_documents', 'financial_facts', 'financ
           'chunks', 'filing_processing_sets', 'issuer_successions', 'cell_source_observations')
 
 
-def main():
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--max-database-gib', type=int, default=DEFAULT_MAX_DATABASE_GIB,
+                        help='Same database-size ceiling used by ingestion (default: 14 GiB).')
+    args = parser.parse_args(argv)
+    try:
+        database_limit_bytes(args.max_database_gib)
+    except ValueError as error:
+        parser.error(str(error))
+    return args
+
+
+def main(argv=None):
+    args = parse_args(argv)
     try:
         if sys.version_info[:2] != (3, 12):
             raise ValueError('Use the existing project Python 3.12 environment.')
@@ -45,9 +60,10 @@ def main():
                             raise ValueError('The configured database identity lacks importer privileges.')
                 size = conn.execute('SELECT pg_database_size(current_database())').fetchone()[0]
         print(f'Read-only preflight passed: tables-v3; schema 001-009; {len(state["filings"]):,} queued filings; database {size / 1024**3:.2f} GiB.')
-        if size >= 14 * 1024**3:
-            print('The 14 GiB cutoff is reached. No import was started.')
+        if database_at_limit(size, database_limit_bytes(args.max_database_gib)):
+            print(f'The {args.max_database_gib} GiB cutoff is reached. No import was started.')
             return 2
+        print('Instance free storage is NOT measured by this database-size guard; verify recent RDS FreeStorageSpace before launch (docs/automated-backfill.md).')
         return 0
     except Exception as exc:
         # Never echo a connection exception or environment-file values.

@@ -98,3 +98,14 @@ baseline restoration. Separate real relationship/proposal suite: **22 passed**;
 2,285 anchor cells, 284 references, three persisted section mappings with replay
 and caller rollback verified. `actual_chunk=not_supplied`, shared database not
 validated/deployed. These local IDs are not shared RDS identities.
+
+## Step 4 — capacity configuration
+
+The chosen `MaxDatabaseGiB` now flows through launcher, read-only preflight and
+ingestion via common byte conversion/boundary checks; default 14 GiB preserved.
+48 capacity/progress/handoff tests passed, including custom 7/25 GiB limits one
+byte below, exactly at, and one byte above threshold. Launcher forwarding is
+statically checked; PowerShell is unavailable in this cloud environment, so no
+Windows process-launch execution is claimed. Documented a read-only, fresh RDS
+FreeStorageSpace check and operator reserve outside this DB's footprint. No AWS
+login, shared RDS query, infrastructure resize or resource change was performed.
