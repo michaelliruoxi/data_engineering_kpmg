@@ -11,9 +11,15 @@ from types import MappingProxyType
 from typing import Any
 from uuid import UUID, uuid4
 
+from .parser_policy import policy_metadata, require_current_receipt
+
 
 class ProcessingError(ValueError):
     """The ingestion workflow cannot safely continue."""
+
+
+class ParserRevisionConflict(ProcessingError):
+    """Older stored parser output requires an explicit migration decision."""
 
 
 @dataclass(frozen=True)
@@ -405,6 +411,7 @@ def run_dry_run(
         "mode": "dry-run", "accession_number": manifest["accession_number"],
         "source_hashes": {record["local_path"]: record["sha256"] for record in records},
         "versions": expected_versions, "counts": counts,
+        **policy_metadata(expected_versions),
         "report_characters": len(outputs["report"].items[0].full_text),
         "validation": {
             "passed": True, "required_checks": list(checks), "checks": dict(validation.checks)
@@ -558,6 +565,9 @@ def run_ingestion(
 
     def writer(name):
         def write_stage(connection, context):
+            if name == 'facts':
+                require_current_receipt(connection, context.source_ids.filing_id,
+                                        processing_set_key, expected_versions)
             result = getattr(plan.stages, name)(connection, context)
             _check_write_result(name, result, context)
             return result
@@ -587,8 +597,8 @@ def run_ingestion(
         if plan.configuration_metadata is not None:
             extra_configuration = plan.configuration_metadata(context.manifest, context.data_root)
             if (not isinstance(extra_configuration, Mapping)
-                    or {"versions", "source_hashes"} & set(extra_configuration)):
-                raise ProcessingError("Processing metadata must not replace verified versions or source hashes.")
+                    or {"versions", "source_hashes", "parser_revisions"} & set(extra_configuration)):
+                raise ProcessingError("Processing metadata must not replace verified versions or source hashes, or parser revisions.")
             extra_configuration = deepcopy(dict(extra_configuration))
             json.dumps(extra_configuration)
         try:
@@ -604,6 +614,7 @@ def run_ingestion(
             "mode": "ingest", "accession_number": manifest["accession_number"],
             "source_hashes": {record["local_path"]: record["sha256"] for record in records},
             "versions": expected_versions, "counts": counts,
+            **policy_metadata(expected_versions),
             "report_characters": len(context.outputs["report"].parsed.items[0].full_text),
             "validation": {"passed": True, "required_checks": list(checks), "checks": dict(validation.checks)},
         })
@@ -623,7 +634,7 @@ def run_ingestion(
                 coverage=dict(coverage), validation_status='passed',
                 validation=summary['validation'],
                 configuration={'versions': dict(expected_versions), 'source_hashes': summary['source_hashes'],
-                               **extra_configuration},
+                               **extra_configuration, **policy_metadata(expected_versions)},
             )
             set_id = store_processing_set(connection, record)
             if prefer_processing_set:

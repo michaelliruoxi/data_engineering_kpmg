@@ -299,7 +299,7 @@ def test_clean_report_preserves_table_cells_on_same_row(tmp_path):
 
     report = clean_report(html_path)
 
-    assert "Revenue | 10 |" in report.full_text
+    assert "Revenue | 10" in report.full_text
 
 def test_part_i_skips_index_table_of_contents():
     """Select the body Part I instead of an INDEX entry."""
@@ -419,7 +419,7 @@ def test_clean_report_skips_hidden_and_empty_table_rows(tmp_path):
 
     assert "Hidden information" not in report.full_text
     assert "Also hidden" not in report.full_text
-    assert report.full_text == "Revenue | 100 |"
+    assert report.full_text == "Revenue | 100"
 
 def test_part_i_ignores_repeated_page_header():
     """Use the real Part I heading, not a repeated page header."""
@@ -487,7 +487,7 @@ def test_hidden_elements_and_cells_are_removed_with_visible_tail(tmp_path, attri
     assert "Hidden" not in report.full_text
     assert "hidden inline" not in report.full_text
     assert "Visible tail." in report.full_text
-    assert "Revenue | 42 |" in report.full_text
+    assert "Revenue | 42" in report.full_text
 
 
 def test_inline_visibility_declaration_precedence(tmp_path):
@@ -516,8 +516,8 @@ def test_table_cell_breaks_and_paragraphs_survive_normalization(tmp_path):
       <tr><td><p>First paragraph.</p><p>Second paragraph.</p></td><td>43</td></tr>
     </table>""")
     report = clean_report(path)
-    assert "Three Months Ended\nMarch 31, 2026 | 42 |" in report.full_text
-    assert "First paragraph.\n\nSecond paragraph. | 43 |" in report.full_text
+    assert "Three Months Ended\nMarch 31, 2026 | 42" in report.full_text
+    assert "First paragraph.\n\nSecond paragraph. | 43" in report.full_text
 
 
 def test_meaningful_paragraphs_keep_one_blank_line(tmp_path):
@@ -630,3 +630,191 @@ def test_recoverable_malformed_html_retains_visible_content(tmp_path):
     report = clean_report(write_source(tmp_path, "<p>Visible <b>bold<p>Next paragraph"))
     assert "Visible bold" in report.full_text
     assert "Next paragraph" in report.full_text
+
+
+def test_layout_spacer_cells_do_not_generate_empty_separators(tmp_path):
+    path = write_source(tmp_path, '''<table><tr><td>Total revenue</td>
+      <td></td><td> </td><td>82,886</td><td></td><td></td><td>70,066</td>
+      <td></td></tr><tr><td></td><td></td></tr></table>''')
+    report = clean_report(path, form="10-Q")
+    assert report.full_text == "Total revenue | 82,886 | 70,066"
+
+
+def test_heading_in_layout_table_with_empty_cells_is_body_not_toc(tmp_path):
+    path = write_source(tmp_path, '''<table><tr><td></td><td>Item 1.</td>
+      <td>Financial Statements</td><td></td><td></td></tr></table>
+      <p>Statement body.</p>''')
+    report = clean_report(path, form="10-Q")
+    assert report.sections[0]["section_id"] == "part-i-item-1"
+    assert report.sections[0]["source_locator"]["xpath"] == "/html/body/table/tr"
+
+
+def test_unlinked_toc_stays_excluded_after_spacer_cells_removed(tmp_path):
+    path = write_source(tmp_path, '''<p>FORM 10-Q</p><table>
+      <tr><td>Item 1.</td><td>Financial Statements</td><td></td></tr>
+      <tr><td></td><td>Income statements</td><td>93</td></tr>
+      <tr><td>Item 2.</td><td>Management’s Discussion and Analysis</td><td></td></tr>
+      <tr><td></td><td>Introduction</td><td>4</td></tr>
+      <tr><td>Item 3.</td><td>Quantitative and Qualitative Disclosures</td><td>201</td></tr>
+      <tr><td>Item 4.</td><td>Controls and Procedures</td><td>201</td></tr>
+      </table><p>INTRODUCTION</p><p>Unnumbered discussion.</p>
+      <p>Item 3. Quantitative and Qualitative Disclosures</p><p>Risk body.</p>''')
+    report = clean_report(path, form="10-Q")
+    assert report.sections[0]["section_id"] == "unclassified-prefix"
+    assert not any(s["section_type"] in {"mda", "financial_statements"} for s in report.sections)
+    assert report.sections[-1]["section_id"] == "part-i-item-3"
+
+
+def test_linked_toc_does_not_steal_body_heading_without_page_column(tmp_path):
+    path = write_source(tmp_path, '''<p><a href="#risk">Item 1A. Risk Factors</a></p>
+      <p>Index description that looks like body prose.</p>
+      <p id="risk">Item 1A. Risk Factors</p><p>Actual risks.</p>''')
+    report = clean_report(path, form="10-K")
+    risk = next(s for s in report.sections if s["section_type"] == "risk_factors")
+    assert risk["source_locator"]["element_id"] == "risk"
+    assert risk["offset_start"] == report.full_text.rfind("Item 1A. Risk Factors")
+
+
+@pytest.mark.parametrize('body', [
+    '<div id="risk">Item 1A. Risk Factors<br>See <a href="#discussion">Item 7. Management’s Discussion</a> for details.</div>',
+    '<table><tr><td><p id="risk">Item 1A. Risk Factors</p>'
+    '<p>See <a href="#discussion">Item 7. Management’s Discussion</a> for details.</p></td></tr></table>',
+    '<table><tr><td><p id="risk">Item 1A. Risk Factors</p>'
+    '<p>See <a href="#appendix">Item 1A. Risk Factors</a> in the referenced filing.</p></td></tr></table>',
+])
+def test_body_heading_survives_unrelated_cross_reference_in_same_source_block(tmp_path, body):
+    path = write_source(tmp_path, body + '<p id="discussion">Item 7. Management’s Discussion</p><p>Discussion.</p>')
+    report = clean_report(path, form='10-K')
+    risk = next(section for section in report.sections if section['section_id'] == 'part-i-item-1a')
+    assert risk['offset_start'] == 0
+    assert 'See' in report.full_text[risk['offset_start']:risk['offset_end']]
+
+
+def test_body_heading_permalink_is_not_a_navigation_entry(tmp_path):
+    path = write_source(tmp_path, '<p id="business"><a href="#business">Item 1. Business</a></p>'
+                        '<p>Business discussion.</p><p>Item 1A. Risk Factors</p><p>Risks.</p>')
+    report = clean_report(path, form='10-K')
+    assert report.sections[0]['section_id'] == 'part-i-item-1'
+    assert report.sections[0]['source_locator']['element_id'] == 'business'
+
+
+def test_split_linked_toc_heading_stays_excluded(tmp_path):
+    path = write_source(tmp_path, '<table><tr><td><a href="#risk">Item 1A.</a></td>'
+                        '<td>Risk Factors</td></tr></table><p>Contents description.</p>'
+                        '<p id="risk">Item 1A. Risk Factors</p><p>Actual risks.</p>')
+    report = clean_report(path, form='10-K')
+    risk = next(section for section in report.sections if section['section_id'] == 'part-i-item-1a')
+    assert risk['source_locator']['element_id'] == 'risk'
+
+
+def test_unlinked_paragraph_contents_do_not_steal_body_heading(tmp_path):
+    path = write_source(tmp_path, '''<p>FORM 10-Q</p><p>TABLE OF CONTENTS</p>
+      <p>Item 1. Financial Statements</p><p>3</p><p>Condensed Consolidated Balance Sheets</p>
+      <p>Item 2. Management’s Discussion and Analysis</p><p>20</p>
+      <p id="statements">Item 1. Financial Statements</p><p>Actual statements and financial notes.</p>
+      <p id="discussion">Item 2. Management’s Discussion and Analysis</p><p>Actual discussion.</p>''')
+    report = clean_report(path, form='10-Q')
+    statements = next(section for section in report.sections if section['section_id'] == 'part-i-item-1')
+    assert statements['source_locator']['element_id'] == 'statements'
+
+
+def test_paragraph_contents_do_not_exclude_following_body_part(tmp_path):
+    path = write_source(tmp_path, '''<p>FORM 10-Q</p><p>TABLE OF CONTENTS</p><p>PART I</p>
+      <p>Item 1. Financial Statements</p><p>3</p><p>Condensed Consolidated Balance Sheets</p>
+      <p>Item 2. Management’s Discussion and Analysis</p><p>20</p>
+      <p id="body-part">PART I</p>
+      <p id="statements">Item 1. Financial Statements</p><p>Actual statements and financial notes.</p>
+      <p id="discussion">Item 2. Management’s Discussion and Analysis</p><p>Actual discussion.</p>''')
+    report = clean_report(path, form='10-Q')
+    part = next(section for section in report.sections if section['section_id'] == 'part-i')
+    assert part['source_locator']['element_id'] == 'body-part'
+    statements = next(section for section in report.sections if section['section_id'] == 'part-i-item-1')
+    assert statements['source_locator']['element_id'] == 'statements'
+
+
+def test_contents_page_footer_does_not_hide_reserved_body_heading(tmp_path):
+    path = write_source(tmp_path, '''<p>Item 1. Business</p><p>Business.</p>
+      <p>Table of Contents</p><p>Item 6. Reserved.</p><p>31</p>
+      <p>Table of Contents</p><p>Item 7. Management’s Discussion and Analysis</p><p>Discussion.</p>''')
+    report = clean_report(path, form='10-K')
+    assert 'part-ii-item-6' in {section['section_id'] for section in report.sections}
+
+
+def test_annual_market_heading_allows_the_registrant():
+    text = ("PART II\nItem 5. Market for the Registrant’s Common Equity, Related "
+            "Stockholder Matters and Issuer Purchases of Equity Securities.\nMarket discussion.")
+    sections = detect_sections(text, form="10-K")
+    assert [s["section_id"] for s in sections] == ["part-ii", "part-ii-item-5"]
+    assert sections[1]["section_type"] == "market_equity"
+
+
+def test_reserved_body_item_followed_by_page_footer_is_not_a_toc(tmp_path):
+    path = write_source(tmp_path, '''<p>PART II</p><p>Item 6. Reserved.</p>
+      <p>31</p><p>Table of Contents</p>
+      <p>Item 7. Management’s Discussion and Analysis</p><p>Discussion.</p>''')
+    report = clean_report(path, form="10-K")
+    assert "part-ii-item-6" in {s["section_id"] for s in report.sections}
+
+
+def test_annual_market_heading_with_issuer_name_and_parenthesized_reserved():
+    text = ("PART II\nItem 5. Market for Medtronic’s Common Equity, Related Shareholder Matters\n"
+            "Market discussion.\nItem 6. (Reserved)\nNo disclosure.\n"
+            "Item 7. Management’s Discussion and Analysis\nDiscussion.")
+    sections = detect_sections(text, form="10-K")
+    assert [s["section_id"] for s in sections] == [
+        "part-ii", "part-ii-item-5", "part-ii-item-6", "part-ii-item-7"]
+
+
+def test_body_part_keeps_proxy_preamble_before_first_item(tmp_path):
+    path = write_source(tmp_path, '''<p>PART I</p><p>Item 1. Business</p><p>Business.</p>
+      <p id="governance">PART III</p>
+      <p>Part III incorporates information by reference from our proxy statement.</p>
+      <p>Item 10. Directors, Executive Officers, and Corporate Governance</p><p>Directors.</p>''')
+    report = clean_report(path, form="10-K")
+    part = next(s for s in report.sections if s["section_id"] == "part-iii")
+    assert part["source_locator"]["element_id"] == "governance"
+    assert part["source_locator"]["incorporation_status"] == "unresolved"
+    assert "proxy statement" in report.full_text[part["offset_start"]:part["offset_end"]]
+
+
+@pytest.mark.parametrize('form', [None, '10-Q'])
+def test_toc_link_establishes_unnumbered_exhibit_index(tmp_path, form):
+    path = write_source(tmp_path, '''<p>FORM 10-Q</p><table><tr><td><a href="#exhibits">Item 6.</a></td>
+      <td><a href="#exhibits">Exhibits</a></td><td>60</td></tr></table>
+      <p>Item 1. Financial Statements</p><p>Statements.</p>
+      <p>Item 5. Other Information</p><p>Other information.</p>
+      <div id="exhibits"></div><p>Table of Contents</p>
+      <p id="index">Index to Exhibits</p>
+      <p>Exhibit descriptions incorporated by reference from the proxy statement.</p>''')
+    report = clean_report(path, form=form)
+    section = next(s for s in report.sections if s['section_id'] == 'part-ii-item-6')
+    assert section['original_title'] == 'Index to Exhibits'
+    assert section['source_locator']['element_id'] == 'index'
+    assert section['source_locator']['heading_method'] == 'original_toc_target'
+    assert section['source_locator']['target_element_id'] == 'exhibits'
+    assert section['source_locator']['incorporation_status'] == 'unresolved'
+
+
+def test_unlinked_exhibit_index_does_not_invent_an_item(tmp_path):
+    path = write_source(tmp_path, '<p>Index to Exhibits</p><p>Descriptions.</p>')
+    assert not any(s.get('item') == '6' for s in clean_report(path, form='10-Q').sections)
+
+
+def test_inline_toc_target_with_intervening_prose_does_not_relabel_later_index(tmp_path):
+    path = write_source(tmp_path, '''<table><tr><td><a href="#e">Item 6.</a></td>
+      <td>Exhibits</td><td>60</td></tr></table>
+      <p>Item 1. Financial Statements</p><p>Statements.</p>
+      <div><a id="e"></a>Substantive material between target and index.</div>
+      <p>Index to Exhibits</p><p>Descriptions.</p>''')
+    assert not any(s.get('item') == '6' for s in clean_report(path, form='10-Q').sections)
+
+
+@pytest.mark.parametrize('title,kind', [
+    ('Information about our Executive Officers', 'directors_governance'),
+    ('Cybersecurity', 'cybersecurity'),
+])
+def test_annual_item_1c_meaning_comes_from_original_title(title, kind):
+    sections = detect_sections(f'PART I\nItem 1. Business\nBusiness.\nItem 1C. {title}\nDetails.', form='10-K')
+    section = next(s for s in sections if s['section_id'] == 'part-i-item-1c')
+    assert section['section_type'] == kind
+    assert section['original_title'] == f'Item 1C. {title}'

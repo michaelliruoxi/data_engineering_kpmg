@@ -315,9 +315,72 @@ def select_statements(tree, *, concept_groups=None):
     return result
 
 
-def column_headers(rows, first_data_row, column):
-    return [c['display_text'] for row in rows[:first_data_row] for c in row
-            if c['display_text'] and c['column'] <= column < c['column'] + c['colspan']]
+def _period_caption(value):
+    return bool(re.search(
+        r'\b(?:19\d\d|20\d\d|january|february|march|april|may|june|july|august|'
+        r'september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sept?|oct|nov|dec|'
+        r'years?|quarters?|months?|weeks?|ended|ending|as of)\b', value, re.I))
+
+
+def _column_header_cells(rows, first_data_row, column, *, advanced=True):
+    header_rows = rows[:first_data_row]
+    width = max((c['column'] + c['colspan'] for row in header_rows for c in row), default=0)
+    period_seen = False
+    result = []
+    for row in header_rows:
+        nonempty = [c for c in row if c['display_text']]
+        for cell in nonempty:
+            value = cell['display_text']
+            # A full-width row group (Assets, Revenue, Operating activities,
+            # etc.) below the reporting dates labels rows, not every column.
+            # Retain explicit dates, units, audit qualifiers and statement titles.
+            row_group = (advanced and period_seen and len(nonempty) == 1
+                         and cell['column'] == 0 and cell['colspan'] == width
+                         and not _period_caption(value) and not _heading_qualifier(value)
+                         and not re.search(r'\b(?:unaudited|audited|in (?:thousands|millions|billions))\b', value, re.I)
+                         and _statement_heading(value) is None)
+            if not row_group and cell['column'] <= column < cell['column'] + cell['colspan']:
+                result.append(cell)
+        period_seen = period_seen or any(_period_caption(c['display_text']) for c in nonempty)
+    return result
+
+
+def column_headers(rows, first_data_row, column, *, advanced=True):
+    return [c['display_text'] for c in _column_header_cells(rows, first_data_row, column, advanced=advanced)]
+
+
+def _presentation_column_groups(rows, first_data, columns, periods):
+    """Merge alternate anchors only when the same printed header spans them."""
+    groups = []
+    for column in columns:
+        headers = _column_header_cells(rows, first_data, column)
+        signature = tuple(c['cell_id'] for c in headers)
+        previous = groups[-1] if groups else None
+        if (previous and signature and periods.get(column) is not None
+                and signature == previous['signature'] and periods[column] == previous['period']
+                and any(c['column'] > 0 and _period_caption(c['display_text']) for c in headers)
+                and not any(sum(c['column'] in {*previous['columns'], column}
+                                and c['classification'] in {'resolved', 'unresolved'} for c in row) > 1
+                            for row in rows[first_data:])):
+            previous['columns'].append(column)
+        else:
+            groups.append({'columns': [column], 'signature': signature, 'period': periods.get(column)})
+    return [group['columns'] for group in groups]
+
+
+def _presentation_value(row, columns):
+    values = [c for c in row if c['column'] in columns and c['classification'] in {'resolved', 'unresolved'}]
+    if not values:
+        return ''
+    value, = values
+    # Currency and sign cells belong to this value; an adjacent value or row
+    # label never does, even when the physical grid has no spacer columns.
+    # Ignore token-internal spacing for recognition, retaining the source text.
+    return ' '.join(c['display_text'] for c in row if c is value or (
+        c['classification'] == 'formatting' and c['display_text']
+        and ((c['column'] == value['column'] - 1 and re.fullmatch(r'[$€£¥(+−–—-]+', re.sub(r'\s+', '', c['display_text'])))
+             or (c['column'] == value['column'] + value['colspan']
+                 and re.fullmatch(r'[)%]+', re.sub(r'\s+', '', c['display_text']))))))
 
 
 def header_period(headers, *, context_period=None, advanced=False):
@@ -677,7 +740,7 @@ def verify_inline(element, evidence, ns):
 
 def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False):
     columns = {cell['column'] for row in rows[first_data:] for cell in row if cell['column'] > 0}
-    headers = {column: column_headers(rows, first_data, column) for column in columns}
+    headers = {column: column_headers(rows, first_data, column, advanced=advanced) for column in columns}
     # A left-hand header such as "Year ended December 31" applies to the
     # adjacent year columns even when its physical colspan covers only labels.
     shared = [cell['display_text'] for row in rows[:first_data] for cell in row
@@ -1514,12 +1577,12 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                 element = cell['_element']
                 inline = [e for e in element.iter() if local(e) == 'nonfraction']
                 cell['row_heading'] = row_label
-                cell['column_headings'] = column_headers(rows, first_data, cell['column'])
+                cell['column_headings'] = column_headers(rows, first_data, cell['column'], advanced=advanced)
                 cell['column_period'] = column_periods.get(cell['column'], header_period(cell['column_headings'], advanced=advanced))
                 in_reconciliation = reconciliation is not None and ri >= reconciliation['start']
                 if in_reconciliation:
                     cell['column_headings'] = column_headers(rows[reconciliation['start']:],
-                        reconciliation['first'] - reconciliation['start'], cell['column'])
+                        reconciliation['first'] - reconciliation['start'], cell['column'], advanced=advanced)
                     cell['column_period'] = reconciliation['periods'].get(cell['column'])
                 cell['fact_references'] = []
                 cell['unresolved_reason'] = None
@@ -1646,9 +1709,12 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
             lines.append('\t'.join(values))
         value_columns = sorted({c['column'] for row in rows for c in row
                                 if c['classification'] in ('resolved', 'unresolved') and c['column'] > 0})
+        column_groups = (_presentation_column_groups(rows, first_data, value_columns, column_periods)
+                         if advanced else [[column] for column in value_columns])
         structure['presentation_columns'] = [
-            {'column': col, 'headings': column_headers(rows, first_data, col),
-             'period': column_periods[col]} for col in value_columns]
+            {'column': columns[0], 'headings': column_headers(rows, first_data, columns[0], advanced=advanced),
+             'period': column_periods[columns[0]], **({'source_columns': columns} if len(columns) > 1 else {})}
+            for columns in column_groups]
         structure['presentation_rows'] = []
         last_period_heading = max((c['row'] for row in rows[:first_data] for c in row
             if c['column'] > 0 and re.search(r'20\d\d', c['display_text'])), default=first_data - 1)
@@ -1656,9 +1722,12 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
             if not any(c['display_text'] for c in row):
                 continue
             values = []
-            for col in value_columns:
-                parts = [c['display_text'] for c in row if col - 1 <= c['column'] <= col + 1]
-                values.append(' '.join(p for p in parts if p))
+            for columns in column_groups:
+                if advanced:
+                    values.append(_presentation_value(row, columns))
+                else:
+                    parts = [c['display_text'] for c in row if columns[0] - 1 <= c['column'] <= columns[0] + 1]
+                    values.append(' '.join(p for p in parts if p))
             structure['presentation_rows'].append({'label': row[0]['display_text'] if row else '',
                 'values': values, 'source_row': row[0]['row'] if row else None})
         output.append(FinancialTableInput(filing_id=filing_id, source_document_id=html_document_id,

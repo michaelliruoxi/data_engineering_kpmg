@@ -8,6 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from sec_pipeline import backfill, filing_adapter, filing_adapter_v2, filing_adapter_v3
+from sec_pipeline.parser_policy import policy_metadata
 from tests.test_backfill import Connection, cli_queue, configuration, queue, selection_row
 
 
@@ -15,6 +16,7 @@ def result_for(queue, accession, profile):
     return {
         "accession_number": accession,
         "versions": dict(profile.VERSIONS),
+        **policy_metadata(profile.VERSIONS),
         "source_hashes": configuration(queue.manifests[accession])["source_hashes"],
         "validation": {"passed": True, "required_checks": list(profile.REQUIRED_CHECKS),
                        "checks": {check: True for check in profile.REQUIRED_CHECKS}},
@@ -51,6 +53,7 @@ def profiled_queue(queue, monkeypatch):
 def receipt(queue, accession, profile):
     row = selection_row(queue.manifests[accession])
     row[0] = {"versions": dict(profile.VERSIONS),
+              **policy_metadata(profile.VERSIONS),
               "source_hashes": configuration(queue.manifests[accession])["source_hashes"]}
     if hasattr(profile, "configuration_metadata"):
         row[0].update(profile.configuration_metadata(queue.manifests[accession], queue.root))

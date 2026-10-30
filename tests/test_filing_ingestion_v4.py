@@ -67,7 +67,10 @@ class LedgerConnection:
         elif 'FROM sec.source_quality_issues ' in sql:
             rows = [(item,) for item in self.state['issues'].values()]
         elif 'FROM sec.source_processing_sets ' in sql:
-            rows = [self.state['seal']]
+            if sql.startswith('SELECT configuration '):
+                rows = [(self.state['seal'][4],)] if 'seal' in self.state else []
+            else:
+                rows = [self.state['seal']]
         else:
             raise AssertionError(sql)
         rows = deepcopy(rows)

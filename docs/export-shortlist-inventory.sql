@@ -1,7 +1,6 @@
 -- Jace acquisition inventory. Reviewed against main 821e268, not run on shared DB.
 -- Run on an existing reader connection in DBeaver. No changes are made.
--- Broad inspection window: 2021-01-01 through 2026-10-28 inclusive.
--- The final five-year acceptance window still needs Emma's confirmation.
+-- User-confirmed filing-date window: 2021-01-01 through 2026-12-31 inclusive.
 -- Save the single JSON result as shared_inventory.json (plain JSON, not a screenshot).
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SET LOCAL statement_timeout = '60s';
@@ -38,13 +37,13 @@ WITH targets(ticker, cik) AS (
   FROM targets t JOIN sec.companies c ON c.cik=t.cik
   JOIN sec.filings f ON f.company_id=c.id
   WHERE f.form IN ('10-K','10-Q')
-    AND f.filing_date BETWEEN DATE '2021-01-01' AND DATE '2026-10-28'
+    AND f.filing_date BETWEEN DATE '2021-01-01' AND DATE '2026-12-31'
 )
 SELECT jsonb_pretty(jsonb_build_object(
   'exported_at',now(),
   'read_only',current_setting('transaction_read_only'),
-  'export_window',jsonb_build_object('basis','filing_date','since','2021-01-01','until','2026-10-28'),
-  'scope_status','broad_inventory_only_not_final_acceptance_window',
+  'export_window',jsonb_build_object('basis','filing_date','since','2021-01-01','until','2026-12-31'),
+  'scope_status','user_confirmed',
   'companies',(SELECT jsonb_agg(to_jsonb(c) ORDER BY requested_ticker) FROM company_rows c),
   'filings',COALESCE((SELECT jsonb_agg(to_jsonb(f) ORDER BY requested_ticker,filing_date,accession_number)
                      FROM filing_rows f),'[]'::jsonb),
