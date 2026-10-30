@@ -38,7 +38,8 @@ def receipt_status(receipt):
     counts, coverage = receipt.get('counts', {}), receipt.get('coverage', {})
     present = lambda key: type(counts.get(key)) is int and counts[key] > 0
     if all(present(key) for key in ('facts', 'reports', 'chunks')):
-        if coverage.get('tables') == 'absent' and counts.get('tables') == 0:
+        if (coverage.get('tables') == 'absent' and counts.get('tables') == 0
+                and all(coverage.get(key) == 'complete' for key in ('facts', 'reports', 'chunks'))):
             return 'text_only'
         if present('tables') and all(coverage.get(key) == 'complete' for key in ('facts', 'tables', 'reports', 'chunks')):
             return 'fully_imported'

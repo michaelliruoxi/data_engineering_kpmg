@@ -71,3 +71,11 @@ def test_database_reader_rejects_write_transaction_before_reading_receipts():
             return {'transaction_read_only':'off'}
     with pytest.raises(ValueError, match='Read-only'):
         read_receipts(Connection())
+
+
+@pytest.mark.parametrize('field',['facts','reports','chunks'])
+@pytest.mark.parametrize('coverage',['partial','unknown','absent'])
+def test_partial_text_receipt_remains_review_required(field,coverage):
+    r=receipt(); r['coverage']['tables']='absent'; r['counts']['tables']=0
+    r['coverage'][field]=coverage
+    assert receipt_status(r)=='review_required'
