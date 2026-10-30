@@ -83,7 +83,7 @@ def reconcile(queue, receipts=None, selections=(), *, observed_at=None, override
             status = 'pending'
         if receipts is not None and entry.get('status', '').startswith('ingested') and not candidates:
             issues.append('queue_claims_import_but_no_database_receipt')
-        if receipt and not entry:
+        if candidates and accession not in entries:
             issues.append('database_receipt_not_in_queue')
         rows.append({'accession_number': accession, 'status': status,
                      'queue_status': entry.get('status'), 'selection_reason': selection_reason,

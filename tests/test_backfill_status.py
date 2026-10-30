@@ -55,6 +55,23 @@ def test_inputs_preserved_and_receipts_missing_queue_reported():
     assert r == original
 
 
+@pytest.mark.parametrize('validation_status',['passed','failed','unvalidated'])
+def test_unselected_receipts_missing_queue_still_report_discrepancy(validation_status):
+    r=receipt(); r['validation_status']=validation_status
+    result=reconcile({'filings':{}},[r],[])
+    row=result['filings'][0]
+    assert row['status']=='review_required'
+    assert row['selected_receipt'] is None
+    assert row['issues']==['stored_candidates_without_unique_selection',
+                          'database_receipt_not_in_queue']
+
+
+def test_present_queue_entry_without_status_is_not_reported_as_missing():
+    r=receipt()
+    result=reconcile({'filings':{'a':{}}},[r],[r])
+    assert result['filings'][0]['issues']==[]
+
+
 def test_invalid_counts_never_accepted():
     for invalid in [True, 0, -1, '1', None]:
         r=receipt(); r['counts']['facts']=invalid
