@@ -1,6 +1,7 @@
 """Discover and resume an S&P 500 filing backfill with explicit database writes."""
 
 import argparse
+from sec_pipeline.capacity import database_limit_bytes
 from contextlib import ExitStack
 from datetime import date
 import json
@@ -90,7 +91,7 @@ def main(argv=None):
                 process_queue(args.state, state, client, args.data_root, mode=operation,
                     connection=connection, destination=destination, limit=args.limit, replay=args.replay,
                     retry_failed_only=args.retry_failed_only, validated_only=args.validated_only,
-                    max_database_bytes=(args.max_database_gib * 1024**3 if args.max_database_gib is not None else None),
+                    max_database_bytes=(database_limit_bytes(args.max_database_gib) if args.max_database_gib is not None else None),
                     tables_version=args.tables_version)
             summary = summarize(state, universe)
             print(json.dumps(summary, indent=2))

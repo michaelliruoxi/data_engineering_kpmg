@@ -1,0 +1,15 @@
+{
+  "provenance": "synthetic minimized regression models; not original company filings or historical acceptance evidence",
+  "cases": {
+    "ntap_opening_cash": "NTAP-inspired opening cash under duration heading; retain review, never alter date",
+    "bank_continuation": "bank layout inspired by historical continuation regression; exact assets/liabilities proof",
+    "nke_nil": "NKE-discovered NIL contract regression; raw null and empty both valid"
+  },
+  "sha256": {
+    "bank_continuation.html": "6fb996790af1a5d887a341dde43a7e583a2c09c9d4541015fd7fed5825bb15f0",
+    "bank_continuation.json": "edf2ca7b404d66a9a05b5068829ce3ef6c9a9b9800d53b74fcf478ba27ff9b91",
+    "nke_nil.json": "ad22799fa59deadeaac4b0b5738db270018eccf677162241efc9bb039653bb0e",
+    "ntap_opening_cash.html": "c5b5915e2e3a7751764fb6388adc284dea5e40009fc9fd31f7d5320a8371c927",
+    "ntap_opening_cash.json": "377126b7c86445fa4d9b3adb65a9b2ed61fb6cabc17a9a2dfbab517a4487c570"
+  }
+}

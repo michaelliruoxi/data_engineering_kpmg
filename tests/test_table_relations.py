@@ -474,3 +474,21 @@ def test_original_negative_repeat_uses_parentheses_without_applying_inline_sign_
     table, facts, source = inline_relationship_fixture(scale="6", repeat=True, negative=True)
     result = audit_snapshot(relationship_snapshot(table, facts), {HTML: source})
     assert result["errors"] == []
+
+
+def test_trace_limit_is_per_table_not_global():
+    """Later physical/continuation tables must not lose all source examples."""
+    from sec_pipeline.table_relations import audit_snapshot
+    base=accepted_relationship_snapshot()
+    snapshot=deepcopy(base)
+    snapshot['tables']=[];snapshot['table_cells']=[]
+    snapshot['cell_fact_links']=[];snapshot['financial_table_facts']=[]
+    for number in range(4):
+        table_id=str(UUID(int=2000+number))
+        snapshot['tables'].append(deepcopy(base['tables'][0]) | {'id':table_id,'table_key':f'fixture.segment_{number}'})
+        cell_ids={row['id']:str(UUID(int=3000+number*100+index)) for index,row in enumerate(base['table_cells'])}
+        snapshot['table_cells'].extend(deepcopy(row) | {'id':cell_ids[row['id']],'table_id':table_id} for row in base['table_cells'])
+        snapshot['cell_fact_links'].extend(deepcopy(row) | {'cell_id':cell_ids[row['cell_id']],'table_id':table_id} for row in base['cell_fact_links'])
+        snapshot['financial_table_facts'].extend(deepcopy(row) | {'table_id':table_id} for row in base['financial_table_facts'])
+    result=audit_snapshot(snapshot,{})
+    assert {row['table_id'] for row in result['trace_examples']}=={row['id'] for row in snapshot['tables']}

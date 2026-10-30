@@ -40,7 +40,7 @@ if (Test-Path $lock) {
 
 Push-Location $root
 try {
-    & $python 'scripts\check_backfill_ready.py'
+    & $python 'scripts\check_backfill_ready.py' '--max-database-gib' "$MaxDatabaseGiB"
     if ($LASTEXITCODE -ne 0) {
         throw "The read-only preflight stopped with exit code $LASTEXITCODE; no import was started."
     }

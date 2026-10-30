@@ -1,0 +1,190 @@
+{
+  "table": {
+    "extraction_version": "tables-v4",
+    "filing_id": "00000000-0000-0000-0000-000000000001",
+    "readable_text": "Issuance for dividend reinvestment\t24",
+    "source_document_id": "00000000-0000-0000-0000-000000000002",
+    "statement_type": "cash_flow",
+    "structure": {
+      "fact_scope": {
+        "facts_version": "facts-v1",
+        "filing_id": "00000000-0000-0000-0000-000000000001",
+        "xml_document_id": "00000000-0000-0000-0000-000000000003"
+      },
+      "grid": [
+        [
+          "r000c000",
+          "r000c001"
+        ]
+      ],
+      "html_sha256": "854109495bba24417e38154a7141b286be1c84b2842f0071bfa1cb3ef0316812",
+      "inventory": {
+        "label": 1,
+        "resolved": 1
+      },
+      "rows": [
+        [
+          {
+            "cell_id": "r000c000",
+            "classification": "label",
+            "colspan": 1,
+            "column": 0,
+            "column_headings": [],
+            "column_period": null,
+            "display_text": "Issuance for dividend reinvestment",
+            "fact_references": [],
+            "is_total": false,
+            "row": 0,
+            "row_heading": "Issuance for dividend reinvestment",
+            "rowspan": 1,
+            "source_html": "<td>Issuance for dividend reinvestment</td>",
+            "source_html_id": null,
+            "source_xpath": "/html/body/table/tr/td[1]",
+            "unresolved_reason": null
+          },
+          {
+            "cell_id": "r000c001",
+            "classification": "resolved",
+            "colspan": 1,
+            "column": 1,
+            "column_headings": [
+              "Six Months Ended June30,2026"
+            ],
+            "column_period": {
+              "instant": "2026-06-30"
+            },
+            "display_text": "24",
+            "fact_references": [
+              {
+                "concept": "{http://fasb.org/us-gaap/2026}DividendsPayableCurrentAndNoncurrent",
+                "context_ref": "c1",
+                "dimensions": [],
+                "inline_document_id": "00000000-0000-0000-0000-000000000002",
+                "inline_xpath": "/html/body/table/tr/td[2]/ix:nonfraction",
+                "is_nil": false,
+                "method": "inline_id",
+                "period": {
+                  "instant": "2026-06-30"
+                },
+                "raw_value": "24000000",
+                "scope": {
+                  "facts_version": "facts-v1",
+                  "filing_id": "00000000-0000-0000-0000-000000000001",
+                  "xml_document_id": "00000000-0000-0000-0000-000000000003"
+                },
+                "unit": {
+                  "denominator": [],
+                  "numerator": [
+                    "{http://www.xbrl.org/2003/iso4217}USD"
+                  ]
+                },
+                "unit_ref": "usd",
+                "xml_id": "F1"
+              }
+            ],
+            "is_total": false,
+            "row": 0,
+            "row_heading": "Issuance for dividend reinvestment",
+            "rowspan": 1,
+            "source_html": "<td><ix:nonfraction id=\"F1\" name=\"g:DividendsPayableCurrentAndNoncurrent\" contextref=\"c1\" unitref=\"usd\" scale=\"6\">24</ix:nonfraction></td>",
+            "source_html_id": null,
+            "source_xpath": "/html/body/table/tr/td[2]",
+            "unresolved_reason": null
+          }
+        ]
+      ],
+      "schema_version": 3,
+      "source_xpath": "/html/body/table",
+      "xml_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "table_key": "cash_flow"
+  },
+  "fact": {
+    "concept_name": "DividendsPayableCurrentAndNoncurrent",
+    "concept_namespace": "http://fasb.org/us-gaap/2026",
+    "dimensions": [],
+    "extraction_version": "facts-v1",
+    "filing_id": "00000000-0000-0000-0000-000000000001",
+    "instant_date": "2026-06-30",
+    "is_nil": true,
+    "label": null,
+    "numeric_value": null,
+    "occurrence_key": "F1",
+    "period_end": null,
+    "period_kind": "instant",
+    "period_start": null,
+    "raw_value": null,
+    "reported_decimals": null,
+    "reported_precision": null,
+    "source_document_id": "00000000-0000-0000-0000-000000000003",
+    "source_reference": {
+      "context_ref": "c1",
+      "element_id": "F1",
+      "unit_ref": "usd"
+    },
+    "unit": {
+      "denominator": [],
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ]
+    },
+    "id": "00000000-0000-0000-0000-000000000014"
+  },
+  "reference": {
+    "concept": "{http://fasb.org/us-gaap/2026}DividendsPayableCurrentAndNoncurrent",
+    "context_ref": "c1",
+    "unit_ref": "usd",
+    "unit": {
+      "denominator": [],
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ]
+    },
+    "raw_value": "",
+    "is_nil": true,
+    "period": {
+      "instant": "2026-06-30"
+    },
+    "dimensions": [],
+    "xml_id": "F1",
+    "scope": {
+      "filing_id": "00000000-0000-0000-0000-000000000001",
+      "xml_document_id": "00000000-0000-0000-0000-000000000003",
+      "facts_version": "facts-v1"
+    },
+    "method": "inline_id",
+    "inline_document_id": "00000000-0000-0000-0000-000000000002",
+    "inline_xpath": "/html/body/table/tr/td[2]/ix:nonfraction"
+  },
+  "occurrence": {
+    "filing_id": "00000000-0000-0000-0000-000000000001",
+    "document_set_id": "00000000-0000-0000-0000-00000000001e",
+    "fact_id": "00000000-0000-0000-0000-000000000014",
+    "html_document_id": "00000000-0000-0000-0000-000000000002",
+    "inline_id": "F1",
+    "source_xpath": "/html/body/table/tr/td[2]/ix:nonfraction",
+    "evidence": {
+      "concept": "{http://fasb.org/us-gaap/2026}DividendsPayableCurrentAndNoncurrent",
+      "raw_value": null,
+      "is_nil": true,
+      "context_ref": "c1",
+      "unit_ref": "usd",
+      "unit": {
+        "denominator": [],
+        "numerator": [
+          "{http://www.xbrl.org/2003/iso4217}USD"
+        ]
+      },
+      "period": {
+        "instant": "2026-06-30"
+      },
+      "dimensions": [],
+      "xml_id": "F1",
+      "inline_is_nil": true,
+      "inline_mapped_value": null,
+      "html_sha256": "854109495bba24417e38154a7141b286be1c84b2842f0071bfa1cb3ef0316812",
+      "xml_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "document_set": "00000000-0000-0000-0000-00000000001e"
+}

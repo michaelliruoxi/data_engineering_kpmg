@@ -8,7 +8,7 @@ can browse the same data in DBeaver or query it directly from Python.
 
 > **Backfill status:** The initial five-year backfill is in progress, not
 > complete. At the October 13, 2026 queue checkpoint, 430 of the 9,833 queued
-> filings had been loaded. The scope below describes the intended dataset, not
+> filings were marked loaded in the queue (not independently reconciled with database receipts). The scope below describes the intended dataset, not
 > what is loaded today; query `filing_overview` or use the
 > [run-status commands](docs/automated-backfill.md) for current progress.
 

@@ -1,0 +1,234 @@
+{
+  "detail26": {
+    "xml_id": "detail26",
+    "concept": "{http://fasb.org/us-gaap/2026}LoansAndLeasesReceivableNetReportedAmount",
+    "context_ref": "26",
+    "unit_ref": "usd",
+    "unit": {
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ],
+      "denominator": []
+    },
+    "raw_value": "30",
+    "is_nil": false,
+    "period": {
+      "instant": "2026-06-30"
+    },
+    "dimensions": [
+      {
+        "kind": "explicit",
+        "dimension": "{urn:fixture}PortfolioAxis",
+        "member": "{urn:fixture}CommercialMember"
+      }
+    ],
+    "entity": {
+      "scheme": "http://www.sec.gov/CIK",
+      "identifier": "0000831001"
+    }
+  },
+  "detail25": {
+    "xml_id": "detail25",
+    "concept": "{http://fasb.org/us-gaap/2026}LoansAndLeasesReceivableNetReportedAmount",
+    "context_ref": "25",
+    "unit_ref": "usd",
+    "unit": {
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ],
+      "denominator": []
+    },
+    "raw_value": "20",
+    "is_nil": false,
+    "period": {
+      "instant": "2025-12-31"
+    },
+    "dimensions": [
+      {
+        "kind": "explicit",
+        "dimension": "{urn:fixture}PortfolioAxis",
+        "member": "{urn:fixture}CommercialMember"
+      }
+    ],
+    "entity": {
+      "scheme": "http://www.sec.gov/CIK",
+      "identifier": "0000831001"
+    }
+  },
+  "assets26": {
+    "xml_id": "assets26",
+    "concept": "{http://fasb.org/us-gaap/2026}Assets",
+    "context_ref": "26",
+    "unit_ref": "usd",
+    "unit": {
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ],
+      "denominator": []
+    },
+    "raw_value": "100",
+    "is_nil": false,
+    "period": {
+      "instant": "2026-06-30"
+    },
+    "dimensions": [],
+    "entity": {
+      "scheme": "http://www.sec.gov/CIK",
+      "identifier": "0000831001"
+    }
+  },
+  "assets25": {
+    "xml_id": "assets25",
+    "concept": "{http://fasb.org/us-gaap/2026}Assets",
+    "context_ref": "25",
+    "unit_ref": "usd",
+    "unit": {
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ],
+      "denominator": []
+    },
+    "raw_value": "80",
+    "is_nil": false,
+    "period": {
+      "instant": "2025-12-31"
+    },
+    "dimensions": [],
+    "entity": {
+      "scheme": "http://www.sec.gov/CIK",
+      "identifier": "0000831001"
+    }
+  },
+  "liabilities26": {
+    "xml_id": "liabilities26",
+    "concept": "{http://fasb.org/us-gaap/2026}Liabilities",
+    "context_ref": "26",
+    "unit_ref": "usd",
+    "unit": {
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ],
+      "denominator": []
+    },
+    "raw_value": "60",
+    "is_nil": false,
+    "period": {
+      "instant": "2026-06-30"
+    },
+    "dimensions": [],
+    "entity": {
+      "scheme": "http://www.sec.gov/CIK",
+      "identifier": "0000831001"
+    }
+  },
+  "liabilities25": {
+    "xml_id": "liabilities25",
+    "concept": "{http://fasb.org/us-gaap/2026}Liabilities",
+    "context_ref": "25",
+    "unit_ref": "usd",
+    "unit": {
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ],
+      "denominator": []
+    },
+    "raw_value": "50",
+    "is_nil": false,
+    "period": {
+      "instant": "2025-12-31"
+    },
+    "dimensions": [],
+    "entity": {
+      "scheme": "http://www.sec.gov/CIK",
+      "identifier": "0000831001"
+    }
+  },
+  "equity26": {
+    "xml_id": "equity26",
+    "concept": "{http://fasb.org/us-gaap/2026}StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    "context_ref": "26",
+    "unit_ref": "usd",
+    "unit": {
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ],
+      "denominator": []
+    },
+    "raw_value": "40",
+    "is_nil": false,
+    "period": {
+      "instant": "2026-06-30"
+    },
+    "dimensions": [],
+    "entity": {
+      "scheme": "http://www.sec.gov/CIK",
+      "identifier": "0000831001"
+    }
+  },
+  "equity25": {
+    "xml_id": "equity25",
+    "concept": "{http://fasb.org/us-gaap/2026}StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    "context_ref": "25",
+    "unit_ref": "usd",
+    "unit": {
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ],
+      "denominator": []
+    },
+    "raw_value": "30",
+    "is_nil": false,
+    "period": {
+      "instant": "2025-12-31"
+    },
+    "dimensions": [],
+    "entity": {
+      "scheme": "http://www.sec.gov/CIK",
+      "identifier": "0000831001"
+    }
+  },
+  "total26": {
+    "xml_id": "total26",
+    "concept": "{http://fasb.org/us-gaap/2026}LiabilitiesAndStockholdersEquity",
+    "context_ref": "26",
+    "unit_ref": "usd",
+    "unit": {
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ],
+      "denominator": []
+    },
+    "raw_value": "100",
+    "is_nil": false,
+    "period": {
+      "instant": "2026-06-30"
+    },
+    "dimensions": [],
+    "entity": {
+      "scheme": "http://www.sec.gov/CIK",
+      "identifier": "0000831001"
+    }
+  },
+  "total25": {
+    "xml_id": "total25",
+    "concept": "{http://fasb.org/us-gaap/2026}LiabilitiesAndStockholdersEquity",
+    "context_ref": "25",
+    "unit_ref": "usd",
+    "unit": {
+      "numerator": [
+        "{http://www.xbrl.org/2003/iso4217}USD"
+      ],
+      "denominator": []
+    },
+    "raw_value": "80",
+    "is_nil": false,
+    "period": {
+      "instant": "2025-12-31"
+    },
+    "dimensions": [],
+    "entity": {
+      "scheme": "http://www.sec.gov/CIK",
+      "identifier": "0000831001"
+    }
+  }
+}
