@@ -55,3 +55,13 @@ authorized read-only DB connection with the existing CA. Downloads require an
 already authorized SEC contact identity, and must use the existing `SecClient`.
 The owner must approve scope/processing choices; independent reviewer acceptance
 is still required. Candidate checks never constitute final approval.
+
+## Step 2 — queue/receipt status
+
+Added `scripts/report_backfill_status.py` and pure reconciliation module/tests.
+Live receiving counts remain **unverified**: no queue or authorized cloud DB
+configuration is available. Offline mode explicitly returns null DB counts,
+never treating queue imports as DB imports. The published finance browsing
+selection is exposed with candidate family/IDs/versions; it is not owner approval.
+The original Mac patch cannot be compared; PR #18's validation code is already
+on the verified main baseline. No other uncommitted Mac change is assumed merged.

@@ -385,3 +385,41 @@ RDS instance with storage autoscaling disabled. The 104-filing database checkpoi
 used about 0.38 GiB; this excludes other instance storage such as WAL. These are
 observed values, not a guarantee that the complete backfill fits. Capacity must
 be tracked as the load advances. No instance settings were changed by the check.
+
+## Receiving-database reconciliation (read-only)
+
+Queue statuses are scheduling evidence, not proof of database imports. Use:
+
+```sh
+# Configure authorized libpq PG* / PGSERVICE / passfile settings privately.
+# For shared RDS retain PGSSLMODE=verify-full and the approved PGSSLROOTCERT.
+uv run --locked python scripts/report_backfill_status.py \
+  --queue /private/queue.json --output /private/backfill-status.json
+```
+
+The report uses a read-only repeatable-read transaction, sealed legacy/source
+processing receipts, and `finance.filing`'s published browsing selection. It
+records the transaction timestamp, selected family/UUID/versions, all candidate
+receipts, and one status per distinct accession across the queue/database union.
+It never changes preferences or chooses an arbitrary version. An explicit
+`--select ACCESSION=legacy:UUID` (or `source:UUID`) overrides only this report and
+must belong to the accession. This is not approval of the processing choice.
+
+- `fully_imported`: passed receipt, positive counts and complete declared
+  coverage in facts/tables/reports/chunks. This is not original-source acceptance.
+- `text_only`: passed facts/report/chunk receipt with zero/absent tables.
+- `review_required`: review flags, partial/unknown coverage, inconsistent counts,
+  or stored candidates without a unique browsing selection.
+- `failed`: queue failure/access block and no stored receipt.
+- `pending`: no stored receipt; even a queue `ingested` claim cannot prove import.
+
+Queue and database counts are separate. Multiple versions never become multiple
+filings. A DB receipt absent from the queue and an imported queue entry absent
+from the DB are explicit discrepancies. Requires migrations through 010 for
+`finance.filing`; missing schema/permissions fail closed as unverified.
+
+With no DB access, add `--offline`: database count is null and each queue filing
+is `unverified`, not pending or imported. Exit 2 also marks a failed DB read;
+exception text/connection strings are withheld. These files may contain private
+filing inventory and should remain outside Git. Current live counts have not
+been verified in the 2026-10-29 isolated cloud review.
