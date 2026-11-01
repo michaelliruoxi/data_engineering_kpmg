@@ -638,9 +638,18 @@ _HYPHENS = str.maketrans(dict.fromkeys((0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 
 
 
 def _small_english_number(value: str) -> str | None:
-    """Recognize 0-999 and a single named magnitude; defer ambiguous phrases."""
+    """Recognize 0-999, optionally times one named magnitude; defer ambiguous phrases."""
     magnitudes = {"thousand": 1000, "million": 1000000, "billion": 1000000000, "trillion": 1000000000000}
     normalized = " ".join(value.lower().translate(_HYPHENS).split())
+    # A single trailing magnitude scales a 1-999 coefficient, which may itself use
+    # "hundred": NetApp's 10-K 0001564590-21-033645 tags "three hundred thousand"
+    # (square feet) and the SEC's extracted value is 300000.
+    scaled = re.fullmatch(r"(.+) (thousand|million|billion|trillion)", normalized)
+    if scaled and not any(word in magnitudes for word in scaled[1].split()):
+        coefficient = _small_english_number(scaled[1])
+        if coefficient is not None and 1 <= int(coefficient) <= 999:
+            return str(int(coefficient) * magnitudes[scaled[2]])
+        return None
     hundreds = re.fullmatch(r"([a-z]+) hundred(?: (?:and )?(.+))?", normalized)
     if hundreds:
         multiple = _small_english_number(hundreds[1])
@@ -649,12 +658,6 @@ def _small_english_number(value: str) -> str | None:
                 or (hundreds[2] and int(rest) == 0):
             return None
         return str(int(multiple) * 100 + int(rest))
-    scaled = re.fullmatch(r"(.+) (thousand|million|billion|trillion)", normalized)
-    if scaled and not any(word in magnitudes for word in scaled[1].split()):
-        coefficient = _small_english_number(scaled[1])
-        if coefficient is not None and 1 <= int(coefficient) <= 99:
-            return str(int(coefficient) * magnitudes[scaled[2]])
-        return None
     ones = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
     values = {word: number for number, word in enumerate(ones)}
     values.update(no=0, none=0, nil=0)
