@@ -39,6 +39,19 @@ class InlineValueTransformTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(numeric_value(text, transform), Decimal(result))
 
+    def test_registry_three_zerodash_accepts_the_dashes_filers_display(self):
+        # Apple's 10-Q 0000320193-21-000010 shows each of its 46 ixt:zerodash values as an em dash.
+        for dash in ('—', '-', '–', '‐', '－', ' — ', ' — '):
+            with self.subTest(dash=dash):
+                self.assertEqual(numeric_value(dash, TR3 + 'zerodash', scale='6'), Decimal(0))
+                self.assertEqual(numeric_value(dash, TR3.replace('2015-02-26', '2011-07-31') + 'zerodash'), Decimal(0))
+                self.assertEqual(numeric_value(dash, TR3.replace('2015-02-26', '2010-04-20') + 'numdash'), Decimal(0))
+        self.assertEqual(numeric_value('1,234', TR3 + 'numdotdecimal', scale='3'), Decimal('1234000'))
+        for text, transform in (('0', TR3 + 'zerodash'), ('N/A', TR3 + 'zerodash'), ('——', TR3 + 'zerodash'),
+                                ('—', XII + 'zerodash'), ('—', TR3 + 'numdash')):
+            with self.subTest(text=text, transform=transform), self.assertRaises(UnsupportedInlineTransform):
+                numeric_value(text, transform)
+
     def test_numeric_bad_grammar_namespace_and_kind_fail(self):
         for text, transform, options in [('1,23', XII + 'num-dot-decimal', {}), ('-1', None, {}),
                 ('NaN', None, {}), ('INF', None, {}), ('1', '{https://invalid.test}num-dot-decimal', {}),

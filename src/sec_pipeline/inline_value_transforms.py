@@ -9,7 +9,7 @@ from datetime import date
 from decimal import Decimal, localcontext
 import re
 
-from .fact_extraction import _small_english_number
+from .fact_extraction import INLINE_ZERO_DASHES, _small_english_number
 
 
 XII = 'http://www.xbrl.org/inlineXBRL/transformation/'
@@ -139,7 +139,9 @@ def numeric_value(text, format_name=None, *, scale=None, sign=None):
             if not re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:[,\s\u00a0][0-9]{3})+)(?:\.[0-9]*)?|\.[0-9]+', shown):
                 raise UnsupportedInlineTransform('Invalid grouped dot-decimal input.')
             shown = re.sub(r'[,\s\u00a0]', '', shown)
-        elif ((namespace in OLDER and name == 'zerodash') or (namespace == ORIGINAL and name == 'numdash')) and shown == '-':
+        elif ((namespace in OLDER and name == 'zerodash') or (namespace == ORIGINAL and name == 'numdash')) \
+                and shown in INLINE_ZERO_DASHES:
+            # Registry 1-3 accept a hyphen-minus or a Unicode dash; filers usually show an em dash.
             shown = '0'
         else:
             raise UnsupportedInlineTransform('Unsupported numeric registry transformation: ' + format_name)

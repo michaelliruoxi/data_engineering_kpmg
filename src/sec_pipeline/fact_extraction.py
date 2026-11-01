@@ -44,6 +44,12 @@ IXT_PREFIX = "http://www.xbrl.org/inlineXBRL/transformation/"
 # Filers declare the SEC transformation registry with either scheme.
 SEC_TRANSFORMATION_NAMESPACES = frozenset({"http://www.sec.gov/inlineXBRL/transformation/2015-08-31",
                                            "https://www.sec.gov/inlineXBRL/transformation/2015-08-31"})
+# Transformation Registry 2 and 3, still used by many 2021-2022 filings
+# (for example Apple's 10-Q 0000320193-21-000010 uses ixt:numdotdecimal and ixt:zerodash).
+OLDER_TRANSFORMATION_NAMESPACES = frozenset({IXT_PREFIX + "2011-07-31", IXT_PREFIX + "2015-02-26"})
+# What registry 1-3 `zerodash`/`numdash` accept as zero: a hyphen-minus or one Unicode dash
+# punctuation character. Filers usually display an em dash (U+2014).
+INLINE_ZERO_DASHES = frozenset("-֊־‐‑‒–—―﹘﹣－")
 
 # Failure categories, matching the team's error contract.
 MALFORMED = "malformed_source"
@@ -688,16 +694,46 @@ def _inline_number(element: etree._Element) -> Decimal | None:
         # Registry 4/5 fixed-zero accepts any text, including displayed dashes.
         # The XML value must still equal the resulting zero in correspondence.
         shown = "0"
-    elif local == "num-dot-decimal" and (namespace or "").startswith(IXT_PREFIX):
+    elif ((local == "num-dot-decimal" and (namespace or "").startswith(IXT_PREFIX))
+          or (local == "numdotdecimal" and namespace in OLDER_TRANSFORMATION_NAMESPACES)):
+        # Registry 2/3 `numdotdecimal` is the same grammar as registry 4/5
+        # `num-dot-decimal`; 2021-2022 filings still use the older name.
         shown = re.sub(r"[,\s\xa0]", "", text_value)
         if not re.fullmatch(r"[0-9]+(\.[0-9]*)?|\.[0-9]+", shown):
             return None
+    elif ((local == "zerodash" and namespace in OLDER_TRANSFORMATION_NAMESPACES)
+          or (local == "numdash" and namespace == IXT_PREFIX + "2010-04-20")):
+        # Registry 1-3 map a displayed dash to zero. Filers commonly show an em dash.
+        if text_value.strip(_XML_SPACE + "\xa0") not in INLINE_ZERO_DASHES:
+            return None
+        shown = "0"
     else:
         return None
     # Shift the exponent directly so scaling stays exact at any size.
     _, digits, exponent = Decimal(shown).as_tuple()
     negative = 1 if element.get("sign") == "-" else 0
     return Decimal((negative, digits, exponent + int(element.get("scale") or 0)))
+
+
+_GROUPED = re.compile(r"[0-9]{1,3}(?:[,\s\xa0][0-9]{3})*(?:\.[0-9]*)?|\.[0-9]+|[0-9]+(?:\.[0-9]*)?")
+
+
+def _irregular_grouping(element: etree._Element) -> str | None:
+    """Return a dot-decimal display whose digit groups are not threes, such as "206,376,66".
+
+    Such a value still compares equal once separators are removed, so it is not a
+    mismatch, but it usually means the filer dropped or added a digit. NetApp's 10-Q
+    0000950170-24-023115 prints shares outstanding as "206,376,66" and the SEC's
+    extracted value is 20637666.
+    """
+    try:
+        _, local = _resolve(element.get("format"), element)
+    except _Reject:
+        return None
+    if local not in {"num-dot-decimal", "numdotdecimal"}:
+        return None
+    shown = "".join(element.itertext()).strip(_XML_SPACE + "\xa0")
+    return None if _GROUPED.fullmatch(shown) else shown
 
 
 def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput]) -> dict[str, Any]:
@@ -714,6 +750,7 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
         inline[element.get("id")].append(element)
 
     mismatches: list[dict[str, str]] = []
+    irregular: list[dict[str, str]] = []
     matched = values_compared = values_not_compared = 0
     for fact in facts:
         element_id = fact.source_reference.get("element_id")
@@ -745,6 +782,9 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
                 problems.append(f"value: HTML shows {shown:f}, XML has {fact.numeric_value:f}")
             else:
                 values_compared += 1
+                displayed = _irregular_grouping(element)
+                if displayed is not None:
+                    irregular.append({"occurrence_key": fact.occurrence_key, "displayed": displayed})
         if problems:
             mismatches.append({"occurrence_key": fact.occurrence_key, "problem": "; ".join(problems)})
         else:
@@ -760,6 +800,8 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
         "numeric_values_not_compared": values_not_compared,
         "mismatches": mismatches,
         "inline_ids_without_fact": sorted(str(key) for key in inline if key not in fact_ids),
+        # Equal after removing separators, but not grouped in threes as printed; worth a look.
+        "irregular_number_display": irregular,
     }
 
 
