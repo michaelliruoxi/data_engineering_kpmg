@@ -9,6 +9,7 @@
 | `store_facts(conn, facts)` | Store through `store_fact()` in the caller's transaction and return a `StoredFacts` mapping. It never commits. |
 | `check_inline_correspondence(html_path, facts)` | Compare the facts with the inline XBRL tags in the filing HTML. |
 | `lookup_fact_ids(conn, *, filing_id, source_document_id, extraction_version="facts-v1", occurrence_keys=None)` | Read the UUIDs of facts already stored in that database, by occurrence key (= inline HTML id). Read-only. |
+| `python -m sec_pipeline.fact_coverage` | Coverage summary across many archived filings, such as the ten-company shortlist. See [Ten-company coverage](#ten-company-coverage-20212026). |
 
 ## Commands
 
@@ -175,9 +176,72 @@ WHERE accession_number = '0001193125-26-191507'
 ORDER BY (source_reference->>'document_order')::int;
 ```
 
+## Ten-company coverage (2021–2026)
+
+The shortlist in `config/shortlist.json` (AAPL, CASY, MCK, MDT, MSFT, MU, NKE, NTAP, PH, TTWO; original 10-K and 10-Q filed 2021-01-01 through 2026-12-31) covers **233 filings: 59 10-Ks and 174 10-Qs**, the same inventory as [the section validation](report-section-validation.md).
+
+### Run it
+
+On a machine with the acquisition archive ([shortlist acquisition](shortlist-acquisition.md)):
+
+```bash
+uv run --locked python -m sec_pipeline.fact_coverage \
+  --config config/shortlist.json --archive-root outputs/shortlist-20261028 \
+  --discovery outputs/shortlist-20261028/discovery.json --output outputs/fact-coverage-20261101
+```
+
+- It verifies each archive's hashes, then runs the same `extract_facts()` and `check_inline_correspondence()` as the import adapters. No database, no network.
+- Output: `coverage.md` (summary for the team), `coverage.csv` (one row per filing), `coverage.json` (everything). The output directory must be new or empty.
+- Per filing: occurrences extracted/failed, period kinds and the report period, units used, numeric/nil/text counts, dimensions, labels, DEI identity, inline correspondence, and eight primary-statement anchors (revenue, net income, diluted EPS, operating cash flow, assets, liabilities and equity, equity, cash) at the report period end.
+- Status per filing: `passed`; `review` (extractable, but DEI disagrees with the SEC form or report date, an anchor is missing, or a number is printed with irregular digit grouping); `failed` (an occurrence was not extracted, or the import's correspondence checks would fail); `archive_error`; `missing_archive` (listed by discovery, no archive supplied).
+- Exit status 0 when every filing passed, 2 when anything needs attention, 1 for a setup error. Without `--discovery`, missing filings cannot be detected.
+
+To see what is already loaded in a database, run [fact-coverage-shortlist.sql](fact-coverage-shortlist.sql) with any reader login, for example `sec_bryce` in DBeaver. It is read-only and returns one row per shortlist filing and fact version, with the same counts, DEI checks, anchors, and processing-set receipts.
+
+### Survey of the original SEC files, November 1, 2026
+
+Before the archive was available locally, every filing was checked directly against the original SEC files (index, primary HTML, extracted XML instance, extension schema) with an in-browser port of the facts-v1 rules and of `check_inline_correspondence()`. The port was calibrated on the bundled Microsoft sample, where it reproduces the Python results exactly (1,622 occurrences, 409 contexts, 6 units, 1,426 numeric / 2 nil / 194 text, 827 duration / 795 instant, 895 dimensional, 1,426 numeric values equal). It is evidence, not a substitute: rerun the command above on the archive for the authoritative per-filing results.
+
+| Check | Result |
+| --- | --- |
+| Filings reached | 233 of 233 (two transient SEC HTTP 503 responses were retried) |
+| Fact occurrences | **290,632**, all extractable; 0 failures, 0 tuples |
+| Periods | 169,884 duration, 120,748 instant, 0 forever; no `dateTime` or reversed periods |
+| Values | 259,598 numeric (20,604 equal to zero), 445 nil, 30,589 text; 156,644 dimensional (796 typed) |
+| Units | every `unitRef` resolves to a unit with a numerator measure |
+| Fact ids | every fact has an `id`; every fact matches exactly one inline tag on concept, context, unit and nil; no inline tag lacks a fact |
+| DEI | `dei:DocumentPeriodEndDate` equals the end of the `DocumentType` context in all 233 |
+| Statement anchors | all eight anchors present at the report period end in all 233 |
+| Labels | 210 of 233 filings keep labels in a separate `_lab.xml` linkbase, not in the `.xsd` |
+| Footnotes | 504 XBRL footnotes, counted but not attached (as in the sample) |
+
+Numeric inline correspondence, which the v1/v3/v3-text adapters require to have **zero** values "not compared":
+
+| Rule | Equal | Not compared | Filings with any not compared |
+| --- | ---: | ---: | ---: |
+| `facts-v1` before this change | 232,767 | 26,831 | **41** (would fail import) |
+| `inline_value_transforms` (tables-v4 path) before this change | 256,930 | 2,668 | 32 |
+| `facts-v1` after this change | 259,598 | 0 | 0 |
+| `inline_value_transforms` after this change | 259,597 | 1 | 1 (NTAP "206,376,66", below) |
+
+No value compared unequal under any rule. The "after" rows are derived from the survey's per-value results for each rule, not from a second scan.
+
+### What changed for older filings
+
+- **Transformation Registry 2/3.** Filings from 2021–2022 tag numbers `ixt:numdotdecimal` and zeros `ixt:zerodash` in the registry 2/3 namespaces (`…/2011-07-31`, `…/2015-02-26`); Apple's 10-Q 0000320193-21-000010 alone has 448 and 46. `check_inline_correspondence()` now reads these, and both modules accept the dash characters registry 1–3 allow (`INLINE_ZERO_DASHES`, hyphen-minus or one Unicode dash). Filers display an em dash; `inline_value_transforms` previously accepted only `-`.
+- **"N hundred thousand".** NetApp's 10-K 0001564590-21-033645 and five later filings tag office space as "three hundred thousand" (`ixt-sec:numwordsen`); the SEC value is 300000. Number words now allow a 1–999 coefficient before one magnitude. Phrases with two magnitudes or trailing words remain unsupported.
+- **Irregular digit grouping is reported.** NetApp's 10-Q 0000950170-24-023115 prints shares outstanding as "206,376,66"; the SEC's extracted value is **20,637,666**, about ten times smaller than the company's actual share count. The value matches its display once separators are removed, so it is not a mismatch, but `check_inline_correspondence()` now lists it under `irregular_number_display` and the coverage report marks the filing `review`. Do not use this fact as a share count without checking the filing.
+- Stored fact content is unchanged; these are validation changes only.
+
+### Known gaps for this scope
+
+- **Labels.** facts-v1 reads labels only from the extension schema in the four-file archive. For 210 of the 233 filings the label linkbase is a separate `_lab.xml`, so their `label` is `NULL`. Concept names, values, periods and units are unaffected. Archiving `_lab.xml` would change stored content and needs a new facts version.
+- **Share count typo** above (NTAP 10-Q filed 2024-02-29).
+
 ## Limits of `facts-v1`
 
-- XBRL footnotes are not attached to facts. The sample has 3 footnotes linked to facts by 14 arcs; the inventory counts them under `not_extracted`.
+- XBRL footnotes are not attached to facts. The sample has 3 footnotes linked to facts by 14 arcs; the inventory counts them under `not_extracted`. The ten-company scope has 504.
 - Text values are not compared with the HTML, because inline text is transformed and split across continuation tags.
 - Periods must be plain dates. Fraction items and tuples are reported as failures instead of being stored.
-- Only the supplied Microsoft filing has been processed. Another filing needs its own inventory and checks.
+- Labels come only from the extension schema; see [Known gaps](#known-gaps-for-this-scope).
+- Processing and acceptance cover the bundled Microsoft filing and the ten-company scope above. Other filings need their own coverage run.
