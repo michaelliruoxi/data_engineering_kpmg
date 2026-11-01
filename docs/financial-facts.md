@@ -200,11 +200,13 @@ To see what is already loaded in a database, run [fact-coverage-shortlist.sql](f
 
 ### Survey of the original SEC files, November 1, 2026
 
-Before the archive was available locally, every filing was checked directly against the original SEC files (index, primary HTML, extracted XML instance, extension schema) with an in-browser port of the facts-v1 rules and of `check_inline_correspondence()`. The port was calibrated on the bundled Microsoft sample, where it reproduces the Python results exactly (1,622 occurrences, 409 contexts, 6 units, 1,426 numeric / 2 nil / 194 text, 827 duration / 795 instant, 895 dimensional, 1,426 numeric values equal). It is evidence, not a substitute: rerun the command above on the archive for the authoritative per-filing results.
+Before the archive was available locally, every filing was checked directly against the original SEC files (index, primary HTML, extracted XML instance, extension schema) with an in-browser port of the facts-v1 rules and of `check_inline_correspondence()`, including the rules as changed here. The port was calibrated on the bundled Microsoft sample, where it reproduces the Python results exactly (1,622 occurrences, 409 contexts, 6 units, 1,426 numeric / 2 nil / 194 text, 827 duration / 795 instant, 895 dimensional, 1,426 numeric values equal). It is evidence, not a substitute: rerun the command above on the archive for the authoritative per-filing results.
+
+Per-filing results, in the same format as the command's output: [summary](validation/fact-coverage-2021-2026.md), [CSV](validation/fact-coverage-2021-2026.csv), [JSON](validation/fact-coverage-2021-2026.json). Result: **232 passed, 1 review** (the NetApp share count below), 0 failed.
 
 | Check | Result |
 | --- | --- |
-| Filings reached | 233 of 233 (two transient SEC HTTP 503 responses were retried) |
+| Filings reached | 233 of 233 (transient SEC HTTP 503 responses were retried) |
 | Fact occurrences | **290,632**, all extractable; 0 failures, 0 tuples |
 | Periods | 169,884 duration, 120,748 instant, 0 forever; no `dateTime` or reversed periods |
 | Values | 259,598 numeric (20,604 equal to zero), 445 nil, 30,589 text; 156,644 dimensional (796 typed) |
@@ -212,7 +214,7 @@ Before the archive was available locally, every filing was checked directly agai
 | Fact ids | every fact has an `id`; every fact matches exactly one inline tag on concept, context, unit and nil; no inline tag lacks a fact |
 | DEI | `dei:DocumentPeriodEndDate` equals the end of the `DocumentType` context in all 233 |
 | Statement anchors | all eight anchors present at the report period end in all 233 |
-| Labels | 210 of 233 filings keep labels in a separate `_lab.xml` linkbase, not in the `.xsd` |
+| Labels | embedded in the `.xsd` only for MSFT (from January 2024) and NTAP (from February 2024): 23 filings; the other 210 keep them in a separate `_lab.xml` |
 | Footnotes | 504 XBRL footnotes, counted but not attached (as in the sample) |
 
 Numeric inline correspondence, which the v1/v3/v3-text adapters require to have **zero** values "not compared":
@@ -224,7 +226,7 @@ Numeric inline correspondence, which the v1/v3/v3-text adapters require to have 
 | `facts-v1` after this change | 259,598 | 0 | 0 |
 | `inline_value_transforms` after this change | 259,597 | 1 | 1 (NTAP "206,376,66", below) |
 
-No value compared unequal under any rule. The "after" rows are derived from the survey's per-value results for each rule, not from a second scan.
+No value compared unequal under any rule. All four rows were measured on the same files. Registry 2/3 formats appear through mid-2021 for eight companies and through mid-2023 for MSFT and NTAP.
 
 ### What changed for older filings
 
@@ -235,7 +237,7 @@ No value compared unequal under any rule. The "after" rows are derived from the 
 
 ### Known gaps for this scope
 
-- **Labels.** facts-v1 reads labels only from the extension schema in the four-file archive. For 210 of the 233 filings the label linkbase is a separate `_lab.xml`, so their `label` is `NULL`. Concept names, values, periods and units are unaffected. Archiving `_lab.xml` would change stored content and needs a new facts version.
+- **Labels.** facts-v1 reads labels only from the extension schema in the four-file archive. Eight of the ten companies never embed labels there: every AAPL, CASY, MCK, MDT, MU, NKE, PH and TTWO filing, plus MSFT and NTAP before 2024, keeps them in a separate `_lab.xml` (210 filings), so their `label` is `NULL`. Concept names, values, periods and units are unaffected. Archiving `_lab.xml` would change stored content and needs a new facts version.
 - **Share count typo** above (NTAP 10-Q filed 2024-02-29).
 
 ## Limits of `facts-v1`
