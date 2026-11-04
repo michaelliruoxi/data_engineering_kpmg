@@ -44,6 +44,11 @@ IXT_PREFIX = "http://www.xbrl.org/inlineXBRL/transformation/"
 # Filers declare the SEC transformation registry with either scheme.
 SEC_TRANSFORMATION_NAMESPACES = frozenset({"http://www.sec.gov/inlineXBRL/transformation/2015-08-31",
                                            "https://www.sec.gov/inlineXBRL/transformation/2015-08-31"})
+# Transformation Registry 2 and 3, still used by many 2021-2022 filings
+# (for example Apple's 10-Q 0000320193-21-000010 uses ixt:numdotdecimal and ixt:zerodash).
+OLDER_TRANSFORMATION_NAMESPACES = frozenset({IXT_PREFIX + "2011-07-31", IXT_PREFIX + "2015-02-26"})
+# Registry 2/3 enumerate these characters for zerodash. Filers usually display an em dash.
+INLINE_ZERO_DASHES = frozenset("-֊־‐‑‒–—―﹘﹣－")
 
 # Failure categories, matching the team's error contract.
 MALFORMED = "malformed_source"
@@ -632,9 +637,18 @@ _HYPHENS = str.maketrans(dict.fromkeys((0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 
 
 
 def _small_english_number(value: str) -> str | None:
-    """Recognize 0-999 and a single named magnitude; defer ambiguous phrases."""
+    """Recognize 0-999, optionally times one named magnitude; defer ambiguous phrases."""
     magnitudes = {"thousand": 1000, "million": 1000000, "billion": 1000000000, "trillion": 1000000000000}
     normalized = " ".join(value.lower().translate(_HYPHENS).split())
+    # A single trailing magnitude scales a 1-999 coefficient, which may itself use
+    # "hundred": NetApp's 10-K 0001564590-21-033645 tags "three hundred thousand"
+    # (square feet) and the SEC's extracted value is 300000.
+    scaled = re.fullmatch(r"(.+) (thousand|million|billion|trillion)", normalized)
+    if scaled and not any(word in magnitudes for word in scaled[1].split()):
+        coefficient = _small_english_number(scaled[1])
+        if coefficient is not None and 1 <= int(coefficient) <= 999:
+            return str(int(coefficient) * magnitudes[scaled[2]])
+        return None
     hundreds = re.fullmatch(r"([a-z]+) hundred(?: (?:and )?(.+))?", normalized)
     if hundreds:
         multiple = _small_english_number(hundreds[1])
@@ -643,12 +657,6 @@ def _small_english_number(value: str) -> str | None:
                 or (hundreds[2] and int(rest) == 0):
             return None
         return str(int(multiple) * 100 + int(rest))
-    scaled = re.fullmatch(r"(.+) (thousand|million|billion|trillion)", normalized)
-    if scaled and not any(word in magnitudes for word in scaled[1].split()):
-        coefficient = _small_english_number(scaled[1])
-        if coefficient is not None and 1 <= int(coefficient) <= 99:
-            return str(int(coefficient) * magnitudes[scaled[2]])
-        return None
     ones = "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split()
     values = {word: number for number, word in enumerate(ones)}
     values.update(no=0, none=0, nil=0)
@@ -662,6 +670,30 @@ def _small_english_number(value: str) -> str | None:
     if compound and compound[1] in tens and compound[2] in values and 1 <= values[compound[2]] <= 9:
         return str(tens[compound[1]] + values[compound[2]])
     return None
+
+
+def _legacy_inline_number(namespace: str | None, name: str | None, text: str) -> str | None:
+    """Apply the numeric transforms supported from registries 1 through 3."""
+    if namespace not in OLDER_TRANSFORMATION_NAMESPACES:
+        if namespace == IXT_PREFIX + "2010-04-20" and name == "numdash" and text.strip(_XML_SPACE) == "-":
+            return "0"
+        return None
+    # Apply the schema's XML whitespace collapse. NBSP is a distinct digit separator.
+    shown = re.sub(r"[ \t\r\n]+", " ", text.strip(_XML_SPACE))
+    if name == "zerodash" and shown in INLINE_ZERO_DASHES:
+        return "0"
+    if name == "numdotdecimal" and re.fullmatch(r"[0-9]{1,3}(?:[, \xa0]?[0-9]{3})*(?:\.[0-9]+)?", shown):
+        return re.sub(r"[, \xa0]", "", shown)
+    return None
+
+
+def _inline_scale(scale: str | None, sign: str | None) -> int:
+    value = "0" if scale is None else scale
+    if sign not in (None, "-") or not re.fullmatch(r"[+-]?[0-9]+", value):
+        raise ValueError("Invalid inline numeric sign or scale.")
+    if len(value) > 8 or abs(int(value)) > 100000:
+        raise ValueError("Numeric scale exceeds the supported exact transformation bound.")
+    return int(value)
 
 
 def _inline_number(element: etree._Element) -> Decimal | None:
@@ -688,16 +720,43 @@ def _inline_number(element: etree._Element) -> Decimal | None:
         # Registry 4/5 fixed-zero accepts any text, including displayed dashes.
         # The XML value must still equal the resulting zero in correspondence.
         shown = "0"
-    elif local == "num-dot-decimal" and (namespace or "").startswith(IXT_PREFIX):
+    elif local == "num-dot-decimal" and namespace in {IXT_PREFIX + "2020-02-12", IXT_PREFIX + "2022-02-16"}:
         shown = re.sub(r"[,\s\xa0]", "", text_value)
         if not re.fullmatch(r"[0-9]+(\.[0-9]*)?|\.[0-9]+", shown):
             return None
     else:
+        shown = _legacy_inline_number(namespace, local, text_value)
+        if shown is None:
+            return None
+    sign = element.get("sign")
+    try:
+        scale = _inline_scale(element.get("scale"), sign)
+    except ValueError:
         return None
-    # Shift the exponent directly so scaling stays exact at any size.
+    # Shift the exponent directly to preserve exact precision.
     _, digits, exponent = Decimal(shown).as_tuple()
-    negative = 1 if element.get("sign") == "-" else 0
-    return Decimal((negative, digits, exponent + int(element.get("scale") or 0)))
+    return Decimal((int(sign == "-"), digits, exponent + scale))
+
+
+_GROUPED = re.compile(r"[0-9]{1,3}(?:[,\s\xa0][0-9]{3})*(?:\.[0-9]*)?|\.[0-9]+|[0-9]+(?:\.[0-9]*)?")
+
+
+def _irregular_grouping(element: etree._Element) -> str | None:
+    """Return a dot-decimal display whose digit groups are not threes, such as "206,376,66".
+
+    Such a value still compares equal once separators are removed, so it is not a
+    mismatch, but it usually means the filer dropped or added a digit. NetApp's 10-Q
+    0000950170-24-023115 prints shares outstanding as "206,376,66" and the SEC's
+    extracted value is 20637666.
+    """
+    try:
+        _, local = _resolve(element.get("format"), element)
+    except _Reject:
+        return None
+    if local not in {"num-dot-decimal", "numdotdecimal"}:
+        return None
+    shown = "".join(element.itertext()).strip(_XML_SPACE + "\xa0")
+    return None if _GROUPED.fullmatch(shown) else shown
 
 
 def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput]) -> dict[str, Any]:
@@ -714,6 +773,7 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
         inline[element.get("id")].append(element)
 
     mismatches: list[dict[str, str]] = []
+    irregular: list[dict[str, str]] = []
     matched = values_compared = values_not_compared = 0
     for fact in facts:
         element_id = fact.source_reference.get("element_id")
@@ -745,6 +805,9 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
                 problems.append(f"value: HTML shows {shown:f}, XML has {fact.numeric_value:f}")
             else:
                 values_compared += 1
+                displayed = _irregular_grouping(element)
+                if displayed is not None:
+                    irregular.append({"occurrence_key": fact.occurrence_key, "displayed": displayed})
         if problems:
             mismatches.append({"occurrence_key": fact.occurrence_key, "problem": "; ".join(problems)})
         else:
@@ -760,6 +823,8 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
         "numeric_values_not_compared": values_not_compared,
         "mismatches": mismatches,
         "inline_ids_without_fact": sorted(str(key) for key in inline if key not in fact_ids),
+        # Equal after removing separators, but not grouped in threes as printed; worth a look.
+        "irregular_number_display": irregular,
     }
 
 

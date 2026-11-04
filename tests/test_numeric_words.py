@@ -12,13 +12,17 @@ from sec_pipeline.fact_extraction import _inline_number, _small_english_number
     ('five million', '5000000'), ('Twenty-One thousand', '21000'),
     ('one billion', '1000000000'), ('ninety-nine trillion', '99000000000000'),
     ('none', '0'), ('forty two', '42'),
+    # NetApp 10-K 0001564590-21-033645: "three hundred thousand", SEC extracted value 300000.
+    ('three hundred thousand', '300000'), ('two hundred million', '200000000'),
+    ('one hundred twenty-five thousand', '125000'), ('nine hundred and ninety-nine billion', '999000000000'),
 ])
 def test_supported_magnitude_words(phrase, expected):
     assert _small_english_number(phrase) == expected
 
 
 @pytest.mark.parametrize('phrase', ['million', 'zero million', 'five million million',
-    'five millions', 'two hundred million', 'five million and two', 'minus five million'])
+    'five millions', 'five million and two', 'minus five million', 'hundred thousand',
+    'one thousand million', 'two hundred thousand million', 'one million two hundred thousand'])
 def test_unsupported_phrases_are_not_guessed(phrase):
     assert _small_english_number(phrase) is None
 
