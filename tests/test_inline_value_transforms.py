@@ -9,6 +9,8 @@ from sec_pipeline.inline_value_transforms import numeric_value, nonnumeric_value
 XII = '{http://www.xbrl.org/inlineXBRL/transformation/2020-02-12}'
 XII22 = '{http://www.xbrl.org/inlineXBRL/transformation/2022-02-16}'
 TR3 = '{http://www.xbrl.org/inlineXBRL/transformation/2015-02-26}'
+TR2 = '{http://www.xbrl.org/inlineXBRL/transformation/2011-07-31}'
+TR1 = '{http://www.xbrl.org/inlineXBRL/transformation/2010-04-20}'
 SEC = '{http://www.sec.gov/inlineXBRL/transformation/2015-08-31}'
 
 
@@ -41,16 +43,26 @@ class InlineValueTransformTests(unittest.TestCase):
 
     def test_registry_three_zerodash_accepts_the_dashes_filers_display(self):
         # Apple's 10-Q 0000320193-21-000010 shows each of its 46 ixt:zerodash values as an em dash.
-        for dash in ('—', '-', '–', '‐', '－', ' — ', ' — '):
+        for dash in ('—', '-', '–', '‐', '－', ' — '):
             with self.subTest(dash=dash):
                 self.assertEqual(numeric_value(dash, TR3 + 'zerodash', scale='6'), Decimal(0))
-                self.assertEqual(numeric_value(dash, TR3.replace('2015-02-26', '2011-07-31') + 'zerodash'), Decimal(0))
-                self.assertEqual(numeric_value(dash, TR3.replace('2015-02-26', '2010-04-20') + 'numdash'), Decimal(0))
-        self.assertEqual(numeric_value('1,234', TR3 + 'numdotdecimal', scale='3'), Decimal('1234000'))
+                self.assertEqual(numeric_value(dash, TR2 + 'zerodash'), Decimal(0))
+        self.assertEqual(numeric_value(' - ', TR1 + 'numdash'), Decimal(0))
         for text, transform in (('0', TR3 + 'zerodash'), ('N/A', TR3 + 'zerodash'), ('——', TR3 + 'zerodash'),
-                                ('—', XII + 'zerodash'), ('—', TR3 + 'numdash')):
+                                ('—', XII + 'zerodash'), ('—', TR3 + 'numdash'), ('—', TR1 + 'numdash'),
+                                ('\xa0—\xa0', TR3 + 'zerodash')):
             with self.subTest(text=text, transform=transform), self.assertRaises(UnsupportedInlineTransform):
                 numeric_value(text, transform)
+
+    def test_legacy_dot_decimal_requires_valid_thousands_and_fractional_parts(self):
+        for registry in (TR2, TR3):
+            transform = registry + 'numdotdecimal'
+            for value in ('1234567.50', '1234,567.50', '1,234567.50', '1\xa0234\t 567.50'):
+                with self.subTest(registry=registry, value=value):
+                    self.assertEqual(numeric_value(value, transform, scale='-1', sign='-'), Decimal('-123456.75'))
+            for value in ('.5', '1.', '12,34', '1.2,34', '1\u2003234'):
+                with self.subTest(registry=registry, value=value), self.assertRaises(UnsupportedInlineTransform):
+                    numeric_value(value, transform)
 
     def test_numeric_bad_grammar_namespace_and_kind_fail(self):
         for text, transform, options in [('1,23', XII + 'num-dot-decimal', {}), ('-1', None, {}),

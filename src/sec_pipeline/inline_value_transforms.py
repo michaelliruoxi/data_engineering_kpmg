@@ -9,7 +9,7 @@ from datetime import date
 from decimal import Decimal, localcontext
 import re
 
-from .fact_extraction import INLINE_ZERO_DASHES, _small_english_number
+from .fact_extraction import _inline_scale, _legacy_inline_number, _small_english_number
 
 
 XII = 'http://www.xbrl.org/inlineXBRL/transformation/'
@@ -111,12 +111,10 @@ def validate_transform(format_name, kind):
 
 
 def validate_numeric_attributes(*, scale=None, sign=None):
-    value = '0' if scale is None else scale
-    if sign not in (None, '-') or not re.fullmatch(r'[+-]?[0-9]+', value):
-        raise UnsupportedInlineTransform('Invalid inline numeric sign or scale.')
-    if len(value) > 8 or abs(int(value)) > 100000:
-        raise UnsupportedInlineTransform('Numeric scale exceeds the supported exact transformation bound.')
-    return int(value)
+    try:
+        return _inline_scale(scale, sign)
+    except ValueError as exc:
+        raise UnsupportedInlineTransform(str(exc)) from exc
 
 
 def numeric_value(text, format_name=None, *, scale=None, sign=None):
@@ -135,16 +133,14 @@ def numeric_value(text, format_name=None, *, scale=None, sign=None):
             shown = _small_english_number(shown)
             if shown is None:
                 raise UnsupportedInlineTransform('Unsupported numeric-word phrase.')
-        elif (namespace in MODERN and name == 'num-dot-decimal') or (namespace in OLDER and name == 'numdotdecimal'):
+        elif namespace in MODERN and name == 'num-dot-decimal':
             if not re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:[,\s\u00a0][0-9]{3})+)(?:\.[0-9]*)?|\.[0-9]+', shown):
                 raise UnsupportedInlineTransform('Invalid grouped dot-decimal input.')
             shown = re.sub(r'[,\s\u00a0]', '', shown)
-        elif ((namespace in OLDER and name == 'zerodash') or (namespace == ORIGINAL and name == 'numdash')) \
-                and shown in INLINE_ZERO_DASHES:
-            # Registry 1-3 accept a hyphen-minus or a Unicode dash; filers usually show an em dash.
-            shown = '0'
         else:
-            raise UnsupportedInlineTransform('Unsupported numeric registry transformation: ' + format_name)
+            shown = _legacy_inline_number(namespace, name, text)
+            if shown is None:
+                raise UnsupportedInlineTransform('Unsupported numeric registry transformation or input: ' + format_name)
     _, digits, exponent = Decimal(shown).as_tuple()
     return Decimal((int(sign == '-'), digits, exponent + power))
 

@@ -28,6 +28,9 @@ import sys
 from typing import Any, Iterable, Sequence
 from uuid import UUID
 
+from lxml import etree
+
+from .acquisition import shortlist_scope_key
 from .database import FactInput
 from .fact_extraction import (FactExtractionError, HTML_ROLE, XML_ROLE, check_inline_correspondence,
                               extract_facts)
@@ -68,14 +71,16 @@ def load_scope(path: Path) -> dict[str, Any]:
     config = json.loads(Path(path).read_text(encoding="utf-8"))
     try:
         since, until = date.fromisoformat(config["since"]), date.fromisoformat(config["until"])
-        companies = [{"ticker": c["ticker"], "cik": c["cik"], "name": c.get("name")} for c in config["companies"]]
+        companies = config["companies"]
+        tickers = [c["ticker"] for c in companies]
+        ciks = [c["cik"] for c in companies]
         forms = list(config["forms"])
     except (KeyError, TypeError, ValueError) as exc:
         raise CoverageError("The config needs since, until, forms, and companies with ticker and cik.") from exc
     if since > until or not companies or not forms:
         raise CoverageError("The config scope is empty or its date window is reversed.")
-    if len({c["cik"] for c in companies}) != len(companies):
-        raise CoverageError("Each company must have a distinct CIK.")
+    if len(set(ciks)) != len(companies) or len(set(tickers)) != len(companies):
+        raise CoverageError("Each company must have a distinct ticker and CIK.")
     return {"since": since.isoformat(), "until": until.isoformat(), "forms": forms, "companies": companies}
 
 
@@ -87,6 +92,8 @@ def _in_scope(record: dict[str, Any], scope: dict[str, Any]) -> bool:
 
 def _manifests(root: Path) -> list[Path]:
     """Each archive root is a data root: data/raw/sec/<accession>/ plus an optional root manifest."""
+    if not root.is_dir():
+        raise CoverageError(f"Archive root is not a directory: {root}")
     found = sorted((root / "data" / "raw" / "sec").glob("*/source_manifest.json"))
     if (root / "source_manifest.json").is_file():
         found.append(root / "source_manifest.json")
@@ -97,14 +104,24 @@ def expected_filings(discovery: dict[str, Any] | None, scope: dict[str, Any]) ->
     """Accession -> SEC discovery row, or None when no complete discovery was supplied."""
     if discovery is None:
         return None
+    if not isinstance(discovery, dict) or discovery.get("scope_key") != shortlist_scope_key(scope):
+        raise CoverageError("Discovery scope does not match the configured company, form, and date scope.")
+    if discovery.get("discovery_complete") is not True or not isinstance(discovery.get("companies"), dict):
+        raise CoverageError("Discovery is incomplete; rerun acquisition discovery.")
     rows: dict[str, Any] = {}
     for company in scope["companies"]:
-        entry = discovery.get("companies", {}).get(company["ticker"], {})
-        if entry.get("status") != "discovered":
+        entry = discovery["companies"].get(company["ticker"])
+        if not isinstance(entry, dict) or entry.get("status") != "discovered" or not isinstance(entry.get("filings"), list):
             raise CoverageError(f"Discovery is incomplete for {company['ticker']}; rerun acquisition discovery.")
-        for row in entry.get("filings", []):
-            if _in_scope(row, scope):
-                rows[row["accession_number"]] = row
+        for row in entry["filings"]:
+            if (not isinstance(row, dict) or not all(isinstance(row.get(k), str) and row[k]
+                    for k in ("accession_number", "cik", "filing_date", "form", "reporting_period_end"))
+                    or row["cik"] != company["cik"] or not _in_scope(row, scope)):
+                raise CoverageError(f"Invalid or out-of-scope filing in discovery for {company['ticker']}.")
+            accession = row["accession_number"]
+            if accession in rows:
+                raise CoverageError(f"Duplicate accession in discovery: {accession}")
+            rows[accession] = row
     return rows
 
 
@@ -133,6 +150,8 @@ def _core(facts: Sequence[FactInput], target: date | None) -> dict[str, str]:
             if (target is not None and fact.concept_namespace.startswith(US_GAAP_PREFIX)
                     and fact.concept_name in names and not fact.dimensions and not fact.is_nil):
                 end = fact.period_end or fact.instant_date
+                if end is None:
+                    continue
                 gap = abs((end - target).days)
                 best = gap if best is None else min(best, gap)
         result[group] = "missing" if best is None else "exact" if best == 0 else f"off_{best}d"
@@ -167,7 +186,7 @@ def assess_filing(manifest: dict[str, Any], root: Path, ticker: str) -> dict[str
     except FactExtractionError as exc:
         return record | {"status": "failed", "problems": [f"inline HTML cannot be checked: {exc}"]}
     dei = _dei(facts)
-    report_end = (dei.get("report_period") or {}).get("end") or dei.get("DocumentPeriodEndDate")
+    report_end = dei.get("DocumentPeriodEndDate")
     try:
         target = date.fromisoformat(report_end) if report_end else None
     except ValueError:
@@ -192,14 +211,18 @@ def assess_filing(manifest: dict[str, Any], root: Path, ticker: str) -> dict[str
     if manifest.get("reporting_period_end") and dei.get("DocumentPeriodEndDate") != manifest["reporting_period_end"]:
         review.append(f"dei:DocumentPeriodEndDate {dei.get('DocumentPeriodEndDate')!r} differs from the SEC "
                       f"report date {manifest['reporting_period_end']}")
+    context = dei.get("report_period")
+    if context is not None and context["end"] != report_end:
+        review.append(f"DocumentType context end {context['end']!r} differs from "
+                      f"dei:DocumentPeriodEndDate {report_end!r}")
     irregular = correspondence.get("irregular_number_display", [])
     if irregular:
         review.append(f"{len(irregular)} number(s) printed with irregular digit grouping, for example "
                       f"{irregular[0]['occurrence_key']} shown as {irregular[0]['displayed']!r}; "
                       "the XML value may be off by a power of ten")
-    missing = [group for group, status in core.items() if status == "missing"]
+    missing = [group for group, status in core.items() if status != "exact"]
     if missing:
-        review.append("no undimensioned fact near the report period for: " + ", ".join(missing))
+        review.append("no undimensioned fact at the report period end for: " + ", ".join(missing))
     if not inventory["by_period_kind"]:
         problems.append("no fact has a usable period")
 
@@ -236,35 +259,63 @@ def assess_filing(manifest: dict[str, Any], root: Path, ticker: str) -> dict[str
 # --------------------------------------------------------------------------- corpus
 
 def assess_archives(scope: dict[str, Any], roots: Iterable[Path],
-                    discovery: dict[str, Any] | None = None, *, progress=None) -> dict[str, Any]:
+                    discovery: dict[str, Any] | None = None, *, tickers: Sequence[str] | None = None,
+                    progress=None) -> dict[str, Any]:
     from .filing_sources import verify_filing
 
-    tickers = {c["cik"]: c["ticker"] for c in scope["companies"]}
     expected = expected_filings(discovery, scope)
+    if tickers:
+        unknown = set(tickers) - {c["ticker"] for c in scope["companies"]}
+        if unknown:
+            raise CoverageError(f"Tickers outside the config: {', '.join(sorted(unknown))}")
+        scope = scope | {"companies": [c for c in scope["companies"] if c["ticker"] in tickers]}
+        if expected is not None:
+            expected = {a: row for a, row in expected.items() if _in_scope(row, scope)}
+    ticker_by_cik = {c["cik"]: c["ticker"] for c in scope["companies"]}
     results: dict[str, dict[str, Any]] = {}
+    source_hashes: dict[str, dict[str, str]] = {}
     for root in (Path(r).resolve() for r in roots):
-        for path in _manifests(root):
+        manifests = _manifests(root)
+        if not manifests and expected is None:
+            raise CoverageError(f"No source manifests found in archive root: {root}")
+        for path in manifests:
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            if not _in_scope(raw, scope) or raw.get("accession_number") in results:
+            except (OSError, ValueError) as exc:
+                raise CoverageError(f"Cannot read source manifest {path}: {exc}") from exc
+            if not isinstance(raw, dict) or not all(isinstance(raw.get(k), str) and raw[k]
+                    for k in ("accession_number", "cik", "filing_date", "form")):
+                raise CoverageError(f"Source manifest has incomplete filing identity: {path}")
+            if not _in_scope(raw, scope):
                 continue
             accession = raw["accession_number"]
             try:
                 manifest = verify_filing(path, root)
-            except (OSError, ValueError, KeyError, TypeError) as exc:
-                results[accession] = {"ticker": tickers[raw["cik"]], "cik": raw["cik"], "form": raw["form"],
-                                      "accession_number": accession, "filing_date": raw["filing_date"],
-                                      "status": "archive_error",
-                                      "problems": [f"source verification failed: {str(exc)[:160]}"]}
+            except (OSError, ValueError, KeyError, TypeError, etree.Error) as exc:
+                results.setdefault(accession, {"ticker": ticker_by_cik[raw["cik"]], "cik": raw["cik"],
+                                               "form": raw["form"], "accession_number": accession,
+                                               "filing_date": raw["filing_date"], "status": "archive_error",
+                                               "problems": [f"source verification failed: {str(exc)[:160]}"]})
                 continue
+            if expected is not None:
+                row = expected.get(accession)
+                if row is None or any(row[key] != manifest[key] for key in
+                                      ("cik", "form", "filing_date", "reporting_period_end")):
+                    raise CoverageError(f"Verified archive disagrees with discovery for {accession}.")
+            hashes = {r["role"]: r["sha256"] for r in [manifest["index_document"], *manifest["files"]]}
+            if accession in source_hashes:
+                if hashes != source_hashes[accession] or any(
+                        results[accession][key] != manifest[key]
+                        for key in ("cik", "form", "filing_date", "reporting_period_end")):
+                    raise CoverageError(f"Conflicting verified archives for {accession}.")
+                continue
+            source_hashes[accession] = hashes
             if progress:
-                progress(f"{tickers[manifest['cik']]} {manifest['form']} {accession}")
-            results[accession] = assess_filing(manifest, root, tickers[manifest["cik"]])
+                progress(f"{ticker_by_cik[manifest['cik']]} {manifest['form']} {accession}")
+            results[accession] = assess_filing(manifest, root, ticker_by_cik[manifest["cik"]])
     for accession, row in (expected or {}).items():
         if accession not in results:
-            results[accession] = {"ticker": tickers[row["cik"]], "cik": row["cik"], "form": row["form"],
+            results[accession] = {"ticker": ticker_by_cik[row["cik"]], "cik": row["cik"], "form": row["form"],
                                   "accession_number": accession, "filing_date": row["filing_date"],
                                   "reporting_period_end": row.get("reporting_period_end"),
                                   "status": "missing_archive",
@@ -297,9 +348,9 @@ def summarize(scope: dict[str, Any], filings: list[dict[str, Any]], *, discovery
     for f in assessed:
         kinds.update(f["periods"]["by_kind"])
         units.update(f["units"]["by_unit"])
-    overall = ("complete" if discovery_supplied and totals.get("passed", 0) == len(filings)
-               else "complete_for_supplied_archives" if not discovery_supplied and totals.get("passed", 0) == len(filings)
-               else "review_required")
+    overall = "review_required"
+    if filings and totals["passed"] == len(filings):
+        overall = "complete" if discovery_supplied else "complete_for_supplied_archives"
     return {
         "version": VERSION, "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "scope": scope, "status": overall,
@@ -349,7 +400,7 @@ def _csv_row(f: dict[str, Any]) -> list[Any]:
             f.get("labels", {}).get("facts_with_label", ""), dei.get("DocumentType") or "",
             dei.get("DocumentPeriodEndDate") or "", f.get("periods", {}).get("fiscal_year_focus") or "",
             f.get("periods", {}).get("fiscal_period_focus") or "",
-            " ".join(g for g, s in f.get("core_concepts", {}).items() if s == "missing"),
+            " ".join(g for g, s in f.get("core_concepts", {}).items() if s != "exact"),
             " | ".join(f.get("problems", []) + f.get("review", []))]
 
 
@@ -418,15 +469,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         scope = load_scope(args.config)
-        if args.ticker:
-            unknown = set(args.ticker) - {c["ticker"] for c in scope["companies"]}
-            if unknown:
-                raise CoverageError(f"Tickers outside the config: {', '.join(sorted(unknown))}")
-            scope["companies"] = [c for c in scope["companies"] if c["ticker"] in args.ticker]
         if args.output.exists() and any(args.output.iterdir()):
             raise CoverageError(f"{args.output} is not empty; choose a new output directory.")
         discovery = json.loads(args.discovery.read_text(encoding="utf-8")) if args.discovery else None
-        report = assess_archives(scope, args.archive_root, discovery,
+        report = assess_archives(scope, args.archive_root, discovery, tickers=args.ticker,
                                  progress=lambda text: print(text, file=sys.stderr, flush=True))
         paths = write_outputs(report, args.output)
     except (CoverageError, OSError, ValueError) as exc:

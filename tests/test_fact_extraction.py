@@ -512,7 +512,7 @@ class InlineCorrespondenceTests(unittest.TestCase):
                                     self.older_registry(namespace, 'format="ixt:numdotdecimal">4.27</'))
                 self.assertEqual(report["mismatches"], [])
                 self.assertEqual((report["numeric_values_equal"], report["numeric_values_not_compared"]), (3, 0))
-            for dash in ("—", "-", "–", "‒", "－", " — ", "\xa0—\xa0"):
+            for dash in ("—", "-", "–", "‒", "－", " — "):
                 with self.subTest(namespace=namespace, dash=dash):
                     report = self.check(zero, self.older_registry(namespace, f'format="ixt:zerodash">{dash}</'))
                     self.assertEqual(report["mismatches"], [])
@@ -520,13 +520,15 @@ class InlineCorrespondenceTests(unittest.TestCase):
 
     def test_registry_one_numdash_and_older_formats_stay_strict(self):
         zero = run(INLINE_FACTS.replace(">4.27</", ">0</")).facts
-        report = self.check(zero, self.older_registry("2010-04-20", 'format="ixt:numdash">—</'))
+        report = self.check(zero, self.older_registry("2010-04-20", 'format="ixt:numdash">-</'))
         self.assertEqual(report["mismatches"], [])
         self.assertEqual(report["numeric_values_not_compared"], 2)  # numdotdecimal is not a registry 1 name here
         # A dash format still yields zero, so a nonzero XML value is a reported mismatch.
         report = self.check(run(INLINE_FACTS).facts, self.older_registry("2015-02-26", 'format="ixt:zerodash">—</'))
         self.assertEqual(report["mismatches"], [{"occurrence_key": "eps", "problem": "value: HTML shows 0, XML has 4.27"}])
         # Text that is not a single dash, and names outside their registry, are not compared.
+        report = self.check(zero, self.older_registry("2010-04-20", 'format="ixt:numdash">—</'))
+        self.assertEqual(report["numeric_values_not_compared"], 3)
         for namespace, markup in (("2015-02-26", 'format="ixt:zerodash">0</'),
                                   ("2015-02-26", 'format="ixt:zerodash">N/A</'),
                                   ("2015-02-26", 'format="ixt:zerodash">——</'),
@@ -538,6 +540,26 @@ class InlineCorrespondenceTests(unittest.TestCase):
                 self.assertEqual(report["mismatches"], [])
         modern = self.check(run(INLINE_FACTS).facts, INLINE.replace("ixt:num-dot-decimal", "ixt:numdotdecimal"))
         self.assertEqual(modern["numeric_values_not_compared"], 3)
+
+    def test_legacy_dot_decimal_grammar_is_checked_before_removing_separators(self):
+        facts = run(INLINE_FACTS).facts
+        for namespace in ("2011-07-31", "2015-02-26"):
+            for value in (".5", "1.", "4.2,7", "20,637,66"):
+                with self.subTest(namespace=namespace, value=value):
+                    html = self.older_registry(namespace, f'format="ixt:numdotdecimal">{value}</')
+                    report = self.check(facts, html)
+                    self.assertEqual(report["numeric_values_not_compared"], 1)
+                    self.assertEqual(report["mismatches"], [])
+            html = INLINE.replace("2022-02-16", namespace)
+            self.assertEqual(self.check(facts, html)["numeric_values_not_compared"], 3)
+
+    def test_malformed_numeric_attributes_prevent_comparison(self):
+        facts = run(INLINE_FACTS).facts
+        for attribute in ('sign="+"', 'scale=""', 'scale="abc"', 'scale="100001"', 'scale="0000000000"'):
+            with self.subTest(attribute=attribute):
+                html = self.older_registry("2015-02-26", f'{attribute} format="ixt:numdotdecimal">4.27</')
+                report = self.check(facts, html)
+                self.assertEqual((report["numeric_values_equal"], report["numeric_values_not_compared"]), (2, 1))
 
 
 class LoadPreflightTests(unittest.TestCase):

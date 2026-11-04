@@ -1,6 +1,8 @@
 # Financial fact coverage, ten-company shortlist 2021–2026
 
-**How this was produced.** Original SEC files (filing index JSON, extracted XBRL instance, extension schema, primary inline HTML) read on 2026-11-01 in the Claude desktop browser from www.sec.gov, and checked with a JavaScript port of facts-v1 extract_facts() and check_inline_correspondence() at commit 724623f. On the bundled Microsoft sample the port reproduces the Python results exactly. Inventory: docs/validation/report-sections-2021-2026.json. Rerun `python -m sec_pipeline.fact_coverage` on the acquisition archive for the authoritative result. Per-filing detail: [fact-coverage-2021-2026.csv](fact-coverage-2021-2026.csv) (one row per filing) and [fact-coverage-2021-2026.json](fact-coverage-2021-2026.json) (everything, including the XML SHA-256 of each filing).
+**Method.** On November 1, 2026, the survey read the original SEC filing index, extracted XBRL instance, extension schema and primary inline HTML for the 233 filings in the October 29 inventory. It used a JavaScript port of `extract_facts()` and `check_inline_correspondence()` at revision `724623f`. The XML digest and extraction and numeric correspondence counts matched the bundled Microsoft sample. The survey records the XML digest for every filing. HTML digests, SEC manifest report dates and per-filing counts of labelled facts require the Python archive command. [Section inventory](report-sections-2021-2026.json) · [Survey CSV](fact-coverage-2021-2026.csv) · [Survey JSON](fact-coverage-2021-2026.json)
+
+The counts below are the survey's measurements at that revision. Run `python -m sec_pipeline.fact_coverage` with the acquisition archive and its discovery inventory to check the current rules.
 
 Scope: 10 companies, 10-K, 10-Q, filing dates 2021-01-01 to 2026-12-31. Generated 2026-11-01T21:50:13+00:00 by `fact-coverage-v1 (browser survey)` (facts-v1 extraction and inline correspondence). Status: **review_required**.
 
@@ -45,8 +47,8 @@ The v1/v3/v3-text import adapters require zero values "not compared".
 | --- | ---: | ---: | ---: | ---: |
 | `facts-v1` on main before PR #21 | 232,767 | 0 | 26,831 | 41 |
 | `inline_value_transforms` (v4) before PR #21 | 256,930 | 0 | 2,668 | 32 |
-| `facts-v1` in PR #21 | 259,598 | 0 | 0 | 0 |
-| `inline_value_transforms` in PR #21 | 259,597 | 0 | 1 | 1 |
+| `facts-v1` at survey revision `724623f` | 259,598 | 0 | 0 | 0 |
+| `inline_value_transforms` at survey revision `724623f` | 259,597 | 0 | 1 | 1 |
 
 The one value the v4 module still does not compare is the NetApp share count printed "206,376,66".
 

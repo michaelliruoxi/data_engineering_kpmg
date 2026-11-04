@@ -178,7 +178,7 @@ ORDER BY (source_reference->>'document_order')::int;
 
 ## Ten-company coverage (2021–2026)
 
-The shortlist in `config/shortlist.json` (AAPL, CASY, MCK, MDT, MSFT, MU, NKE, NTAP, PH, TTWO; original 10-K and 10-Q filed 2021-01-01 through 2026-12-31) covers **233 filings: 59 10-Ks and 174 10-Qs**, the same inventory as [the section validation](report-section-validation.md).
+The November 1 survey covered **233 filings** (59 original 10-Ks and 174 original 10-Qs) from AAPL, CASY, MCK, MDT, MSFT, MU, NKE, NTAP, PH and TTWO. It used the October 29 section-validation inventory. The filing-date window in `config/shortlist.json` extends through December 31, 2026, so a later discovery can include more filings. [Section validation](report-section-validation.md)
 
 ### Run it
 
@@ -193,16 +193,16 @@ uv run --locked python -m sec_pipeline.fact_coverage \
 - It verifies each archive's hashes, then runs the same `extract_facts()` and `check_inline_correspondence()` as the import adapters. No database, no network.
 - Output: `coverage.md` (summary for the team), `coverage.csv` (one row per filing), `coverage.json` (everything). The output directory must be new or empty.
 - Per filing: occurrences extracted/failed, period kinds and the report period, units used, numeric/nil/text counts, dimensions, labels, DEI identity, inline correspondence, and eight primary-statement anchors (revenue, net income, diluted EPS, operating cash flow, assets, liabilities and equity, equity, cash) at the report period end.
-- Status per filing: `passed`; `review` (extractable, but DEI disagrees with the SEC form or report date, an anchor is missing, or a number is printed with irregular digit grouping); `failed` (an occurrence was not extracted, or the import's correspondence checks would fail); `archive_error`; `missing_archive` (listed by discovery, no archive supplied).
-- Exit status 0 when every filing passed, 2 when anything needs attention, 1 for a setup error. Without `--discovery`, missing filings cannot be detected.
+- A filing receives `review` when its DEI form or period disagrees with filing metadata or the DocumentType context, an anchor lacks a fact ending on the declared report date, or a number has irregular digit grouping. An extraction or correspondence failure yields `failed`. Source verification errors yield `archive_error`. Discovery entries without archives yield `missing_archive`.
+- Exit status is 0 when at least one filing was assessed and all passed, 2 when the report needs attention, and 1 for a setup error. Supply a complete discovery for the same configuration to detect missing filings. Add `--ticker MSFT` to select one company from that scope.
 
-To see what is already loaded in a database, run [fact-coverage-shortlist.sql](fact-coverage-shortlist.sql) with any reader login, for example `sec_bryce` in DBeaver. It is read-only and returns one row per shortlist filing and fact version, with the same counts, DEI checks, anchors, and processing-set receipts.
+On a database migrated through 010, a reader login can check the loaded facts by filing, XML source document and extraction version. The query counts stored facts and anchors at the DEI report date. Each processing-set receipt applies to the source and version on that row. Filings with no facts appear with zero counts. [Reader query](fact-coverage-shortlist.sql)
 
 ### Survey of the original SEC files, November 1, 2026
 
-Before the archive was available locally, every filing was checked directly against the original SEC files (index, primary HTML, extracted XML instance, extension schema) with an in-browser port of the facts-v1 rules and of `check_inline_correspondence()`, including the rules as changed here. The port was calibrated on the bundled Microsoft sample, where it reproduces the Python results exactly (1,622 occurrences, 409 contexts, 6 units, 1,426 numeric / 2 nil / 194 text, 827 duration / 795 instant, 895 dimensional, 1,426 numeric values equal). It is evidence, not a substitute: rerun the command above on the archive for the authoritative per-filing results.
+The survey read each filing's index, primary HTML, extracted XML instance and extension schema from the SEC. It used a browser-based JavaScript port of the validation rules at commit `724623f`, before the subsequent registry and coverage corrections. The bundled Microsoft filing matched on XML digest and sample counts (1,622 occurrences, 409 contexts, 6 units, 1,426 numeric, 2 nil, 194 text, 827 duration, 795 instant, 895 dimensional and 1,426 numeric values equal).
 
-Per-filing results, in the same format as the command's output: [summary](validation/fact-coverage-2021-2026.md), [CSV](validation/fact-coverage-2021-2026.csv), [JSON](validation/fact-coverage-2021-2026.json). Result: **232 passed, 1 review** (the NetApp share count below), 0 failed.
+The survey classified **232 filings as passed and one NetApp filing for review**. Its artifacts record XML digests and label-source presence. The Python archive command also records HTML digests, manifest report dates and counts of labelled facts. Run the command above for the archive's current results. [Survey summary](validation/fact-coverage-2021-2026.md) · [Survey CSV](validation/fact-coverage-2021-2026.csv) · [Survey JSON](validation/fact-coverage-2021-2026.json)
 
 | Check | Result |
 | --- | --- |
@@ -217,20 +217,20 @@ Per-filing results, in the same format as the command's output: [summary](valida
 | Labels | embedded in the `.xsd` only for MSFT (from January 2024) and NTAP (from February 2024): 23 filings; the other 210 keep them in a separate `_lab.xml` |
 | Footnotes | 504 XBRL footnotes, counted but not attached (as in the sample) |
 
-Numeric inline correspondence, which the v1/v3/v3-text adapters require to have **zero** values "not compared":
+The survey compared four numeric rule sets. The v1/v3/v3-text adapters require every numeric value to be compared.
 
 | Rule | Equal | Not compared | Filings with any not compared |
 | --- | ---: | ---: | ---: |
 | `facts-v1` before this change | 232,767 | 26,831 | **41** (would fail import) |
 | `inline_value_transforms` (tables-v4 path) before this change | 256,930 | 2,668 | 32 |
-| `facts-v1` after this change | 259,598 | 0 | 0 |
-| `inline_value_transforms` after this change | 259,597 | 1 | 1 (NTAP "206,376,66", below) |
+| `facts-v1` at survey revision `724623f` | 259,598 | 0 | 0 |
+| `inline_value_transforms` at survey revision `724623f` | 259,597 | 1 | 1 (NTAP "206,376,66", below) |
 
-No value compared unequal under any rule. All four rows were measured on the same files. Registry 2/3 formats appear through mid-2021 for eight companies and through mid-2023 for MSFT and NTAP.
+No value compared unequal in the survey. The 2,668 values the earlier tables-v4 rules could not compare included 2,661 em dashes, six NetApp number-word values and one irregularly grouped share count. Registry 2/3 formats appeared through mid-2021 for eight companies and through mid-2023 for MSFT and NTAP.
 
 ### What changed for older filings
 
-- **Transformation Registry 2/3.** Filings from 2021–2022 tag numbers `ixt:numdotdecimal` and zeros `ixt:zerodash` in the registry 2/3 namespaces (`…/2011-07-31`, `…/2015-02-26`); Apple's 10-Q 0000320193-21-000010 alone has 448 and 46. `check_inline_correspondence()` now reads these, and both modules accept the dash characters registry 1–3 allow (`INLINE_ZERO_DASHES`, hyphen-minus or one Unicode dash). Filers display an em dash; `inline_value_transforms` previously accepted only `-`.
+- **Older numeric formats.** Apple's 10-Q 0000320193-21-000010 contains 448 `ixt:numdotdecimal` values and 46 `ixt:zerodash` values. Both validation paths recognize these names in the Registry 2/3 namespaces. An integer can be ungrouped or use commas, spaces or nonbreaking spaces between three-digit groups. A decimal point requires digits on both sides. Registry 2/3 `zerodash` accepts one of the listed dash characters, including the em dash. Registry 1 `numdash` accepts only an ASCII hyphen-minus.
 - **"N hundred thousand".** NetApp's 10-K 0001564590-21-033645 and five later filings tag office space as "three hundred thousand" (`ixt-sec:numwordsen`); the SEC value is 300000. Number words now allow a 1–999 coefficient before one magnitude. Phrases with two magnitudes or trailing words remain unsupported.
 - **Irregular digit grouping is reported.** NetApp's 10-Q 0000950170-24-023115 prints shares outstanding as "206,376,66"; the SEC's extracted value is **20,637,666**, about ten times smaller than the company's actual share count. The value matches its display once separators are removed, so it is not a mismatch, but `check_inline_correspondence()` now lists it under `irregular_number_display` and the coverage report marks the filing `review`. Do not use this fact as a share count without checking the filing.
 - Stored fact content is unchanged; these are validation changes only.
@@ -246,4 +246,4 @@ No value compared unequal under any rule. All four rows were measured on the sam
 - Text values are not compared with the HTML, because inline text is transformed and split across continuation tags.
 - Periods must be plain dates. Fraction items and tuples are reported as failures instead of being stored.
 - Labels come only from the extension schema; see [Known gaps](#known-gaps-for-this-scope).
-- Processing and acceptance cover the bundled Microsoft filing and the ten-company scope above. Other filings need their own coverage run.
+- Python coverage has been checked on the bundled Microsoft filing. The November 1 survey provides separate evidence for the 233 filings. Acceptance of a filing depends on its own verified archive and review findings.

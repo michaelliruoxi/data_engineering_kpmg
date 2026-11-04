@@ -47,8 +47,7 @@ SEC_TRANSFORMATION_NAMESPACES = frozenset({"http://www.sec.gov/inlineXBRL/transf
 # Transformation Registry 2 and 3, still used by many 2021-2022 filings
 # (for example Apple's 10-Q 0000320193-21-000010 uses ixt:numdotdecimal and ixt:zerodash).
 OLDER_TRANSFORMATION_NAMESPACES = frozenset({IXT_PREFIX + "2011-07-31", IXT_PREFIX + "2015-02-26"})
-# What registry 1-3 `zerodash`/`numdash` accept as zero: a hyphen-minus or one Unicode dash
-# punctuation character. Filers usually display an em dash (U+2014).
+# Registry 2/3 enumerate these characters for zerodash. Filers usually display an em dash.
 INLINE_ZERO_DASHES = frozenset("-֊־‐‑‒–—―﹘﹣－")
 
 # Failure categories, matching the team's error contract.
@@ -673,6 +672,30 @@ def _small_english_number(value: str) -> str | None:
     return None
 
 
+def _legacy_inline_number(namespace: str | None, name: str | None, text: str) -> str | None:
+    """Apply the numeric transforms supported from registries 1 through 3."""
+    if namespace not in OLDER_TRANSFORMATION_NAMESPACES:
+        if namespace == IXT_PREFIX + "2010-04-20" and name == "numdash" and text.strip(_XML_SPACE) == "-":
+            return "0"
+        return None
+    # Apply the schema's XML whitespace collapse. NBSP is a distinct digit separator.
+    shown = re.sub(r"[ \t\r\n]+", " ", text.strip(_XML_SPACE))
+    if name == "zerodash" and shown in INLINE_ZERO_DASHES:
+        return "0"
+    if name == "numdotdecimal" and re.fullmatch(r"[0-9]{1,3}(?:[, \xa0]?[0-9]{3})*(?:\.[0-9]+)?", shown):
+        return re.sub(r"[, \xa0]", "", shown)
+    return None
+
+
+def _inline_scale(scale: str | None, sign: str | None) -> int:
+    value = "0" if scale is None else scale
+    if sign not in (None, "-") or not re.fullmatch(r"[+-]?[0-9]+", value):
+        raise ValueError("Invalid inline numeric sign or scale.")
+    if len(value) > 8 or abs(int(value)) > 100000:
+        raise ValueError("Numeric scale exceeds the supported exact transformation bound.")
+    return int(value)
+
+
 def _inline_number(element: etree._Element) -> Decimal | None:
     """Return the value an ix:nonFraction displays, or None for an unhandled format."""
     format_name = element.get("format")
@@ -697,25 +720,22 @@ def _inline_number(element: etree._Element) -> Decimal | None:
         # Registry 4/5 fixed-zero accepts any text, including displayed dashes.
         # The XML value must still equal the resulting zero in correspondence.
         shown = "0"
-    elif ((local == "num-dot-decimal" and (namespace or "").startswith(IXT_PREFIX))
-          or (local == "numdotdecimal" and namespace in OLDER_TRANSFORMATION_NAMESPACES)):
-        # Registry 2/3 `numdotdecimal` is the same grammar as registry 4/5
-        # `num-dot-decimal`; 2021-2022 filings still use the older name.
+    elif local == "num-dot-decimal" and namespace in {IXT_PREFIX + "2020-02-12", IXT_PREFIX + "2022-02-16"}:
         shown = re.sub(r"[,\s\xa0]", "", text_value)
         if not re.fullmatch(r"[0-9]+(\.[0-9]*)?|\.[0-9]+", shown):
             return None
-    elif ((local == "zerodash" and namespace in OLDER_TRANSFORMATION_NAMESPACES)
-          or (local == "numdash" and namespace == IXT_PREFIX + "2010-04-20")):
-        # Registry 1-3 map a displayed dash to zero. Filers commonly show an em dash.
-        if text_value.strip(_XML_SPACE + "\xa0") not in INLINE_ZERO_DASHES:
-            return None
-        shown = "0"
     else:
+        shown = _legacy_inline_number(namespace, local, text_value)
+        if shown is None:
+            return None
+    sign = element.get("sign")
+    try:
+        scale = _inline_scale(element.get("scale"), sign)
+    except ValueError:
         return None
-    # Shift the exponent directly so scaling stays exact at any size.
+    # Shift the exponent directly to preserve exact precision.
     _, digits, exponent = Decimal(shown).as_tuple()
-    negative = 1 if element.get("sign") == "-" else 0
-    return Decimal((negative, digits, exponent + int(element.get("scale") or 0)))
+    return Decimal((int(sign == "-"), digits, exponent + scale))
 
 
 _GROUPED = re.compile(r"[0-9]{1,3}(?:[,\s\xa0][0-9]{3})*(?:\.[0-9]*)?|\.[0-9]+|[0-9]+(?:\.[0-9]*)?")

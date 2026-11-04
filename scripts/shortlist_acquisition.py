@@ -20,6 +20,7 @@ from lxml import html
 from sec_pipeline.acquisition import (
     AccessBlocked, FilingIdentity, SecClient,
     _archive_link, _immutable_write, discover_filings, download_filing,
+    shortlist_scope_key as scope_key,
 )
 from sec_pipeline.filing_sources import verify_filing
 
@@ -59,11 +60,6 @@ def load_config(path):
     if any(not re.fullmatch(r'\d{10}', x['cik']) or int(x['cik']) == 0 for x in companies):
         raise ValueError('CIKs must be ten-digit nonzero identifiers.')
     return config
-
-
-def scope_key(config):
-    core = {k:config[k] for k in ('since', 'until', 'forms', 'companies')}
-    return digest(json.dumps(core, sort_keys=True).encode())
 
 
 def in_scope(record, config):

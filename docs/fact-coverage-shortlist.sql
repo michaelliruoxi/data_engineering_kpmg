@@ -1,14 +1,12 @@
 -- Financial fact coverage for the ten-company shortlist, read from the database.
 --
--- Read-only: runs inside a READ ONLY transaction and ends with ROLLBACK, so it works with
--- any sec_reader login (for example sec_bryce in DBeaver). One row per shortlist filing
--- in the database and fact version stored for it; a filing with no stored facts still
--- appears, with zero counts. Scope matches config/shortlist.json: original 10-K/10-Q,
--- filing dates 2021-01-01 through 2026-12-31.
+-- Run with a reader login on a database migrated through 010. The result has one row
+-- per filing, XML source document and extraction version. A filing without stored
+-- facts still appears with zero counts. The scope follows config/shortlist.json
+-- for original 10-K/10-Q filings dated 2021-01-01 through 2026-12-31.
 --
--- Compare with the offline `python -m sec_pipeline.fact_coverage` report: a database row
--- shows what was loaded, not whether every SEC filing was loaded. Filings missing from
--- the database do not appear here at all; use the acquisition inventory for those.
+-- Compare the results with the acquisition inventory to identify filings missing
+-- from the database. Each receipt applies to that row's source and version.
 
 BEGIN TRANSACTION READ ONLY;
 
@@ -36,16 +34,30 @@ WITH shortlist(ticker, cik) AS (
            count(*) FILTER (WHERE ff.unit IS NULL AND NOT ff.is_nil) AS text_facts,
            count(DISTINCT ff.unit) AS distinct_units,
            count(*) FILTER (WHERE jsonb_array_length(ff.dimensions) > 0) AS dimensional_facts,
-           count(*) FILTER (WHERE ff.label IS NOT NULL) AS labelled_facts,
-           min(btrim(ff.raw_value)) FILTER (WHERE ff.concept_name = 'DocumentType' AND d.is_dei) AS dei_document_type,
-           min(btrim(ff.raw_value)) FILTER (WHERE ff.concept_name = 'DocumentPeriodEndDate' AND d.is_dei) AS dei_period_end,
-           min(btrim(ff.raw_value)) FILTER (WHERE ff.concept_name = 'DocumentFiscalYearFocus' AND d.is_dei) AS fiscal_year,
-           min(btrim(ff.raw_value)) FILTER (WHERE ff.concept_name = 'DocumentFiscalPeriodFocus' AND d.is_dei) AS fiscal_period
+           count(*) FILTER (WHERE ff.label IS NOT NULL) AS labelled_facts
     FROM sec.financial_facts AS ff
     JOIN scoped AS s ON s.filing_id = ff.filing_id
-    CROSS JOIN LATERAL (SELECT ff.concept_namespace LIKE 'http://xbrl.sec.gov/dei/%'
-                               AND ff.dimensions = '[]'::jsonb AND NOT ff.is_nil AS is_dei) AS d
     GROUP BY ff.filing_id, ff.source_document_id, ff.extraction_version
+), first_dei AS (
+    -- The extractor takes the first undimensioned, non-nil occurrence in XML order.
+    SELECT DISTINCT ON (ff.filing_id, ff.source_document_id, ff.extraction_version, ff.concept_name)
+           ff.filing_id, ff.source_document_id, ff.extraction_version, ff.concept_name,
+           btrim(ff.raw_value) AS value
+    FROM sec.financial_facts AS ff
+    JOIN scoped AS s ON s.filing_id = ff.filing_id
+    WHERE ff.concept_namespace LIKE 'http://xbrl.sec.gov/dei/%'
+      AND ff.dimensions = '[]'::jsonb AND NOT ff.is_nil
+      AND ff.concept_name IN ('DocumentType', 'DocumentPeriodEndDate', 'DocumentFiscalYearFocus', 'DocumentFiscalPeriodFocus')
+    ORDER BY ff.filing_id, ff.source_document_id, ff.extraction_version, ff.concept_name,
+             ff.source_reference->'document_order', ff.occurrence_key
+), dei AS (
+    SELECT filing_id, source_document_id, extraction_version,
+           max(value) FILTER (WHERE concept_name = 'DocumentType') AS dei_document_type,
+           max(value) FILTER (WHERE concept_name = 'DocumentPeriodEndDate') AS dei_period_end,
+           max(value) FILTER (WHERE concept_name = 'DocumentFiscalYearFocus') AS fiscal_year,
+           max(value) FILTER (WHERE concept_name = 'DocumentFiscalPeriodFocus') AS fiscal_period
+    FROM first_dei
+    GROUP BY filing_id, source_document_id, extraction_version
 ), anchors(anchor, concept) AS (
     VALUES ('revenue', 'Revenues'), ('revenue', 'RevenueFromContractWithCustomerExcludingAssessedTax'),
            ('revenue', 'RevenueFromContractWithCustomerIncludingAssessedTax'), ('revenue', 'SalesRevenueNet'),
@@ -59,46 +71,48 @@ WITH shortlist(ticker, cik) AS (
            ('cash', 'CashAndCashEquivalentsAtCarryingValue'),
            ('cash', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents')
 ), anchor_hits AS (
-    -- Undimensioned, non-nil us-gaap anchors whose period ends on dei:DocumentPeriodEndDate.
-    SELECT fs.filing_id, fs.source_document_id, fs.extraction_version,
+    SELECT d.filing_id, d.source_document_id, d.extraction_version,
            array_agg(DISTINCT a.anchor ORDER BY a.anchor) AS found
-    FROM fact_stats AS fs
+    FROM dei AS d
     JOIN sec.financial_facts AS ff
       ON (ff.filing_id, ff.source_document_id, ff.extraction_version)
-       = (fs.filing_id, fs.source_document_id, fs.extraction_version)
+       = (d.filing_id, d.source_document_id, d.extraction_version)
     JOIN anchors AS a ON a.concept = ff.concept_name
     WHERE ff.concept_namespace LIKE 'http://fasb.org/us-gaap/%'
       AND ff.dimensions = '[]'::jsonb AND NOT ff.is_nil
-      AND fs.dei_period_end ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-      AND COALESCE(ff.period_end, ff.instant_date) = fs.dei_period_end::date
-    GROUP BY fs.filing_id, fs.source_document_id, fs.extraction_version
+      AND to_char(COALESCE(ff.period_end, ff.instant_date), 'YYYY-MM-DD') = d.dei_period_end
+    GROUP BY d.filing_id, d.source_document_id, d.extraction_version
 ), receipts AS (
-    SELECT filing_id, string_agg(set_key || ' ' || validation_status || ' facts=' || (coverage->>'facts'),
-                                 '; ' ORDER BY set_key) AS processing_sets
-    FROM (SELECT filing_id, set_key, validation_status, coverage FROM sec.filing_processing_sets
-          UNION ALL
-          SELECT filing_id, set_key, validation_status, coverage FROM sec.source_processing_sets) AS sets
+    SELECT filing_id, fact_source_document_id, fact_extraction_version,
+           string_agg(processing_family || ' ' || set_key || ' ' || validation_status || ' facts=' || (coverage->>'facts'),
+                      '; ' ORDER BY processing_family, set_key) AS processing_sets
+    FROM finance.filing_version
     WHERE filing_id IN (SELECT filing_id FROM scoped)
-    GROUP BY filing_id
+    GROUP BY filing_id, fact_source_document_id, fact_extraction_version
 )
 SELECT s.ticker, s.form, s.filing_date, s.accession_number, s.reporting_period_end,
-       fs.extraction_version,
+       fs.source_document_id, fs.extraction_version,
        COALESCE(fs.facts, 0) AS facts,
-       fs.duration_facts, fs.instant_facts, fs.forever_facts,
-       fs.numeric_facts, fs.nil_facts, fs.text_facts, fs.distinct_units, fs.dimensional_facts,
-       fs.labelled_facts,
-       fs.dei_document_type, fs.dei_period_end, fs.fiscal_year, fs.fiscal_period,
-       (fs.dei_document_type = s.form) AS dei_form_agrees,
-       (fs.dei_period_end = s.reporting_period_end::text) AS dei_period_agrees,
+       COALESCE(fs.duration_facts, 0) AS duration_facts, COALESCE(fs.instant_facts, 0) AS instant_facts,
+       COALESCE(fs.forever_facts, 0) AS forever_facts, COALESCE(fs.numeric_facts, 0) AS numeric_facts,
+       COALESCE(fs.nil_facts, 0) AS nil_facts, COALESCE(fs.text_facts, 0) AS text_facts,
+       COALESCE(fs.distinct_units, 0) AS distinct_units, COALESCE(fs.dimensional_facts, 0) AS dimensional_facts,
+       COALESCE(fs.labelled_facts, 0) AS labelled_facts,
+       d.dei_document_type, d.dei_period_end, d.fiscal_year, d.fiscal_period,
+       (d.dei_document_type = s.form) AS dei_form_agrees,
+       (d.dei_period_end = to_char(s.reporting_period_end, 'YYYY-MM-DD')) AS dei_period_agrees,
        COALESCE(cardinality(h.found), 0) AS anchors_found_of_8,
        array_to_string(h.found, ' ') AS anchors_found,
        r.processing_sets
 FROM scoped AS s
 LEFT JOIN fact_stats AS fs ON fs.filing_id = s.filing_id
+LEFT JOIN dei AS d ON (d.filing_id, d.source_document_id, d.extraction_version)
+                    = (fs.filing_id, fs.source_document_id, fs.extraction_version)
 LEFT JOIN anchor_hits AS h
        ON (h.filing_id, h.source_document_id, h.extraction_version)
         = (fs.filing_id, fs.source_document_id, fs.extraction_version)
-LEFT JOIN receipts AS r ON r.filing_id = s.filing_id
-ORDER BY s.ticker, s.filing_date, s.accession_number, fs.extraction_version;
+LEFT JOIN receipts AS r ON (r.filing_id, r.fact_source_document_id, r.fact_extraction_version)
+                         = (fs.filing_id, fs.source_document_id, fs.extraction_version)
+ORDER BY s.ticker, s.filing_date, s.accession_number, fs.extraction_version, fs.source_document_id;
 
 ROLLBACK;

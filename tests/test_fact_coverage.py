@@ -1,5 +1,6 @@
 """Fact coverage across archived filings: offline, read-only, missing filings stay visible."""
 
+import hashlib
 import io
 import json
 from pathlib import Path
@@ -27,7 +28,7 @@ def discovery(*extra, status="discovered"):
     companies["MSFT"]["filings"] = [{"cik": "0000789019", "form": "10-Q", "accession_number": SAMPLE_ACCESSION,
                                      "filing_date": "2026-04-29", "reporting_period_end": "2026-03-31"}, *extra]
     companies["MSFT"]["status"] = status
-    return {"companies": companies}
+    return {"scope_key": cov.shortlist_scope_key(scope), "discovery_complete": True, "companies": companies}
 
 
 class SampleCoverageTests(unittest.TestCase):
@@ -64,13 +65,32 @@ class SampleCoverageTests(unittest.TestCase):
     def test_discovered_filings_without_archives_are_reported_missing(self):
         extra = {"cik": "0000789019", "form": "10-K", "accession_number": "0001193125-26-323660",
                  "filing_date": "2026-07-29", "reporting_period_end": "2026-06-30"}
-        outside = {**extra, "accession_number": "0001193125-20-000001", "filing_date": "2020-07-29"}
-        report = cov.assess_archives(cov.load_scope(CONFIG), [PROJECT_ROOT], discovery(extra, outside))
+        report = cov.assess_archives(cov.load_scope(CONFIG), [PROJECT_ROOT], discovery(extra))
         self.assertEqual(report["status"], "review_required")
         statuses = {f["accession_number"]: f["status"] for f in report["filings"]}
         self.assertEqual(statuses, {SAMPLE_ACCESSION: "passed", "0001193125-26-323660": "missing_archive"})
         with self.assertRaises(cov.CoverageError):
             cov.assess_archives(cov.load_scope(CONFIG), [PROJECT_ROOT], discovery(status="discovery_failed"))
+
+    def test_discovery_requires_complete_snapshot_bound_to_the_unfiltered_scope(self):
+        scope = cov.load_scope(CONFIG)
+        prior = scope | {"until": "2022-12-31"}
+        bad = discovery() | {"scope_key": cov.shortlist_scope_key(prior)}
+        for snapshot in (bad, discovery() | {"discovery_complete": False}):
+            with self.subTest(snapshot=snapshot), self.assertRaises(cov.CoverageError):
+                cov.assess_archives(scope, [], snapshot, tickers=["MSFT"])
+        del bad["scope_key"]
+        with self.assertRaisesRegex(cov.CoverageError, "scope"):
+            cov.assess_archives(scope, [], bad)
+
+    def test_discovery_rejects_unusable_rows_and_archive_identity_disagreement(self):
+        scope = cov.load_scope(CONFIG)
+        for field, value in (("cik", "0000320193"), ("filing_date", "2020-01-01"),
+                             ("reporting_period_end", "2026-03-30")):
+            snapshot = discovery()
+            snapshot["companies"]["MSFT"]["filings"][0][field] = value
+            with self.subTest(field=field), self.assertRaises(cov.CoverageError):
+                cov.assess_archives(scope, [PROJECT_ROOT], snapshot)
 
     def test_changed_source_bytes_are_an_archive_error_not_a_result(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -80,13 +100,46 @@ class SampleCoverageTests(unittest.TestCase):
             xml = root / "data/raw/sec" / SAMPLE_ACCESSION / "msft-20260331_htm.xml"
             xml.write_bytes(xml.read_bytes().replace(b"82886000000", b"82886000001", 1))
             report = cov.assess_archives(cov.load_scope(CONFIG), [root])
+            for roots in ([root, PROJECT_ROOT], [PROJECT_ROOT, root]):
+                with self.subTest(roots=roots):
+                    duplicate = cov.assess_archives(cov.load_scope(CONFIG), roots)
+                    self.assertEqual(duplicate["totals"]["passed"], 1)
         [filing] = report["filings"]
         self.assertEqual(filing["status"], "archive_error")
         self.assertIn("source verification failed", filing["problems"][0])
 
+    def test_conflicting_verified_copies_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = json.loads((PROJECT_ROOT / "source_manifest.json").read_text(encoding="utf-8"))
+            shutil.copytree(PROJECT_ROOT / "data/raw/sec" / SAMPLE_ACCESSION, root / "data/raw/sec" / SAMPLE_ACCESSION)
+            record = manifest["index_document"]
+            path = root / record["local_path"]
+            changed = path.read_bytes() + b"\n"
+            path.write_bytes(changed)
+            record.update(size_bytes=len(changed), sha256=hashlib.sha256(changed).hexdigest())
+            (root / "source_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(cov.CoverageError, "Conflicting verified"):
+                cov.assess_archives(cov.load_scope(CONFIG), [PROJECT_ROOT, root])
+
+    def test_unreadable_manifest_or_nonexistent_root_is_a_setup_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scope = cov.load_scope(CONFIG)
+            with self.assertRaisesRegex(cov.CoverageError, "No source manifests"):
+                cov.assess_archives(scope, [PROJECT_ROOT, root])
+            report = cov.assess_archives(scope, [root], discovery())
+            self.assertEqual(report["totals"]["missing_archive"], 1)
+            (root / "source_manifest.json").write_text("{", encoding="utf-8")
+            for invalid in (root, root / "typo"):
+                with self.subTest(invalid=invalid), self.assertRaises(cov.CoverageError):
+                    cov.assess_archives(scope, [PROJECT_ROOT, invalid])
+
     def test_scope_window_excludes_filings_outside_it(self):
         scope = cov.load_scope(CONFIG) | {"since": "2026-05-01"}
-        self.assertEqual(cov.assess_archives(scope, [PROJECT_ROOT])["filings"], [])
+        empty = cov.assess_archives(scope, [PROJECT_ROOT])
+        self.assertEqual(empty["filings"], [])
+        self.assertEqual(empty["status"], "review_required")
 
 
 class FilingAssessmentTests(unittest.TestCase):
@@ -130,9 +183,28 @@ class FilingAssessmentTests(unittest.TestCase):
         self.assertEqual(result["problems"], [])
         # Only the anchors are missing in this synthetic filing.
         self.assertEqual(len(result["review"]), 1)
-        self.assertTrue(result["review"][0].startswith("no undimensioned fact near the report period"))
+        self.assertTrue(result["review"][0].startswith("no undimensioned fact at the report period end"))
         wrong = self.assess(body, html, period_end="2026-02-28")
         self.assertTrue(any("differs from the SEC report date 2026-02-28" in r for r in wrong["review"]))
+
+    def test_anchors_require_a_dated_fact_at_the_declared_report_end(self):
+        gaap = 'xmlns:gaap="http://fasb.org/us-gaap/2025"'
+        body = INLINE_FACTS + f"""
+            <dei:DocumentType contextRef="ytd" id="d1">10-Q</dei:DocumentType>
+            <dei:DocumentPeriodEndDate contextRef="ytd" id="d2">2026-04-01</dei:DocumentPeriodEndDate>
+            <gaap:Assets {gaap} contextRef="day" id="a1" unitRef="usd">1</gaap:Assets>
+            <gaap:Revenues {gaap} contextRef="always" id="a2" unitRef="usd">1</gaap:Revenues>"""
+        html = MATCHED_INLINE.replace('xmlns:ex=', f'xmlns:dei="{DEI}" {gaap} xmlns:ex=').replace(
+            "</body>", '<ix:nonNumeric id="d1" name="dei:DocumentType" contextRef="ytd">10-Q</ix:nonNumeric>'
+            '<ix:nonNumeric id="d2" name="dei:DocumentPeriodEndDate" contextRef="ytd">April 1, 2026</ix:nonNumeric>'
+            '<ix:nonFraction id="a1" name="gaap:Assets" contextRef="day" unitRef="usd">1</ix:nonFraction>'
+            '<ix:nonFraction id="a2" name="gaap:Revenues" contextRef="always" unitRef="usd">1</ix:nonFraction></body>')
+        result = self.assess(body, html, period_end="2026-04-01")
+        self.assertEqual(result["status"], "review")
+        self.assertEqual(result["core_concepts"]["assets"], "off_1d")
+        self.assertEqual(result["core_concepts"]["revenue"], "missing")
+        self.assertTrue(any("DocumentType context end" in reason for reason in result["review"]))
+        self.assertTrue(any("assets" in reason for reason in result["review"]))
 
     def test_irregular_digit_grouping_needs_review(self):
         result = self.assess(INLINE_FACTS, MATCHED_INLINE.replace("11,351", "1,13,51"))
@@ -192,7 +264,8 @@ class CommandTests(unittest.TestCase):
             missing = Path(directory) / "discovery.json"
             missing.write_text(json.dumps(discovery({"cik": "0000789019", "form": "10-K",
                                                      "accession_number": "0001193125-26-323660",
-                                                     "filing_date": "2026-07-29"})), encoding="utf-8")
+                                                     "filing_date": "2026-07-29",
+                                                     "reporting_period_end": "2026-06-30"})), encoding="utf-8")
             code, out, _ = self.run_main("--archive-root", str(PROJECT_ROOT), "--discovery", str(missing),
                                          "--ticker", "MSFT", "--output", str(Path(directory) / "second"))
             self.assertEqual(code, 2)
