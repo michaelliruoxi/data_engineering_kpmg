@@ -14,7 +14,7 @@ from lxml import html
 import pytest
 
 from sec_pipeline.database import FactInput, FinancialTableInput
-from sec_pipeline.source_cells_v4 import transform_tables, validate_transformation
+from sec_pipeline.source_cells_v4 import corroborate_opening_cash_issue, transform_tables, validate_transformation
 from sec_pipeline.source_cells_v3 import SourceCellError, fact_reference
 from sec_pipeline.source_locators import inline_source_xpath, source_xpath
 from sec_pipeline.tables import layout_grid
@@ -172,3 +172,123 @@ def test_archived_source_period_issues_are_retained_without_changing_facts(acces
     counts = Counter(c['classification'] for t in result for row in t.structure['rows'] for c in row)
     assert counts['source_conflict'] == expected and counts['unresolved'] == 0
     assert validate_transformation(result,baseline,source,ctx.outputs['facts'].items)
+
+
+def corroboration_fixture():
+    table, facts, source = fixture(opening=True, shown='2075', value='2075')
+    period = {'startDate': '2026-04-25', 'endDate': '2026-07-31'}
+    facts = [replace(fact, period_start=date(2026, 4, 25), period_end=date(2026, 7, 31))
+             if fact.period_kind == 'duration' else replace(fact, instant_date=
+                date(2026, 4, 25) if fact.occurrence_key == 'review' else date(2026, 7, 31)) for fact in facts]
+    facts.append(replace(facts[3], occurrence_key='corroborating', instant_date=date(2026, 4, 24),
+        source_reference={**facts[3].source_reference, 'element_id': 'corroborating', 'context_ref': 'correct-date'}))
+    original_header = 'Three months ended March 31, 2026'
+    header = 'Three months ended July 31, 2026'
+    source = source.replace(original_header.encode(), header.encode())
+    resources = []
+    for fact in facts:
+        dates = (f'<xbrli:instant>{fact.instant_date}</xbrli:instant>' if fact.period_kind == 'instant' else
+                 f'<xbrli:startDate>{fact.period_start}</xbrli:startDate><xbrli:endDate>{fact.period_end}</xbrli:endDate>')
+        resources.append(f'<xbrli:context id="{fact.source_reference["context_ref"]}"><xbrli:entity>'
+            f'<xbrli:identifier scheme="{ENTITY["scheme"]}">{ENTITY["identifier"]}</xbrli:identifier>'
+            f'</xbrli:entity><xbrli:period>{dates}</xbrli:period></xbrli:context>')
+    resources.append('<xbrli:unit id="usd"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>')
+    source = source.replace(b'<html ', b'<html xmlns:xbrli="http://www.xbrl.org/2003/instance" '
+        b'xmlns:iso4217="http://www.xbrl.org/2003/iso4217" ')
+    source = source.replace(b'<body>', ('<body><ix:header><ix:resources>'+''.join(resources)+
+        '</ix:resources></ix:header>').encode())
+    source = source.replace(b'</body>', (f'<div><table><tr><td>Cash at April 24, 2026</td><td>'
+        f'<ix:nonFraction id="corroborating" name="g:{facts[-1].concept_name}" contextRef="correct-date" '
+        'unitRef="usd">2075</ix:nonFraction></td></tr></table></div></body>').encode())
+    table.structure['html_sha256'] = hashlib.sha256(source).hexdigest()
+    for row in table.structure['rows']:
+        for cell in row:
+            cell['column_period'] = deepcopy(period)
+            cell['column_headings'] = [header]
+            for reference in cell['fact_references']:
+                reference.update(fact_reference(next(f for f in facts if f.occurrence_key == reference['xml_id'])))
+    [parsed] = transform_tables([table], source, facts)
+    return parsed, facts, source
+
+
+def test_opening_cash_corroboration_is_separate_and_preserves_conflicting_source():
+    parsed, facts, source = corroboration_fixture()
+    cell = parsed.structure['rows'][4][1]
+    issue = cell['quality_issues'][0]
+    before = deepcopy((parsed, facts, issue))
+    result = corroborate_opening_cash_issue(issue, source, facts)
+    assert result['status'] == 'corroborated_source_date_conflict'
+    assert result['observed_period'] == {'instant': '2026-04-25'}
+    assert result['corroborated_period'] == {'instant': '2026-04-24'}
+    [reference] = result['corroborating_occurrences']
+    assert reference['inline_id'] == 'corroborating' and reference['raw_value'] == '2075'
+    tree = html.document_fromstring(source).getroottree()
+    assert tree.xpath(reference['source_xpath'])[0].get('id') == 'corroborating'
+    assert reference['period'] == {'instant': '2026-04-24'}
+    assert (parsed, facts, issue) == before
+    assert cell['classification'] == 'source_conflict' and cell['fact_references'] == []
+    assert cell['source_fact_references'][0]['period'] == {'instant': '2026-04-25'}
+
+
+@pytest.mark.parametrize('change', [
+    'value', 'inline_value', 'raw_value', 'entity', 'unit', 'dimensions', 'source_scope',
+    'hidden', 'hidden_ancestor', 'duplicate_id', 'duplicate_context', 'raw_date', 'missing_context', 'core_date',
+])
+def test_unverified_or_ambiguous_cash_corroboration_is_not_reported(change):
+    parsed, facts, source = corroboration_fixture()
+    issue = parsed.structure['rows'][4][1]['quality_issues'][0]
+    if change == 'value':
+        facts[-1] = replace(facts[-1], numeric_value=Decimal('2076'), raw_value='2076')
+        source = source.replace(b'unitRef="usd">2075</ix:nonFraction></td></tr></table></div>',
+                                b'unitRef="usd">2076</ix:nonFraction></td></tr></table></div>')
+    elif change == 'inline_value':
+        source = source.replace(b'unitRef="usd">2075</ix:nonFraction></td></tr></table></div>',
+                                b'unitRef="usd">2076</ix:nonFraction></td></tr></table></div>')
+    elif change == 'raw_value':
+        facts[-1] = replace(facts[-1], raw_value='999')
+    elif change == 'entity':
+        facts[-1] = replace(facts[-1], source_reference={**facts[-1].source_reference,
+            'entity': {**ENTITY, 'identifier': '0000000002'}})
+    elif change == 'unit':
+        facts[-1] = replace(facts[-1], unit={'numerator': ['{http://www.xbrl.org/2003/iso4217}EUR'], 'denominator': []})
+    elif change == 'dimensions':
+        facts[-1] = replace(facts[-1], dimensions=[{'kind': 'explicit', 'dimension': '{test}Axis', 'member': '{test}Member'}])
+    elif change == 'source_scope':
+        facts[-1] = replace(facts[-1], source_document_id=UUID(int=999))
+    elif change == 'hidden':
+        source = source.replace(b'id="corroborating"', b'id="corroborating" style="display:none"')
+    elif change == 'hidden_ancestor':
+        source = source.replace(b'<div><table>', b'<div style="display:none"><table>')
+    elif change == 'duplicate_id':
+        source = source.replace(b'</body>', b'<span id="corroborating"></span></body>')
+    elif change in {'duplicate_context', 'missing_context'}:
+        from lxml import etree
+        tree = etree.fromstring(source)
+        context = tree.xpath('//*[@id="correct-date"]')[0]
+        if change == 'duplicate_context':
+            context.getparent().append(deepcopy(context))
+        else:
+            context.getparent().remove(context)
+        source = etree.tostring(tree)
+    elif change == 'raw_date':
+        source = source.replace(b'<xbrli:instant>2026-04-24</xbrli:instant>', b'<xbrli:instant>2026-04-23</xbrli:instant>')
+    else:
+        facts[0] = replace(facts[0], period_start=date(2026, 4, 26))
+    issue['evidence']['html_sha256'] = hashlib.sha256(source).hexdigest()
+    assert corroborate_opening_cash_issue(issue, source, facts) is None
+
+
+@pytest.mark.parametrize('second_value', ['2075', '2076'])
+def test_corroboration_retains_duplicate_agreement_but_never_cherry_picks(second_value):
+    parsed, facts, source = corroboration_fixture()
+    facts.append(replace(facts[-1], occurrence_key='second', numeric_value=Decimal(second_value), raw_value=second_value,
+        source_reference={**facts[-1].source_reference, 'element_id': 'second'}))
+    source = source.replace(b'</body>', (f'<p><ix:nonFraction id="second" name="g:{facts[-1].concept_name}" '
+        f'contextRef="correct-date" unitRef="usd">{second_value}</ix:nonFraction></p></body>').encode())
+    issue = parsed.structure['rows'][4][1]['quality_issues'][0]
+    issue['evidence']['html_sha256'] = hashlib.sha256(source).hexdigest()
+    result = corroborate_opening_cash_issue(issue, source, facts)
+    if second_value == '2076':
+        assert result is None
+    else:
+        assert [ref['inline_id'] for ref in result['corroborating_occurrences']] == ['corroborating', 'second']

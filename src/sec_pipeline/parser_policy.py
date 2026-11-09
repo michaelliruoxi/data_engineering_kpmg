@@ -3,6 +3,8 @@
 
 def policy_metadata(versions):
     revisions = {}
+    if versions.get('facts') == 'facts-v1':
+        revisions['facts'] = 'numeric-tag-boundaries-v1'
     if versions.get('reports') == 'report-v1':
         revisions['reports'] = 'visible-table-rows-v2'
     if versions.get('tables') in {'tables-v2', 'tables-v3', 'tables-v4'}:

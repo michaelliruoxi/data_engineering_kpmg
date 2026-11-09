@@ -211,6 +211,19 @@ class FilingAssessmentTests(unittest.TestCase):
         self.assertEqual(result["problems"], [])
         self.assertTrue(any("irregular digit grouping" in r and "'1,13,51'" in r for r in result["review"]))
 
+    def test_matching_xml_with_untagged_visible_digit_still_requires_review(self):
+        inline = MATCHED_INLINE.replace('<span>11,351</span></ix:nonFraction>',
+                                       '<span>11,35</span></ix:nonFraction><span>1 </span>')
+        result = self.assess(INLINE_FACTS.replace('-11351000000', '-1135000000'), inline)
+        self.assertEqual(result['status'], 'review')
+        self.assertEqual(result['problems'], [])
+        self.assertEqual(result['inline_correspondence']['mismatches'], 0)
+        self.assertEqual(result['inline_correspondence']['numeric_values_equal'], 3)
+        issue, = result['inline_correspondence']['numeric_tag_boundary_issues']
+        self.assertEqual((issue['visible_display'], issue['tagged_display'], issue['xml_value']),
+                         ('11,351', '11,35', '-1135000000'))
+        self.assertTrue(any('source tagging requires review' in reason for reason in result['review']))
+
     def test_unsupported_inline_format_fails_the_filing(self):
         unsupported = MATCHED_INLINE.replace('format="ixt:num-dot-decimal">4.27</', 'format="ixt:num-comma-decimal">4,27</')
         result = self.assess(INLINE_FACTS, unsupported)

@@ -78,6 +78,15 @@ def test_no_issue_receipt_is_fully_passed_without_hiding_source_checks():
     assert result['source_checks']=={'complete':True}
 
 
+def test_receipt_missing_numeric_boundary_verification_is_not_reused():
+    from sec_pipeline.filing_ingestion_v4 import REQUIRED_SOURCE_CHECKS
+    expected, row = receipt()
+    row[2] = dict.fromkeys(REQUIRED_SOURCE_CHECKS, True)
+    row[2].pop('numeric_tag_boundaries_verified')
+    conn = ReceiptConnection(row, registered_documents(expected))
+    assert backfill_v4.stored_receipt(conn, 'accession', 'filing-import-v4', expected, REQUIRED_SOURCE_CHECKS) is None
+
+
 @pytest.mark.parametrize('mutation',[
     lambda r:r[0]['source_hashes'].update({'extra.htm':'e'*64}),
     lambda r:r[2].clear(), lambda r:r[3].update(period_header_consistency=True),

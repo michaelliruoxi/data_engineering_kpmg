@@ -65,7 +65,7 @@ class InlineValueTransformTests(unittest.TestCase):
                     numeric_value(value, transform)
 
     def test_numeric_bad_grammar_namespace_and_kind_fail(self):
-        for text, transform, options in [('1,23', XII + 'num-dot-decimal', {}), ('-1', None, {}),
+        for text, transform, options in [('1.2,3', XII + 'num-dot-decimal', {}), ('-1', None, {}),
                 ('NaN', None, {}), ('INF', None, {}), ('1', '{https://invalid.test}num-dot-decimal', {}),
                 ('1', None, {'sign': '+'}), ('1', None, {'scale': ''}), ('1', None, {'scale': '1.5'}), ('1', None, {'scale': '100001'}),
                 ('1', '{http://www.xbrl.org/inlineXBRL/transformation/2010-04-20}numdotdecimal', {}),
@@ -75,6 +75,20 @@ class InlineValueTransformTests(unittest.TestCase):
                 numeric_value(text, transform, **options)
         with self.assertRaises(UnsupportedInlineTransform):
             validate_transform(XII + 'num-dot-decimal', 'nonnumeric')
+
+    def test_modern_dot_decimal_uses_registry_4_and_5_separator_grammar(self):
+        # Registry 4/5 intentionally removed registry 2/3's three-digit grouping rule.
+        for registry in (XII, XII22):
+            for shown, value in [('206,376,66', '20637666'), ('1,23', '123'),
+                                 (',,12,,3,', '123'), ('1\t2,3.4\xa05', '123.45'), ('.5', '0.5')]:
+                with self.subTest(registry=registry, shown=shown):
+                    self.assertEqual(numeric_value(shown, registry + 'num-dot-decimal'), Decimal(value))
+            for shown in ('1.', '1.2,3', '1\u2003234', '-1', '+1', '1e2', '', ',,', '. '):
+                with self.subTest(registry=registry, shown=shown), self.assertRaises(UnsupportedInlineTransform):
+                    numeric_value(shown, registry + 'num-dot-decimal')
+        for registry in (TR2, TR3):
+            with self.subTest(registry=registry), self.assertRaises(UnsupportedInlineTransform):
+                numeric_value('206,376,66', registry + 'numdotdecimal')
 
     def test_nonnumeric_registry_dates_booleans_categories_and_durations(self):
         examples = [('June 30, 26', XII + 'date-monthname-day-year-en', '2026-06-30'),

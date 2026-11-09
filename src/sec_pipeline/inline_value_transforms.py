@@ -9,7 +9,7 @@ from datetime import date
 from decimal import Decimal, localcontext
 import re
 
-from .fact_extraction import _inline_scale, _legacy_inline_number, _small_english_number
+from .fact_extraction import _inline_scale, _legacy_inline_number, _modern_inline_number, _small_english_number
 
 
 XII = 'http://www.xbrl.org/inlineXBRL/transformation/'
@@ -134,9 +134,9 @@ def numeric_value(text, format_name=None, *, scale=None, sign=None):
             if shown is None:
                 raise UnsupportedInlineTransform('Unsupported numeric-word phrase.')
         elif namespace in MODERN and name == 'num-dot-decimal':
-            if not re.fullmatch(r'(?:[0-9]+|[0-9]{1,3}(?:[,\s\u00a0][0-9]{3})+)(?:\.[0-9]*)?|\.[0-9]+', shown):
-                raise UnsupportedInlineTransform('Invalid grouped dot-decimal input.')
-            shown = re.sub(r'[,\s\u00a0]', '', shown)
+            shown = _modern_inline_number(text)
+            if shown is None:
+                raise UnsupportedInlineTransform('Invalid registry 4/5 dot-decimal input.')
         else:
             shown = _legacy_inline_number(namespace, name, text)
             if shown is None:

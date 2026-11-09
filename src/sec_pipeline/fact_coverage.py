@@ -216,10 +216,17 @@ def assess_filing(manifest: dict[str, Any], root: Path, ticker: str) -> dict[str
         review.append(f"DocumentType context end {context['end']!r} differs from "
                       f"dei:DocumentPeriodEndDate {report_end!r}")
     irregular = correspondence.get("irregular_number_display", [])
-    if irregular:
-        review.append(f"{len(irregular)} number(s) printed with irregular digit grouping, for example "
-                      f"{irregular[0]['occurrence_key']} shown as {irregular[0]['displayed']!r}; "
-                      "the XML value may be off by a power of ten")
+    boundaries = correspondence.get("numeric_tag_boundary_issues", [])
+    boundary_keys = {issue["occurrence_key"] for issue in boundaries}
+    for issue in boundaries:
+        review.append(f"{issue['concept']} has an untagged adjacent digit: the visible number is "
+                      f"{issue['visible_display']!r}, the inline tag contains {issue['tagged_display']!r}, "
+                      f"and the unchanged XML value is {issue['xml_value']}; source tagging requires review")
+    other_irregular = [item for item in irregular if item["occurrence_key"] not in boundary_keys]
+    if other_irregular:
+        review.append(f"{len(other_irregular)} inline number(s) have irregular digit grouping, for example "
+                      f"{other_irregular[0]['occurrence_key']} tagged as {other_irregular[0]['displayed']!r}; "
+                      "this is permitted by modern transforms but warrants source review")
     missing = [group for group, status in core.items() if status != "exact"]
     if missing:
         review.append("no undimensioned fact at the report period end for: " + ", ".join(missing))
@@ -251,7 +258,8 @@ def assess_filing(manifest: dict[str, Any], root: Path, ticker: str) -> dict[str
             "facts", "inline_elements", "matched", "numeric_values_equal", "numeric_values_not_compared")}
                                  | {"mismatches": len(correspondence["mismatches"]),
                                     "inline_ids_without_fact": len(correspondence["inline_ids_without_fact"]),
-                                    "irregular_number_display": irregular},
+                                    "irregular_number_display": irregular,
+                                    "numeric_tag_boundary_issues": boundaries},
         "footnotes_not_extracted": inventory["not_extracted"]["footnotes"],
     }
 

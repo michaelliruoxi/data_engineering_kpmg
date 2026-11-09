@@ -1,0 +1,272 @@
+{
+  "schema_version": 1,
+  "investigation": "NTAP original-source tagging discrepancies",
+  "generated_at_utc": "2026-11-09T21:39:02.401699+00:00",
+  "base_commit": "f8d18e2825dbf34d556764c70e2255bce8bdfc8f",
+  "database_checked": false,
+  "database_changed": false,
+  "original_facts_changed": false,
+  "scope": "Two original HTML/XML pairs only; not a ten-ticker freshness or completeness audit.",
+  "code_sha256": {
+    "scripts/review_filing_source_issues.py": "baee29e0d5ec771b7ccc5e4170bf876d3ea552ed8a6b1c297d4975681c3ce2c6",
+    "src/sec_pipeline/fact_coverage.py": "7aaa88f3726689c6c19949be103fcc57e6c36a9e2d3fc4d43b35b85f10709238",
+    "src/sec_pipeline/fact_extraction.py": "2147450e45a9329850e68ee5f34d20cef4aadf30a884ca00989f75760551cd9f",
+    "src/sec_pipeline/filing_adapter.py": "491da797b7f0e99a03a8a93c1d18be2a86b9a634b42d3ffede614242eb04f532",
+    "src/sec_pipeline/filing_adapter_v3.py": "3fa35507c3c1378e91fe963f659479d7dc15d33d1e12c10ab443daf461013486",
+    "src/sec_pipeline/filing_adapter_v3_text.py": "8d0d9d5dbe7b8dac70ec919de795f8293c2aa2405f84c9064a1e19d58818012d",
+    "src/sec_pipeline/filing_parser_v4.py": "0413140317396f5fd1399991bb3af823beb1d50b5638d6b224bdcb9849406363",
+    "src/sec_pipeline/inline_document_sets.py": "12881b13e21623111fd8e90b076f8ffe481cb4f627b95493a121b5120cfb8c0b",
+    "src/sec_pipeline/inline_value_transforms.py": "7a2e7ee7222202d707e88848e10bcc0d5f975e831c99cc5052d5c5efeff8c706",
+    "src/sec_pipeline/parser_policy.py": "d256195afd47ccceacc8f9f79cd76ecb613e022b97f20a7b7ec379cb2ef18e98",
+    "src/sec_pipeline/source_cells_v4.py": "bf50ab3f8d8e9cc8b46c1f8527c962a0fc1af6407682bf0dbc154ac72f4a329d"
+  },
+  "filings": [
+    {
+      "ticker": "NTAP",
+      "form": "10-Q",
+      "accession_number": "0000950170-24-023115",
+      "filing_date": "2024-02-29",
+      "original_source_urls": {
+        "html": "https://www.sec.gov/Archives/edgar/data/1002047/000095017024023115/ntap-20240126.htm",
+        "xml": "https://www.sec.gov/Archives/edgar/data/1002047/000095017024023115/ntap-20240126_htm.xml"
+      },
+      "source_provenance": {
+        "html": "Previously archived original; byte hash verified, not redownloaded during this review.",
+        "xml_download_receipt": {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1002047/000095017024023115/ntap-20240126_htm.xml",
+          "retrieved_at_utc": "2026-11-09T21:25:48Z",
+          "http_status": 200,
+          "content_type": "text/xml",
+          "size_bytes": 2982627,
+          "sha256": "4b562dfcc3d66fc7d5580411a81838d26d8cfe58bbc2c43c5b5d0d40779f5318"
+        }
+      },
+      "reproduction": {
+        "schema_version": 1,
+        "scope": "offline_original_source_review",
+        "database_checked": false,
+        "corrections_applied": false,
+        "source_files": {
+          "html": "ntap-20240126.htm",
+          "xml": "ntap-20240126_htm.xml"
+        },
+        "source_sha256": {
+          "html": "4ff6e129b394f279b925152039a223722df76b1d9d6ce26402e5dbc1a3630548",
+          "xml": "4b562dfcc3d66fc7d5580411a81838d26d8cfe58bbc2c43c5b5d0d40779f5318"
+        },
+        "inline_correspondence": {
+          "html": {
+            "file": "ntap-20240126.htm",
+            "sha256": "4ff6e129b394f279b925152039a223722df76b1d9d6ce26402e5dbc1a3630548"
+          },
+          "facts": 1157,
+          "inline_elements": 1157,
+          "matched": 1157,
+          "numeric_values_equal": 1026,
+          "numeric_values_not_compared": 0,
+          "mismatches": [],
+          "inline_ids_without_fact": [],
+          "irregular_number_display": [
+            {
+              "occurrence_key": "F_ecfeb3b1-4b41-4de2-80ba-09a49da5b9c2",
+              "displayed": "206,376,66"
+            }
+          ],
+          "numeric_tag_boundary_issues": [
+            {
+              "occurrence_key": "F_ecfeb3b1-4b41-4de2-80ba-09a49da5b9c2",
+              "concept": "EntityCommonStockSharesOutstanding",
+              "xml_value": "20637666",
+              "tagged_display": "206,376,66",
+              "visible_display": "206,376,661",
+              "untagged_digits": "1",
+              "inline_xpath": "/*/*[2]/*[38]/*[2]/*[name()='ix:nonFraction']",
+              "adjacent_xpath": "/*/*[2]/*[38]/*[3]",
+              "adjacent_text_slot": "text"
+            }
+          ]
+        },
+        "cash_period_issues": [],
+        "limits": [
+          "Raw facts and sealed table payloads are unchanged.",
+          "Corroboration explains the expected date; it does not approve or rebind the original occurrence.",
+          "UUIDs in reconstructed issue evidence are offline placeholders, not database IDs."
+        ],
+        "tables_reconstructed": 3,
+        "unresolved_table_cells": 0,
+        "status": "review_required"
+      }
+    },
+    {
+      "ticker": "NTAP",
+      "form": "10-Q",
+      "accession_number": "0001193125-26-380207",
+      "filing_date": "2026-09-02",
+      "original_source_urls": {
+        "html": "https://www.sec.gov/Archives/edgar/data/1002047/000119312526380207/ntap-20260731.htm",
+        "xml": "https://www.sec.gov/Archives/edgar/data/1002047/000119312526380207/ntap-20260731_htm.xml"
+      },
+      "source_provenance": {
+        "html": "Previously archived original; byte hash verified, not redownloaded during this review.",
+        "xml_download_receipt": {
+          "source_url": "https://www.sec.gov/Archives/edgar/data/1002047/000119312526380207/ntap-20260731_htm.xml",
+          "retrieved_at_utc": "2026-11-09T21:27:25Z",
+          "http_status": 200,
+          "content_type": "text/xml",
+          "size_bytes": 2145680,
+          "sha256": "7c13f213bedc626db2c7f8b919ca93d7609d1bbe73fd65f30e21b241e7428d85"
+        }
+      },
+      "reproduction": {
+        "schema_version": 1,
+        "scope": "offline_original_source_review",
+        "database_checked": false,
+        "corrections_applied": false,
+        "source_files": {
+          "html": "ntap-20260731.htm",
+          "xml": "ntap-20260731_htm.xml"
+        },
+        "source_sha256": {
+          "html": "a80d6bf070a6c2679cbea079cbba08abe15a39a7192827911e9ef04160b68b8a",
+          "xml": "7c13f213bedc626db2c7f8b919ca93d7609d1bbe73fd65f30e21b241e7428d85"
+        },
+        "inline_correspondence": {
+          "html": {
+            "file": "ntap-20260731.htm",
+            "sha256": "a80d6bf070a6c2679cbea079cbba08abe15a39a7192827911e9ef04160b68b8a"
+          },
+          "facts": 683,
+          "inline_elements": 683,
+          "matched": 683,
+          "numeric_values_equal": 587,
+          "numeric_values_not_compared": 0,
+          "mismatches": [],
+          "inline_ids_without_fact": [],
+          "irregular_number_display": [],
+          "numeric_tag_boundary_issues": []
+        },
+        "cash_period_issues": [
+          {
+            "table_key": "cash_flow",
+            "issue": {
+              "issue_key": "period-review:846e2c900fb915759d8593760aa1f0c9a31ae53600a0d9fd2aee73689f784ddc",
+              "code": "opening_balance_date_not_prior_day",
+              "rule_version": "cash-period-review-v1",
+              "expected": {
+                "period": {
+                  "endDate": "2026-07-31",
+                  "startDate": "2026-04-25"
+                },
+                "opening_instant": "2026-04-24"
+              },
+              "observed": {
+                "period": {
+                  "instant": "2026-04-25"
+                },
+                "concept": "{http://fasb.org/us-gaap/2026}CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+                "context_ref": "C_04a951ad-a9a3-4b46-b971-72d9868c7d70",
+                "unit_ref": "U_USD",
+                "unit": {
+                  "numerator": [
+                    "{http://www.xbrl.org/2003/iso4217}USD"
+                  ],
+                  "denominator": []
+                },
+                "dimensions": [],
+                "raw_value": "2075000000",
+                "is_nil": false,
+                "entity": {
+                  "scheme": "http://www.sec.gov/CIK",
+                  "identifier": "0001002047"
+                }
+              },
+              "evidence": {
+                "html_document_id": "00000000-0000-0000-0000-000000000002",
+                "html_sha256": "a80d6bf070a6c2679cbea079cbba08abe15a39a7192827911e9ef04160b68b8a",
+                "xml_sha256": "7c13f213bedc626db2c7f8b919ca93d7609d1bbe73fd65f30e21b241e7428d85",
+                "cell_xpath": "/html/body/div[18]/table/tr[38]/td[3]",
+                "inline_xpath": "/html/body/div[18]/table/tr[38]/td[3]/p/span/ix:nonfraction",
+                "numeric_source_xpath": "/html/body/div[18]/table/tr[38]/td[3]/p/span/*[name()='ix:nonfraction']",
+                "inline_id": "F_53290b14-2c99-4abd-8568-269fa89e91d2",
+                "display_text": "2,075",
+                "row_heading": "Beginning of period",
+                "column_headings": [
+                  "Three Months Ended",
+                  "July 31, 2026"
+                ],
+                "core_coverage": {
+                  "flow_xml_ids": [
+                    [
+                      "F_75fa04cc-f297-46e5-9fa8-9396cd356e16"
+                    ],
+                    [
+                      "F_42667d17-dd2b-4974-a3ab-508c43d1c630"
+                    ],
+                    [
+                      "F_b2722243-7ffa-4157-adbe-fbab2c0be09f"
+                    ]
+                  ],
+                  "closing_cash_xml_ids": [
+                    "F_4d640806-2266-46cb-92e0-70ff33810a2e"
+                  ],
+                  "corresponding_closing_cash_xml_id": "F_4d640806-2266-46cb-92e0-70ff33810a2e"
+                },
+                "source_correspondence": "exact_inline_xml"
+              }
+            },
+            "corroboration": {
+              "diagnostic_version": "opening-cash-corroboration-v1",
+              "status": "corroborated_source_date_conflict",
+              "issue_key": "period-review:846e2c900fb915759d8593760aa1f0c9a31ae53600a0d9fd2aee73689f784ddc",
+              "html_sha256": "a80d6bf070a6c2679cbea079cbba08abe15a39a7192827911e9ef04160b68b8a",
+              "observed_inline_id": "F_53290b14-2c99-4abd-8568-269fa89e91d2",
+              "observed_period": {
+                "instant": "2026-04-25"
+              },
+              "corroborated_period": {
+                "instant": "2026-04-24"
+              },
+              "corroborating_occurrences": [
+                {
+                  "concept": "{http://fasb.org/us-gaap/2026}CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+                  "context_ref": "C_3ab7b166-9033-4f8a-a746-2d60d586018a",
+                  "unit_ref": "U_USD",
+                  "unit": {
+                    "numerator": [
+                      "{http://www.xbrl.org/2003/iso4217}USD"
+                    ],
+                    "denominator": []
+                  },
+                  "raw_value": "2075000000",
+                  "is_nil": false,
+                  "period": {
+                    "instant": "2026-04-24"
+                  },
+                  "dimensions": [],
+                  "inline_id": "F_b24e750f-c266-462a-a044-a7914d4ef326",
+                  "inline_document_id": "00000000-0000-0000-0000-000000000002",
+                  "inline_xpath": "/html/body/div[30]/div/ix:continuation/div[1]/ix:continuation/table/tr[5]/td[8]/p/span/ix:nonfraction",
+                  "source_xpath": "/html/body/div[30]/div/*[name()='ix:continuation']/div[1]/*[name()='ix:continuation']/table/tr[5]/td[8]/p/span/*[name()='ix:nonfraction']",
+                  "display_text": "2,075",
+                  "entity": {
+                    "scheme": "http://www.sec.gov/CIK",
+                    "identifier": "0001002047"
+                  }
+                }
+              ],
+              "runtime_scope": "archived_dom_scripts_not_executed"
+            }
+          }
+        ],
+        "limits": [
+          "Raw facts and sealed table payloads are unchanged.",
+          "Corroboration explains the expected date; it does not approve or rebind the original occurrence.",
+          "UUIDs in reconstructed issue evidence are offline placeholders, not database IDs."
+        ],
+        "tables_reconstructed": 3,
+        "unresolved_table_cells": 0,
+        "status": "review_required"
+      }
+    }
+  ]
+}

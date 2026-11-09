@@ -41,7 +41,7 @@ from .v4_table_cells import v4_relational_cells
 VERSIONS = {'facts': 'facts-v1', 'tables': 'tables-v4', 'reports': 'report-v1', 'chunks': 'paragraph-v1'}
 COVERAGE = {'facts': 'complete', 'tables': 'partial', 'reports': 'unknown', 'chunks': 'complete'}
 PRIMARY_KINDS = frozenset({'balance_sheet', 'income_statement', 'cash_flow'})
-REQUIRED_CHECKS = ('document_set_complete', 'union_correspondence', 'numeric_values_compared',
+REQUIRED_CHECKS = ('document_set_complete', 'union_correspondence', 'numeric_values_compared', 'numeric_tag_boundaries_verified',
                    'source_cells_complete', 'source_bindings_exact', 'reports_complete', 'chunks_complete',
                    'fact_source_scope', 'statement_member_unambiguous', 'statement_segment_coverage',
                    'section_source_locators', 'section_labels_not_promoted', 'index_registrants_verified',

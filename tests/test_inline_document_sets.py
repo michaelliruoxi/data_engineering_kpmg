@@ -101,6 +101,27 @@ class InlineDocumentSetTests(unittest.TestCase):
         result = self.read(numeric('outer', numeric('inner')), target_numeric('outer') + target_numeric('inner'))
         self.assertEqual(result.inventory['matched'], 2)
 
+    def test_split_printed_number_fails_even_when_tag_and_xml_agree(self):
+        for secondary in (False, True):
+            with self.subTest(secondary=secondary):
+                body = '<span>' + numeric(text='206,376,66', format='ixt:num-dot-decimal') + '1 shares</span>'
+                docs, facts, digest = self.fixture('' if secondary else body, target_numeric(value='20637666'),
+                                                  extra=body if secondary else '')
+                before = [asdict(fact) for fact in facts]
+                with self.assertRaises(InlineDocumentSetError) as caught:
+                    read_inline_document_set(docs, facts, xml_sha256=digest)
+                self.assertEqual([asdict(fact) for fact in facts], before)
+                self.assertEqual(caught.exception.issues[0]['inline_id'], 'f1')
+                self.assertEqual(caught.exception.issues[0]['filename'], 'secondary.htm' if secondary else 'primary.htm')
+                self.assertIn('206,376,661 is printed', caught.exception.issues[0]['problem'])
+                self.assertNotIn('differs from the original XML amount', caught.exception.issues[0]['problem'])
+
+    def test_irregular_grouping_without_split_number_keeps_exact_xml_value(self):
+        result = self.read('<span>' + numeric(text='206,376,66', format='ixt:num-dot-decimal') + ' shares</span>',
+                           target_numeric(value='20637666'))
+        self.assertEqual(result.inventory['numeric_values_equal'], 1)
+        self.assertEqual(result.occurrences[0]['evidence']['inline_mapped_value'], '20637666')
+
     def test_duplicate_ids_missing_ids_and_nonbijective_sets_fail(self):
         cases = [
             (numeric() + numeric(), target_numeric(), ''),

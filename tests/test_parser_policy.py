@@ -23,12 +23,14 @@ from tests.test_filing_ingestion_v4 import scenario, ingest
 def test_every_active_profile_has_report_revision_and_correct_table_policy(table_version):
     versions = {**filing_adapter.VERSIONS, 'tables': table_version}
     revisions = policy_metadata(versions)['parser_revisions']
+    assert revisions['facts'] == 'numeric-tag-boundaries-v1'
     assert revisions['reports'] == 'visible-table-rows-v2'
     assert revisions.get('tables') == (None if table_version == 'tables-v1' else 'logical-headers-v1')
 
 
 @pytest.mark.parametrize('document_set', [False, True])
-@pytest.mark.parametrize('stored', [{}, {'parser_revisions': {'reports': 'old'}}])
+@pytest.mark.parametrize('stored', [{}, {'parser_revisions': {'reports': 'old'}},
+                                    {'parser_revisions': {'reports': 'visible-table-rows-v2'}}])
 def test_stale_receipt_fails_before_any_write(document_set, stored):
     conn = SimpleNamespace(execute=Mock(return_value=SimpleNamespace(fetchone=lambda: (stored,))))
     with pytest.raises(ParserRevisionConflict, match='explicit new storage versions'):
@@ -47,7 +49,7 @@ def test_new_and_matching_receipts_can_proceed():
 def test_stale_dry_run_queue_is_reparsed_and_current_revision_can_be_reused(queue):
     for accession in queue.accessions:
         result = successful_result(queue, accession)
-        result.pop('parser_revisions')
+        result['parser_revisions'].pop('facts')
         queue.state['filings'][accession].update(status='validated', result=result)
     queue.dry_run.side_effect = lambda **kwargs: successful_result(queue, kwargs['manifest_path'].parent.name)
     assert backfill.process_queue(queue.path, queue.state, None, queue.root, limit=1, emit=lambda _: None) == 1
@@ -62,6 +64,14 @@ def test_stale_stored_receipt_is_not_a_successful_skip(queue):
     expected = configuration(queue.manifests[accession])
     receipt = selection_row(queue.manifests[accession])
     receipt[0].pop('parser_revisions')
+    assert backfill._stored_set(Connection(receipt), accession, 'filing-import-v1', expected) is False
+
+
+def test_receipt_without_numeric_boundary_check_is_not_reused(queue):
+    accession = queue.accessions[0]
+    expected = configuration(queue.manifests[accession])
+    receipt = selection_row(queue.manifests[accession])
+    receipt[11]['checks'].pop('numeric_tag_boundaries_verified')
     assert backfill._stored_set(Connection(receipt), accession, 'filing-import-v1', expected) is False
 
 
@@ -96,7 +106,7 @@ def test_legacy_ingestion_checks_revision_before_calling_fact_writer(tmp_path, m
 def test_v4_replay_rejects_old_revision_without_changing_existing_rows(scenario, monkeypatch):
     from sec_pipeline import filing_ingestion_v4 as runner
     ingest(scenario)
-    scenario.conn.state['seal'][4].pop('parser_revisions')
+    scenario.conn.state['seal'][4]['parser_revisions'].pop('facts')
     previous = deepcopy(scenario.conn.state)
     parse = Mock(side_effect=AssertionError('Old receipt must stop before parsing or writing'))
     monkeypatch.setattr(runner, 'parse_filing_set', parse)

@@ -6,6 +6,7 @@ from dataclasses import replace
 import hashlib
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 from uuid import UUID
 
 import pytest
@@ -233,7 +234,7 @@ def test_complete_set_commits_only_after_reconstruction_and_replays_exact_ids(sc
     assert result['counts']['accepted_cells'] == 0 and result['counts']['review_required_cells'] == 1
     assert result['source_hashes'] == {item['local_path']: item['sha256'] for item in [scenario.manifest['index_document'], *scenario.manifest['files']]}
     assert result['configuration']['document_set_manifest_sha256'] == scenario.digest
-    assert set(result['source_checks']) == set(runner.REQUIRED_SOURCE_CHECKS) and len(result['source_checks']) == 14
+    assert set(result['source_checks']) == set(runner.REQUIRED_SOURCE_CHECKS) and len(result['source_checks']) == 15
     assert scenario.conn.state['accepted_links'] == []
     assert not any('preferred' in query or 'selection' in query for query in scenario.conn.queries)
 
@@ -313,6 +314,18 @@ def test_dry_run_keeps_review_status_and_does_not_need_inventory_source_ids(scen
     assert result['mode'] == 'dry_run' and result['validation']['passed'] is False
     assert result['source_validation_status'] == 'passed' and result['coverage']['reports'] == 'unknown'
     assert scenario.conn.state == {} and scenario.conn.commits == scenario.conn.rollbacks == 0
+
+
+def test_missing_numeric_boundary_check_cannot_write_or_seal_v4_artifacts(scenario, monkeypatch):
+    checks = dict(scenario.parsed.checks)
+    checks.pop('numeric_tag_boundaries_verified')
+    monkeypatch.setattr(runner, 'parse_filing_set', lambda *args, **kwargs: replace(scenario.parsed, checks=checks))
+    facts_writer = Mock(side_effect=AssertionError('Unverified numeric boundaries must block artifact writes.'))
+    monkeypatch.setattr(runner, 'store_facts', facts_writer)
+    with pytest.raises(ProcessingError, match='required V4 source check'):
+        ingest(scenario)
+    facts_writer.assert_not_called()
+    assert scenario.conn.state == {} and scenario.conn.commits == 0 and scenario.conn.rollbacks == 1
 
 
 def test_rebind_rejects_wrong_placeholder_and_preassigned_section(scenario):
