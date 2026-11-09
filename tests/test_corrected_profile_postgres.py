@@ -14,14 +14,14 @@ from sec_pipeline.extraction_profiles import CORRECTED_PROFILE, corrected_tables
 from sec_pipeline.parser_policy import policy_metadata
 from sec_pipeline.processing import ProcessingError
 from sec_pipeline.publication import publish_corrected_set, rollback_corrected_set, served_selection
-from sec_pipeline.source_set_storage import ReportMembershipInput, store_v4_processing_set
+from sec_pipeline.source_set_storage import SOURCE_CHECKS, ReportMembershipInput, store_v4_processing_set
 from sec_pipeline.v4_table_cells import store_v4_table_cells
 from tests.test_catalog_postgres import disposable_catalog_database
 from tests.test_corrected_profile import original_sample_set
 from tests.test_source_set_postgres import database_fixture, local_connection, seal
 
 
-def corrected_fixture(conn, item, *, key="corrected-test"):
+def corrected_fixture(conn, item, *, key="corrected-test", **changes):
     versions = versions_for(CORRECTED_PROFILE)
     table, = corrected_tables([item.table])
     table_id = db.store_financial_table(conn, table)
@@ -39,6 +39,7 @@ def corrected_fixture(conn, item, *, key="corrected-test"):
         semantic_checks=item.selection.semantic_checks | {"primary_section_boundaries": True},
         configuration=item.selection.configuration | {"versions": versions, **policy_metadata(versions),
             "extraction_profile": CORRECTED_PROFILE, "section_validation_policy": "original-heading-v1"})
+    selection = replace(selection, **changes)
     set_id = store_v4_processing_set(conn, selection, table_ids=[table_id], reports=reports,
                                      issue_ids=list(cells.issue_ids.values()))
     return set_id, table_id, cells
@@ -78,6 +79,31 @@ def test_review_issues_remain_distinct_and_cannot_be_published(local_connection)
     assert served_selection(conn, item.filing) == ("source", old)
     assert conn.execute("SELECT count(*) FROM sec.source_publication_history WHERE filing_id=%s", (item.filing,)).fetchone()[0] == 0
     conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
+
+
+def test_republication_records_one_event_and_restores_previous_corrected_set(local_connection):
+    conn = local_connection
+    item = database_fixture(conn, review=False)
+    old = seal(conn, item)
+    first, _, _ = corrected_fixture(conn, item)
+    second, _, _ = corrected_fixture(conn, item, key="second-corrected")
+    publish_corrected_set(conn, item.filing, first, expected_current=("source", old))
+    publish_corrected_set(conn, item.filing, second, expected_current=("source", first))
+    assert conn.execute("SELECT count(*) FROM sec.source_publication_history WHERE filing_id=%s", (item.filing,)).fetchone()[0] == 2
+    assert rollback_corrected_set(conn, item.filing, second) == ("source", first)
+
+
+@pytest.mark.parametrize("changes", [
+    {"semantic_checks": {"period_header_consistency": True}},
+    {"source_checks": {key: True for key in SOURCE_CHECKS}},
+    {"configuration": {"versions": versions_for(CORRECTED_PROFILE), "extraction_profile": CORRECTED_PROFILE,
+                       "section_validation_policy": "original-heading-v1", "parser_revisions": {}}},
+])
+def test_database_refuses_missing_original_checks_or_stale_receipts(local_connection, changes):
+    conn = local_connection
+    item = database_fixture(conn, review=False)
+    with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+        corrected_fixture(conn, item, **changes)
 
 
 def test_corrected_only_filing_has_no_reader_content_before_publication(local_connection):
