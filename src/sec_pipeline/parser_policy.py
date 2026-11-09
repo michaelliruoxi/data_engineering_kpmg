@@ -5,9 +5,9 @@ def policy_metadata(versions):
     revisions = {}
     if versions.get('facts') == 'facts-v1':
         revisions['facts'] = 'numeric-tag-boundaries-v1'
-    if versions.get('reports') == 'report-v1':
+    if versions.get('reports') in {'report-v1', 'report-v2'}:
         revisions['reports'] = 'visible-table-rows-v2'
-    if versions.get('tables') in {'tables-v2', 'tables-v3', 'tables-v4'}:
+    if versions.get('tables') in {'tables-v2', 'tables-v3', 'tables-v4', 'tables-v5'}:
         revisions['tables'] = 'logical-headers-v1'
     return {'parser_revisions': revisions} if revisions else {}
 

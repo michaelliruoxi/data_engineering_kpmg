@@ -20,6 +20,7 @@ from lxml import html
 from . import filing_adapter as base
 from . import filing_adapter_v3 as source_adapter
 from .chunking import chunk_report
+from .extraction_profiles import LEGACY_PROFILE, CORRECTED_PROFILE, versions_for, corrected_tables
 from .database import ChunkInput, FactInput, FinancialTableInput, ReportInput
 from .document_sets import verify_document_set
 from .fact_extraction import IX, XML_ROLE, extract_facts
@@ -81,6 +82,7 @@ class ParsedFilingSet:
     counts: dict[str, int]
     source_inventory: dict
     registrants: tuple[dict, ...]
+    profile: str = LEGACY_PROFILE
 
     @property
     def manifest(self):
@@ -89,7 +91,7 @@ class ParsedFilingSet:
 
     @property
     def versions(self):
-        return dict(VERSIONS)
+        return versions_for(self.profile)
 
     @property
     def tables(self):
@@ -145,13 +147,14 @@ def _path(root, record):
     return path
 
 
-def _context(manifest, root, filing, xml_record, html_record, sources, report_id=None, report=None):
+def _context(manifest, root, filing, xml_record, html_record, sources, report_id=None, report=None, *, versions=None):
+    versions = VERSIONS if versions is None else versions
     # These are adapter-check arguments, not a replacement source manifest.
     member_manifest = {**manifest, 'files': [xml_record, {**html_record, 'role': 'main_inline_xbrl_filing'}]}
     return DryRunContext(manifest=member_manifest, data_root=root,
         source_ids=SourceIds(filing, sources[xml_record['source_url']], sources[html_record['source_url']]),
-        versions={**VERSIONS, 'tables': 'tables-v2'}, outputs={'report': ParseResult([report])} if report else {},
-        report_id=report_id or uuid5(sources[html_record['source_url']], VERSIONS['reports']))
+        versions={**versions, 'tables': 'tables-v2'}, outputs={'report': ParseResult([report])} if report else {},
+        report_id=report_id or uuid5(sources[html_record['source_url']], versions['reports']))
 
 
 def _statement_signals(tree):
@@ -238,7 +241,8 @@ def _checked_tables(manifest, root, filing, xml_record, member, sources, facts, 
     return v4
 
 
-def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None):
+def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None, profile=LEGACY_PROFILE):
+    versions = versions_for(profile)
     root, manifest_path = Path(data_root).resolve(), Path(manifest_path).resolve()
     manifest = verify_document_set(manifest_path, root)
     manifest_bytes = manifest_path.read_bytes()
@@ -255,22 +259,32 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
     union = read_inline_document_set(descriptors, facts, xml_sha256=xml_record['sha256'])
     selected = _choose_member(members, root, facts)
     tables = _checked_tables(manifest, root, filing, xml_record, selected, sources, facts, union.occurrences)
+    if profile == CORRECTED_PROFILE:
+        tables = corrected_tables(tables)
     documents = []
     for record in members:
         path = _path(root, record)
         source_id = sources[record['source_url']]
-        report_id = uuid5(source_id, VERSIONS['reports'])
+        report_id = uuid5(source_id, versions['reports'])
         cleaned = clean_report(path, form=manifest['form'])
-        report = ReportInput(filing_id=filing, source_document_id=source_id, extraction_version='report-v1',
+        report = ReportInput(filing_id=filing, source_document_id=source_id, extraction_version=versions['reports'],
                              full_text=cleaned.full_text, sections=deepcopy(cleaned.sections))
         chunks = tuple(chunk_report(filing_id=filing, report_id=report_id, full_text=report.full_text,
-                                   sections=report.sections, chunking_version='paragraph-v1'))
-        context = _context(manifest, root, filing, xml_record, record, sources, report_id, report)
+                                   sections=report.sections, chunking_version=versions['chunks']))
+        context = _context(manifest, root, filing, xml_record, record, sources, report_id, report, versions=versions)
         document = html.parse(str(path), parser=html.HTMLParser(encoding='utf-8', no_network=True))
         sections, locators, chunk_bounds = base._report_checks(context, report, chunks, document, path)
         _require(sections and locators and chunk_bounds, 'Report sections or chunk bounds fail original-document validation.')
         _require(all(section.get('validation_status') in {'detected', 'unverified'} for section in report.sections),
                  'Heuristic report section labels cannot be promoted to validated.')
+        if profile == CORRECTED_PROFILE and record['is_primary']:
+            from .report_validation import audit_report, source_heading_expectations
+            expected = source_heading_expectations(path, form=manifest['form'])
+            assessment = audit_report(path, form=manifest['form'], report=cleaned, chunks=chunks,
+                                      expected_section_ids=expected['expected_section_ids'])
+            _require(assessment['status'] == 'passed',
+                     'Corrected profile requires independently verified primary Part/Item boundaries: '
+                     + json.dumps({'status': assessment['status'], 'issues': assessment['issues']}, sort_keys=True))
         documents.append(ParsedDocument(source_id, record['source_url'], path.name, record['sha256'], record['is_primary'],
                          report_id, report, chunks, tables if record['source_url'] == selected['source_url'] else ()))
     core = json.loads(_path(root, manifest['core_manifest']).read_bytes())
@@ -287,13 +301,15 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
     checks = {key: True for key in REQUIRED_CHECKS if key != 'fresh_source_reconstruction'}
     return ParsedFilingSet(filing, sources[xml_record['source_url']], json.dumps(manifest, sort_keys=True, separators=(',', ':')),
         hashlib.sha256(manifest_bytes).hexdigest(), facts, union.occurrences, tuple(documents), checks,
-        {'period_header_consistency': not issues}, issues, dict(COVERAGE), counts, union.inventory, registrants)
+        {'period_header_consistency': not issues, **({'primary_section_boundaries': True} if profile == CORRECTED_PROFILE else {})},
+        issues, dict(COVERAGE), counts, union.inventory, registrants, profile)
 
 
-def validate_filing_set(parsed, manifest_path, data_root, *, filing_id=None, source_document_ids=None):
+def validate_filing_set(parsed, manifest_path, data_root, *, filing_id=None, source_document_ids=None, profile=LEGACY_PROFILE):
     """Independently rebuild every retained payload before accepting any write."""
     _require(isinstance(parsed, ParsedFilingSet), 'V4 validation requires the complete parsed filing-set DTO.')
-    expected = _build(manifest_path, data_root, filing_id=filing_id, source_document_ids=source_document_ids)
+    _require(parsed.profile == profile, 'Parsed profile differs from the requested artifact identities.')
+    expected = _build(manifest_path, data_root, filing_id=filing_id, source_document_ids=source_document_ids, profile=profile)
     for name in ('filing_id', 'xml_document_id', 'manifest_json', 'manifest_sha256', 'facts', 'occurrences', 'documents',
                  'semantic_checks', 'issues', 'coverage', 'counts', 'source_inventory', 'registrants'):
         _require(getattr(parsed, name) == getattr(expected, name), f'V4 {name} differs from fresh original-source reconstruction.')
@@ -304,8 +320,8 @@ def validate_filing_set(parsed, manifest_path, data_root, *, filing_id=None, sou
                                deepcopy(expected.semantic_checks), deepcopy(expected.issues), dict(expected.counts))
 
 
-def parse_filing_set(manifest_path, data_root, *, filing_id=None, source_document_ids=None):
+def parse_filing_set(manifest_path, data_root, *, filing_id=None, source_document_ids=None, profile=LEGACY_PROFILE):
     """Return only a complete, twice source-verified set; perform no database IO."""
-    result = _build(manifest_path, data_root, filing_id=filing_id, source_document_ids=source_document_ids)
-    validation = validate_filing_set(result, manifest_path, data_root, filing_id=filing_id, source_document_ids=source_document_ids)
+    result = _build(manifest_path, data_root, filing_id=filing_id, source_document_ids=source_document_ids, profile=profile)
+    validation = validate_filing_set(result, manifest_path, data_root, filing_id=filing_id, source_document_ids=source_document_ids, profile=profile)
     return replace(result, checks=validation.checks)

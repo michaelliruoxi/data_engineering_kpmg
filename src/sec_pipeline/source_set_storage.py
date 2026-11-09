@@ -19,6 +19,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from .database import DataConflict, DatabaseError
+from .extraction_profiles import supported_versions
 
 
 POLICY = 'inline-set-v1'
@@ -242,7 +243,7 @@ class V4ProcessingSetInput:
         _uuid(self.filing_id, 'filing_id')
         _uuid(self.document_set_id, 'document_set_id')
         _text(self.set_key, 'set_key')
-        if self.versions != VERSIONS:
+        if not supported_versions(self.versions):
             raise DatabaseError('V4 selection requires exact supported artifact versions.')
         if (not isinstance(self.source_checks, dict) or not SOURCE_CHECKS <= self.source_checks.keys()
                 or any(not isinstance(key, str) or not key.strip() or value is not True
