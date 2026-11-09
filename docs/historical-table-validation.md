@@ -58,6 +58,14 @@ Optional `--ticker`, repeatable `--manifest`, `--processing-set` and actual
 `--table-chunks` inputs are supported. Ordinary paragraph chunks are not promoted
 to table chunks. Draft producer links are not published when table checks fail.
 
+Use a new, empty `--output` directory for each scoped validation. A nonempty
+destination is rejected before writing so previous snapshots and checks cannot
+leak into a new run or overwrite its evidence. Supplemental manifests use the
+same confirmed date window; excluded accessions and their origins are recorded
+in `candidate_manifest.json`. Missing/invalid filing dates and conflicting CIKs
+stop validation. New in-window discoveries remain visible separately from the
+older section snapshot, including separate missing-database counts.
+
 Do not replace a database hash with a section-snapshot hash. Different recorded
 hashes for the same URL are unresolved provenance conflicts, not proof of which
 bytes or financial values are wrong. With no original bytes, both receipts must

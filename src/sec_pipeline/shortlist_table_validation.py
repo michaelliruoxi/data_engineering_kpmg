@@ -67,6 +67,38 @@ def restrict_inventory(inventory, scope, tickers):
     return inventory
 
 
+def restrict_additional_inputs(inputs, scope, companies):
+    """Apply the confirmed date window to every supported manifest layout.
+
+    Keep excluded accession evidence, and fail rather than guess missing dates
+    or issuer identities. Cross-manifest conflicts still reach the batch audit.
+    """
+    retained, excluded = [], []
+    start, end = scope["config"]["since"], scope["config"]["until"]
+    for origin, data in inputs:
+        candidates, conflicts, _ = batch.merge_candidates({}, [(origin, data)], companies)
+        if conflicts:
+            raise DatabaseError("Supplemental manifest conflicts with confirmed filing identity.")
+        rows = []
+        for candidate in candidates:
+            filing_date = candidate.get("filing_date")
+            try:
+                parsed_date = date.fromisoformat(filing_date)
+            except (ValueError, TypeError):
+                raise DatabaseError("Supplemental filings require a valid ISO filing date.") from None
+            if parsed_date.isoformat() != filing_date:
+                raise DatabaseError("Supplemental filings require a valid ISO filing date.")
+            if not start <= filing_date <= end:
+                excluded.append({"origin": origin, "accession": candidate["accession"],
+                    "filing_date": filing_date, "reason": "outside_confirmed_filing_date_window"})
+                continue
+            rows.append({"ticker": candidate["ticker"], "cik": candidate["CIK"],
+                "accession_number": candidate["accession"], "form": candidate["form"],
+                "filing_date": filing_date, "reporting_period": candidate["reporting_period"]})
+        retained.append((origin, {"filings": rows}))
+    return retained, excluded
+
+
 def local_manifests(roots):
     """Read only known archive layouts; do not scan private configuration."""
     found = {}
@@ -176,17 +208,20 @@ def explicit_table_chunks(snapshot, producer_records=()):
 
 def run_scoped_validation(config_path, section_audit_path, snapshot_root, roots, output, *, tickers=None,
                           additional_inputs=(), selections=None, producer_records=()):
+    if output.exists() and (not output.is_dir() or any(output.iterdir())):
+        raise DatabaseError("Use a new empty output directory to preserve prior evidence and exclude stale snapshots.")
     scope = load_scope(config_path, section_audit_path)
     tickers = set(tickers or scope["companies"])
     if tickers - set(scope["companies"]):
         raise DatabaseError("Requested ticker is outside the confirmed shortlist.")
     companies = {t: c for t, c in scope["companies"].items() if t in tickers}
     inventory = restrict_inventory(json.loads((snapshot_root / "shared-inventory.json").read_text()), scope, tickers)
+    supplemental, excluded = restrict_additional_inputs(additional_inputs, scope, companies)
     output.mkdir(parents=True, exist_ok=True)
     save_json(output / "shared-inventory.json", inventory)
     def reader(accession, selection):
         return json.loads((snapshot_root / accession / f"{selection['contract']}--{selection['id']}" / "snapshot.json").read_text())
-    inputs = [(str(section_audit_path), {"filings": scope["filings"]}), *additional_inputs]
+    inputs = [(str(section_audit_path), {"filings": scope["filings"]}), *supplemental]
     with (output / "validation_progress.jsonl").open("w", encoding="utf-8") as progress, redirect_stdout(progress):
         batch.run_validation(inventory, inputs, companies, roots, output, reader, selections,
                              include_prior_sample=True)
@@ -275,7 +310,8 @@ def run_scoped_validation(config_path, section_audit_path, snapshot_root, roots,
     save_json(output / "actual_trace_examples.json", traces)
     candidate_manifest = json.loads((output / "candidate_manifest.json").read_text())
     candidate_manifest.update(scope_status=scope["scope_status"], year_filter={"since": scope["config"]["since"], "until": scope["config"]["until"]},
-        discovery_snapshot_count=len(expected), snapshot_latest_filing_date=scope["snapshot_latest_filing_date"], section_pass_is_table_pass=False)
+        discovery_snapshot_count=len(expected), snapshot_latest_filing_date=scope["snapshot_latest_filing_date"], section_pass_is_table_pass=False,
+        supplemental_excluded_outside_requested_scope=excluded)
     save_json(output / "candidate_manifest.json", candidate_manifest)
     snapshot_rows = {r["accession"] for r in summaries if r["accession"] in expected}
     if snapshot_rows != set(expected):
@@ -283,7 +319,9 @@ def run_scoped_validation(config_path, section_audit_path, snapshot_root, roots,
     counts = dict(Counter(r["validation_status"] for r in summaries))
     result = {"finished_at_utc": batch.utc_now(), "scope_status": scope["scope_status"], "discovery_snapshot_count": len(expected),
         "summary_filings": len(summaries), "status_counts": counts, "current_shared_filings": len(inventory["filings"]),
-        "expected_not_in_shared_database": sum(r["current_database_presence"].startswith("absent") for r in summaries),
+        "expected_not_in_shared_database": sum(r["accession"] in expected and r["current_database_presence"].startswith("absent") for r in summaries),
+        "additional_candidates_not_in_shared_database": sum(r["accession"] not in expected and r["current_database_presence"].startswith("absent") for r in summaries),
+        "supplemental_excluded_outside_requested_scope": len(excluded),
         "processing_sets_checked": len(json.loads((output / "processing_candidates.json").read_text())),
         "validation_error_rows": len(errors), "evidence_or_review_rows": len(gaps),
         "source_receipt_conflicts": len(provenance),
@@ -316,6 +354,7 @@ def run_scoped_validation(config_path, section_audit_path, snapshot_root, roots,
 - Confirmed filing-date window: {scope['config']['since']} through {scope['config']['until']}, original 10-K/10-Q, {len(tickers)} companies.
 - Discovery snapshot: {len(expected)} filings, latest filing date {scope['snapshot_latest_filing_date']}. This is NOT future-2026 completeness or table acceptance.
 - Current read-only inventory: {len(inventory['filings'])} filings; {result['expected_not_in_shared_database']} discovered filings absent from that inventory.
+- Additional in-window candidates absent from that inventory: {result['additional_candidates_not_in_shared_database']}; excluded supplemental accessions outside the confirmed window: {len(excluded)}. See candidate_manifest.json for the exclusion evidence.
 - Table-validation statuses: `{json.dumps(counts, sort_keys=True)}`. Errors and evidence gaps are separate outputs.
 - Provenance conflicts: {len(provenance)} different recorded HTML hashes for identical URLs; this does not identify which bytes are correct and is NOT a proven financial-value defect.
 - Stored relationship status: `{json.dumps(result['database_relationship_status_counts'], sort_keys=True)}`.

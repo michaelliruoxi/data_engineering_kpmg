@@ -9,6 +9,7 @@ from dataclasses import asdict, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import psycopg
@@ -109,6 +110,33 @@ def metric(conn, filing, key, *, start=START, end=END, currency="USD"):
           AND period_end=%s AND currency=%s""", (filing, key, start, end, currency))
     assert len(found) == 1, (key, start, end, currency, found)
     return found[0]
+
+
+def test_shortlist_coverage_keeps_receipts_with_their_fact_version(finance_connection):
+    conn = finance_connection
+    item = legacy_fixture(conn, number=726958)  # CASY is in the shortlist.
+    for version in ("facts-v1", "facts-v2"):
+        add_fact(conn, item, "Assets", 100, instant=True, version=version)
+        db.store_fact(conn, db.FactInput(
+            filing_id=item.filing, source_document_id=item.source, extraction_version=version,
+            occurrence_key="report-end", concept_namespace="http://xbrl.sec.gov/dei/2026",
+            concept_name="DocumentPeriodEndDate", period_kind="duration", period_start=START,
+            period_end=END, raw_value=END.isoformat() if version == "facts-v1" else "2026-02-31"))
+    seal_legacy(conn, item, key="shortlist-reviewed")
+
+    script = (Path(__file__).resolve().parents[1] / "docs" / "fact-coverage-shortlist.sql").read_text()
+    # The fixture owns the rollback so run the reader's SELECT inside that transaction.
+    query = script.split("BEGIN TRANSACTION READ ONLY;", 1)[1].rsplit("ROLLBACK;", 1)[0]
+    with conn.cursor(row_factory=psycopg.rows.dict_row) as cursor:
+        results = cursor.execute(query).fetchall()
+    versions = {row["extraction_version"]: row for row in results
+                if row["source_document_id"] == item.source}
+    assert set(versions) == {"facts-v1", "facts-v2"}
+    assert all(row["facts"] == 2 for row in versions.values())
+    assert "shortlist-reviewed" in versions["facts-v1"]["processing_sets"]
+    assert versions["facts-v1"]["anchors_found_of_8"] == 1
+    assert versions["facts-v2"]["processing_sets"] is None
+    assert versions["facts-v2"]["anchors_found_of_8"] == 0
 
 
 def add_source_revenue(conn, item):

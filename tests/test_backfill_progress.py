@@ -67,12 +67,13 @@ def test_validated_only_ingestion_filters_work_without_trusting_the_dry_run(queu
     assert queue.state['last_run']['complete'] is False
 
 
-def test_database_size_limit_preserves_pending_entry_and_does_not_import(queue, monkeypatch):
+@pytest.mark.parametrize('size', [1000, 1500])
+def test_database_size_limit_preserves_pending_entry_and_does_not_import(queue, monkeypatch, size):
     from types import SimpleNamespace
     class SizedConnection(Connection):
         def execute(self, query, params=None):
             assert query == 'SELECT pg_database_size(current_database())'
-            return SimpleNamespace(fetchone=lambda: (1500,))
+            return SimpleNamespace(fetchone=lambda: (size,))
     monkeypatch.setattr(backfill, '_stored_set', lambda *args: False)
     before = deepcopy(queue.state['filings'])
     assert backfill.process_queue(queue.path, queue.state, None, queue.root, mode='ingest',
@@ -80,7 +81,7 @@ def test_database_size_limit_preserves_pending_entry_and_does_not_import(queue, 
     queue.ingest.assert_not_called()
     assert queue.state['filings'] == before
     assert queue.state['last_run']['stopped_reason'] == 'database_size_limit'
-    assert queue.state['last_run']['observed_database_bytes'] == 1500
+    assert queue.state['last_run']['observed_database_bytes'] == size
     assert queue.state['last_run']['complete'] is False
 
 

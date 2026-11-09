@@ -157,6 +157,27 @@ to the source sizes and monitor instance capacity. Existing sealed receipts can
 still be verified without new artifact writes. The CLI exits 2 with
 `last_run.stopped_reason = 'database_size_limit'` when the limit is reached.
 
+After increasing RDS storage and verifying the live allocation, pass the chosen
+database cutoff to either launcher with `-MaxDatabaseGiB`. Both preflight and
+ingestion use that same value; the default remains 14 GiB. For example, **only
+after confirming at least 50 GiB is allocated**, a cutoff of 40 GiB leaves
+10 GiB for other storage and growth between checks:
+
+```powershell
+# Read-only preflight; this does not start an import or resize RDS.
+.\scripts\run_backfill.ps1 -CheckOnly -MaxDatabaseGiB 40
+# Resume using the same cutoff after the preflight succeeds.
+.\scripts\run_backfill.ps1 -MaxDatabaseGiB 40
+# Alternatively, start the background launcher instead of the foreground run.
+# .\scripts\start_backfill.ps1 -MaxDatabaseGiB 40
+```
+
+The headroom in this example is not a guarantee against storage exhaustion.
+Check RDS `FreeStorageSpace` as well as database size. Increasing the command's
+cutoff does not allocate AWS storage, and enabling autoscaling does not remove
+the importer's explicit cutoff. Do not start a second worker to change the
+limit; stop the existing worker normally, then resume with the selected value.
+
 The membership JSON and archived HTML must remain together. Changing the
 membership snapshot, date window, or form list requires a new queue. A queue
 remembers the history mapping's path and hash. An explicit discovery run may

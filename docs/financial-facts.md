@@ -9,6 +9,7 @@
 | `store_facts(conn, facts)` | Store through `store_fact()` in the caller's transaction and return a `StoredFacts` mapping. It never commits. |
 | `check_inline_correspondence(html_path, facts)` | Compare the facts with the inline XBRL tags in the filing HTML. |
 | `lookup_fact_ids(conn, *, filing_id, source_document_id, extraction_version="facts-v1", occurrence_keys=None)` | Read the UUIDs of facts already stored in that database, by occurrence key (= inline HTML id). Read-only. |
+| `python -m sec_pipeline.fact_coverage` | Coverage summary across many archived filings, such as the ten-company shortlist. See [Ten-company coverage](#ten-company-coverage-20212026). |
 
 ## Commands
 
@@ -175,9 +176,74 @@ WHERE accession_number = '0001193125-26-191507'
 ORDER BY (source_reference->>'document_order')::int;
 ```
 
+## Ten-company coverage (2021–2026)
+
+The November 1 survey covered **233 filings** (59 original 10-Ks and 174 original 10-Qs) from AAPL, CASY, MCK, MDT, MSFT, MU, NKE, NTAP, PH and TTWO. It used the October 29 section-validation inventory. The filing-date window in `config/shortlist.json` extends through December 31, 2026, so a later discovery can include more filings. [Section validation](report-section-validation.md)
+
+### Run it
+
+On a machine with the acquisition archive ([shortlist acquisition](shortlist-acquisition.md)):
+
+```bash
+uv run --locked python -m sec_pipeline.fact_coverage \
+  --config config/shortlist.json --archive-root outputs/shortlist-20261028 \
+  --discovery outputs/shortlist-20261028/discovery.json --output outputs/fact-coverage-20261101
+```
+
+- It verifies each archive's hashes, then runs the same `extract_facts()` and `check_inline_correspondence()` as the import adapters. No database, no network.
+- Output: `coverage.md` (summary for the team), `coverage.csv` (one row per filing), `coverage.json` (everything). The output directory must be new or empty.
+- Per filing: occurrences extracted/failed, period kinds and the report period, units used, numeric/nil/text counts, dimensions, labels, DEI identity, inline correspondence, and eight primary-statement anchors (revenue, net income, diluted EPS, operating cash flow, assets, liabilities and equity, equity, cash) at the report period end.
+- A filing receives `review` when its DEI form or period disagrees with filing metadata or the DocumentType context, an anchor lacks a fact ending on the declared report date, or a number has irregular digit grouping. An extraction or correspondence failure yields `failed`. Source verification errors yield `archive_error`. Discovery entries without archives yield `missing_archive`.
+- Exit status is 0 when at least one filing was assessed and all passed, 2 when the report needs attention, and 1 for a setup error. Supply a complete discovery for the same configuration to detect missing filings. Add `--ticker MSFT` to select one company from that scope.
+
+On a database migrated through 010, a reader login can check the loaded facts by filing, XML source document and extraction version. The query counts stored facts and anchors at the DEI report date. Each processing-set receipt applies to the source and version on that row. Filings with no facts appear with zero counts. [Reader query](fact-coverage-shortlist.sql)
+
+### Survey of the original SEC files, November 1, 2026
+
+The survey read each filing's index, primary HTML, extracted XML instance and extension schema from the SEC. It used a browser-based JavaScript port of the validation rules at commit `724623f`, before the subsequent registry and coverage corrections. The bundled Microsoft filing matched on XML digest and sample counts (1,622 occurrences, 409 contexts, 6 units, 1,426 numeric, 2 nil, 194 text, 827 duration, 795 instant, 895 dimensional and 1,426 numeric values equal).
+
+The survey classified **232 filings as passed and one NetApp filing for review**. Its artifacts record XML digests and label-source presence. The Python archive command also records HTML digests, manifest report dates and counts of labelled facts. Run the command above for the archive's current results. [Survey summary](validation/fact-coverage-2021-2026.md) · [Survey CSV](validation/fact-coverage-2021-2026.csv) · [Survey JSON](validation/fact-coverage-2021-2026.json)
+
+| Check | Result |
+| --- | --- |
+| Filings reached | 233 of 233 (transient SEC HTTP 503 responses were retried) |
+| Fact occurrences | **290,632**, all extractable; 0 failures, 0 tuples |
+| Periods | 169,884 duration, 120,748 instant, 0 forever; no `dateTime` or reversed periods |
+| Values | 259,598 numeric (20,604 equal to zero), 445 nil, 30,589 text; 156,644 dimensional (796 typed) |
+| Units | every `unitRef` resolves to a unit with a numerator measure |
+| Fact ids | every fact has an `id`; every fact matches exactly one inline tag on concept, context, unit and nil; no inline tag lacks a fact |
+| DEI | `dei:DocumentPeriodEndDate` equals the end of the `DocumentType` context in all 233 |
+| Statement anchors | all eight anchors present at the report period end in all 233 |
+| Labels | embedded in the `.xsd` only for MSFT (from January 2024) and NTAP (from February 2024): 23 filings; the other 210 keep them in a separate `_lab.xml` |
+| Footnotes | 504 XBRL footnotes, counted but not attached (as in the sample) |
+
+The survey compared four numeric rule sets. The v1/v3/v3-text adapters require every numeric value to be compared.
+
+| Rule | Equal | Not compared | Filings with any not compared |
+| --- | ---: | ---: | ---: |
+| `facts-v1` before this change | 232,767 | 26,831 | **41** (would fail import) |
+| `inline_value_transforms` (tables-v4 path) before this change | 256,930 | 2,668 | 32 |
+| `facts-v1` at survey revision `724623f` | 259,598 | 0 | 0 |
+| `inline_value_transforms` at survey revision `724623f` | 259,597 | 1 | 1 (NTAP "206,376,66", below) |
+
+No value compared unequal in the survey. The 2,668 values the earlier tables-v4 rules could not compare included 2,661 em dashes, six NetApp number-word values and one irregularly grouped share count. Registry 2/3 formats appeared through mid-2021 for eight companies and through mid-2023 for MSFT and NTAP.
+
+### What changed for older filings
+
+- **Older numeric formats.** Apple's 10-Q 0000320193-21-000010 contains 448 `ixt:numdotdecimal` values and 46 `ixt:zerodash` values. Both validation paths recognize these names in the Registry 2/3 namespaces. An integer can be ungrouped or use commas, spaces or nonbreaking spaces between three-digit groups. A decimal point requires digits on both sides. Registry 2/3 `zerodash` accepts one of the listed dash characters, including the em dash. Registry 1 `numdash` accepts only an ASCII hyphen-minus.
+- **"N hundred thousand".** NetApp's 10-K 0001564590-21-033645 and five later filings tag office space as "three hundred thousand" (`ixt-sec:numwordsen`); the SEC value is 300000. Number words now allow a 1–999 coefficient before one magnitude. Phrases with two magnitudes or trailing words remain unsupported.
+- **Irregular digit grouping is reported.** NetApp's 10-Q 0000950170-24-023115 prints shares outstanding as "206,376,66"; the SEC's extracted value is **20,637,666**, about ten times smaller than the company's actual share count. The value matches its display once separators are removed, so it is not a mismatch, but `check_inline_correspondence()` now lists it under `irregular_number_display` and the coverage report marks the filing `review`. Do not use this fact as a share count without checking the filing.
+- Stored fact content is unchanged; these are validation changes only.
+
+### Known gaps for this scope
+
+- **Labels.** facts-v1 reads labels only from the extension schema in the four-file archive. Eight of the ten companies never embed labels there: every AAPL, CASY, MCK, MDT, MU, NKE, PH and TTWO filing, plus MSFT and NTAP before 2024, keeps them in a separate `_lab.xml` (210 filings), so their `label` is `NULL`. Concept names, values, periods and units are unaffected. Archiving `_lab.xml` would change stored content and needs a new facts version.
+- **Share count typo** above (NTAP 10-Q filed 2024-02-29).
+
 ## Limits of `facts-v1`
 
-- XBRL footnotes are not attached to facts. The sample has 3 footnotes linked to facts by 14 arcs; the inventory counts them under `not_extracted`.
+- XBRL footnotes are not attached to facts. The sample has 3 footnotes linked to facts by 14 arcs; the inventory counts them under `not_extracted`. The ten-company scope has 504.
 - Text values are not compared with the HTML, because inline text is transformed and split across continuation tags.
 - Periods must be plain dates. Fraction items and tuples are reported as failures instead of being stored.
-- Only the supplied Microsoft filing has been processed. Another filing needs its own inventory and checks.
+- Labels come only from the extension schema; see [Known gaps](#known-gaps-for-this-scope).
+- Python coverage has been checked on the bundled Microsoft filing. The November 1 survey provides separate evidence for the 233 filings. Acceptance of a filing depends on its own verified archive and review findings.

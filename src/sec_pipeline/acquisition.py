@@ -33,6 +33,12 @@ class AccessBlocked(AcquisitionError):
     """This client must not issue any further requests."""
 
 
+def shortlist_scope_key(config: dict[str, Any]) -> str:
+    """Identify the exact company, form, and filing-date scope of a discovery snapshot."""
+    core = {key: config[key] for key in ("since", "until", "forms", "companies")}
+    return hashlib.sha256(json.dumps(core, sort_keys=True).encode()).hexdigest()
+
+
 _ACCESSION = re.compile(r"[0-9]{10}-[0-9]{2}-[0-9]{6}\Z")
 _FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 _BLOCK_MARKERS = (
