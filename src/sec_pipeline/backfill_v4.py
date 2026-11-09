@@ -32,6 +32,8 @@ def stored_receipt(conn, accession, set_key, expected, required_checks):
                        for key, value in coverage.items())):
             return None
         review = counts['quality_issues'] > 0
+        if versions.get('tables') == 'tables-v5' and semantic.get('primary_section_boundaries') is not True:
+            return None
         if (review != (status == 'review_required') or review != (counts['review_required_cells'] > 0)
                 or semantic.get('period_header_consistency') is not (not review)
                 or any(type(value) is not bool or (value is False and key != 'period_header_consistency')

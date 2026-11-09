@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import UUID
 
 from .bulk_storage import store_many
+from .extraction_profiles import LEGACY_PROFILE, CORRECTED_PROFILE, versions_for
 from .chunking import store_chunks
 from .database import (
     ChunkInput, CompanyInput, FactInput, FinancialTableInput, ReportInput, SourceDocumentInput,
@@ -47,14 +48,16 @@ def _active(conn, phase):
              f'V4 transaction is inactive or aborted after {phase}.')
 
 
-def configuration_from_manifest(manifest, manifest_sha256):
+def configuration_from_manifest(manifest, manifest_sha256, *, profile=LEGACY_PROFILE):
     """Build the immutable receipt configuration from already verified sources."""
+    versions = versions_for(profile)
     records = [manifest['index_document'], *manifest['files']]
     _require(manifest.get('schema_version') == 2 and manifest.get('status') == 'verified', 'V4 requires a verified schema-2 manifest.')
     _require(isinstance(manifest_sha256, str) and len(manifest_sha256) == 64
              and all(character in '0123456789abcdef' for character in manifest_sha256), 'Invalid document-set manifest hash.')
     _require(len({record['local_path'] for record in records}) == len(records), 'Source paths are repeated.')
-    return {'versions': dict(VERSIONS), **policy_metadata(VERSIONS),
+    return {'versions': versions, **policy_metadata(versions),
+            **({'extraction_profile': profile, 'section_validation_policy': 'original-heading-v1'} if profile == CORRECTED_PROFILE else {}),
             'source_hashes': {record['local_path']: record['sha256'] for record in records},
             'source_documents': {record['local_path']: {key: record[key] for key in ('role', 'source_url', 'sha256', 'size_bytes')}
                                  for record in records},
@@ -75,9 +78,9 @@ def rebind_chunks(document, report_id):
     return tuple(result)
 
 
-def _parsed_checks(parsed, manifest, digest, filing_id, sources):
+def _parsed_checks(parsed, manifest, digest, filing_id, sources, *, profile=LEGACY_PROFILE):
     _require(isinstance(parsed, ParsedFilingSet) and parsed.manifest == manifest
-             and parsed.manifest_sha256 == digest and parsed.filing_id == filing_id and parsed.versions == VERSIONS,
+             and parsed.manifest_sha256 == digest and parsed.filing_id == filing_id and parsed.versions == versions_for(profile) and parsed.profile == profile,
              'Parsed filing scope or retained manifest differs from the registered sources.')
     _require(isinstance(parsed.checks, Mapping) and set(REQUIRED_SOURCE_CHECKS) <= parsed.checks.keys()
              and all(value is True for value in parsed.checks.values()), 'Every required V4 source check must pass explicitly.')
@@ -86,29 +89,29 @@ def _parsed_checks(parsed, manifest, digest, filing_id, sources):
     fact_ids = set()
     for fact in parsed.facts:
         _require(isinstance(fact, FactInput) and fact.filing_id == filing_id and fact.source_document_id == xml_id
-                 and fact.extraction_version == VERSIONS['facts']
+                 and fact.extraction_version == parsed.versions['facts']
                  and fact.occurrence_key == fact.source_reference.get('element_id')
                  and fact.occurrence_key not in fact_ids, 'Facts must retain unique original XML occurrences and scope.')
         fact_ids.add(fact.occurrence_key)
     members = manifest['document_set']['member_source_urls']
     _require(len(parsed.documents) == len(members) and {document.source_url for document in parsed.documents} == set(members),
              'Parsed reports must enumerate every original inline member exactly once.')
-    expected_scope = {'filing_id': str(filing_id), 'xml_document_id': str(xml_id), 'facts_version': VERSIONS['facts']}
+    expected_scope = {'filing_id': str(filing_id), 'xml_document_id': str(xml_id), 'facts_version': parsed.versions['facts']}
     issue_keys, table_keys = set(), set()
     for document in parsed.documents:
         _require(document.source_document_id == sources[document.source_url], 'Parsed HTML uses an unregistered source UUID.')
         report = document.report
         _require(isinstance(report, ReportInput) and report.filing_id == filing_id
                  and report.source_document_id == document.source_document_id
-                 and report.extraction_version == VERSIONS['reports'] and bool(document.chunks),
+                 and report.extraction_version == parsed.versions['reports'] and bool(document.chunks),
                  'Every original HTML member requires its own report and chunk inventory.')
         for chunk in document.chunks:
             _require(isinstance(chunk, ChunkInput) and chunk.filing_id == filing_id
-                     and chunk.chunking_version == VERSIONS['chunks'] and chunk.report_id == document.report_placeholder_id,
+                     and chunk.chunking_version == parsed.versions['chunks'] and chunk.report_id == document.report_placeholder_id,
                      'A chunk differs from its original document/report/version scope.')
         for table in document.tables:
             _require(isinstance(table, FinancialTableInput) and table.filing_id == filing_id
-                     and table.source_document_id == document.source_document_id and table.extraction_version == VERSIONS['tables']
+                     and table.source_document_id == document.source_document_id and table.extraction_version == parsed.versions['tables']
                      and table.structure.get('schema_version') == 3 and table.structure.get('fact_scope') == expected_scope,
                      'A table differs from its original HTML or target XML scope.')
             key = (table.source_document_id, table.table_key)
@@ -160,7 +163,7 @@ def _status(parsed):
 
 def _summary(parsed, configuration, counts, *, mode):
     status = _status(parsed)
-    return {'mode': mode, 'accession_number': parsed.manifest['accession_number'], 'versions': dict(VERSIONS),
+    return {'mode': mode, 'accession_number': parsed.manifest['accession_number'], 'versions': parsed.versions,
             'document_set_manifest_sha256': parsed.manifest_sha256, 'source_hashes': configuration['source_hashes'],
             'configuration': configuration, 'coverage': dict(parsed.coverage), 'counts': counts,
             'source_validation_status': 'passed', 'validation_status': status,
@@ -169,10 +172,10 @@ def _summary(parsed, configuration, counts, *, mode):
             'preferred': False}
 
 
-def run_dry_run(manifest_path, data_root):
+def run_dry_run(manifest_path, data_root, *, profile=LEGACY_PROFILE):
     """Return the pure parser's exact source/review result without a connection."""
-    parsed = parse_filing_set(Path(manifest_path), Path(data_root).resolve())
-    configuration = configuration_from_manifest(parsed.manifest, parsed.manifest_sha256)
+    parsed = parse_filing_set(Path(manifest_path), Path(data_root).resolve(), profile=profile)
+    configuration = configuration_from_manifest(parsed.manifest, parsed.manifest_sha256, profile=profile)
     # The parser owns deterministic dry-run IDs for all sources; its own full
     # reconstruction includes XML/index/schema IDs beyond the inline members.
     _require(set(REQUIRED_SOURCE_CHECKS) <= parsed.checks.keys() and all(value is True for value in parsed.checks.values()),
@@ -194,7 +197,7 @@ def _verify_stored(conn, parsed, sources, fact_ids, occurrence_ids, document_set
                 for record in [parsed.manifest['index_document'], *parsed.manifest['files']]}
     _require(len(rows) == len(expected) and set(rows) == expected, 'Registered source IDs, roles or hashes differ from verified receipts.')
     rows = conn.execute('SELECT occurrence_key,id FROM sec.financial_facts WHERE filing_id=%s AND source_document_id=%s AND extraction_version=%s',
-                        (filing_id, parsed.xml_document_id, VERSIONS['facts'])).fetchall()
+                        (filing_id, parsed.xml_document_id, parsed.versions['facts'])).fetchall()
     _require(len(rows) == len(fact_ids) and dict(rows) == fact_ids, 'Actual stored XML fact identities differ from the accepted occurrences.')
     rows = conn.execute('SELECT inline_id,id,fact_id,html_document_id FROM sec.fact_source_occurrences WHERE document_set_id=%s AND filing_id=%s',
                         (document_set_id, filing_id)).fetchall()
@@ -204,16 +207,19 @@ def _verify_stored(conn, parsed, sources, fact_ids, occurrence_ids, document_set
     for document in parsed.documents:
         report_id = reports[document.source_document_id]
         _assert_ids(conn, 'SELECT id FROM sec.reports WHERE filing_id=%s AND source_document_id=%s AND extraction_version=%s',
-                    (filing_id, document.source_document_id, VERSIONS['reports']), [report_id], 'reports')
+                    (filing_id, document.source_document_id, parsed.versions['reports']), [report_id], 'reports')
         _assert_ids(conn, 'SELECT id FROM sec.chunks WHERE filing_id=%s AND report_id=%s AND chunking_version=%s',
-                    (filing_id, report_id, VERSIONS['chunks']), chunks[document.source_document_id], 'chunks')
+                    (filing_id, report_id, parsed.versions['chunks']), chunks[document.source_document_id], 'chunks')
         _assert_ids(conn, 'SELECT id FROM sec.financial_tables WHERE filing_id=%s AND source_document_id=%s AND extraction_version=%s',
-                    (filing_id, document.source_document_id, VERSIONS['tables']), tables[document.source_document_id], 'tables')
-    _assert_ids(conn, 'SELECT id FROM sec.source_quality_issues WHERE document_set_id=%s AND filing_id=%s',
-                (document_set_id, filing_id), issues.values(), 'quality issues')
+                    (filing_id, document.source_document_id, parsed.versions['tables']), tables[document.source_document_id], 'tables')
+    _assert_ids(conn, '''SELECT issue.id FROM sec.source_quality_issues issue
+                JOIN sec.cell_source_fact_bindings binding ON binding.id=issue.binding_id
+                WHERE issue.document_set_id=%s AND issue.filing_id=%s AND binding.table_id=ANY(%s)''',
+                (document_set_id, filing_id, [identifier for values in tables.values() for identifier in values]),
+                issues.values(), 'quality issues')
 
 
-def run_ingestion(conn, *, manifest_path, data_root, processing_set_key='automated-v4', coverage=None):
+def run_ingestion(conn, *, manifest_path, data_root, processing_set_key='automated-v4', coverage=None, profile=LEGACY_PROFILE):
     """Return only after one outer transaction seals and commits the entire set.
 
     The caller supplies an idle, non-autocommit connection. No preferred legacy
@@ -226,7 +232,7 @@ def run_ingestion(conn, *, manifest_path, data_root, processing_set_key='automat
     path, root = Path(manifest_path).resolve(), Path(data_root).resolve()
     manifest = verify_document_set(path, root)
     digest = _digest(path)
-    configuration = configuration_from_manifest(manifest, digest)
+    configuration = configuration_from_manifest(manifest, digest, profile=profile)
     core_path = (root / manifest['core_manifest']['local_path']).resolve()
     phase, summary = 'metadata', None
     try:
@@ -234,7 +240,7 @@ def run_ingestion(conn, *, manifest_path, data_root, processing_set_key='automat
             seed = seed_manifest(conn, core_path, root)
             filing_id = seed['filing_id']
             _require(isinstance(filing_id, UUID), 'Metadata seeding returned no filing UUID.')
-            require_current_receipt(conn, filing_id, processing_set_key, VERSIONS, document_set=True)
+            require_current_receipt(conn, filing_id, processing_set_key, versions_for(profile), document_set=True)
             sources = {}
             for record in [manifest['index_document'], *manifest['files']]:
                 if record['role'] == SUPPLEMENTAL_ROLE:
@@ -249,8 +255,8 @@ def run_ingestion(conn, *, manifest_path, data_root, processing_set_key='automat
             _require(len(set(sources.values())) == len(sources) and filing_id not in sources.values(), 'Registered source identities are not distinct.')
             _active(conn, phase)
             phase = 'parse and validate'
-            parsed = parse_filing_set(path, root, filing_id=filing_id, source_document_ids=sources)
-            _parsed_checks(parsed, manifest, digest, filing_id, sources)
+            parsed = parse_filing_set(path, root, filing_id=filing_id, source_document_ids=sources, **({'profile': profile} if profile != LEGACY_PROFILE else {}))
+            _parsed_checks(parsed, manifest, digest, filing_id, sources, profile=profile)
             declared_coverage = dict(parsed.coverage) if coverage is None else dict(coverage)
             _require(declared_coverage == dict(parsed.coverage), 'Coverage must retain the parser-proven declaration without promotion.')
             for registrant in parsed.registrants:
@@ -304,10 +310,10 @@ def run_ingestion(conn, *, manifest_path, data_root, processing_set_key='automat
                     issues.update(stored.issue_ids)
                     _active(conn, phase)
             phase = 'fresh source reconstruction'
-            validation = validate_filing_set(parsed, path, root, filing_id=filing_id, source_document_ids=sources)
+            validation = validate_filing_set(parsed, path, root, filing_id=filing_id, source_document_ids=sources, **({'profile': profile} if profile != LEGACY_PROFILE else {}))
             _require(dict(validation.checks) == dict(parsed.checks) and dict(validation.semantic_checks) == dict(parsed.semantic_checks)
                      and tuple(validation.issues) == tuple(parsed.issues), 'Final reconstruction differs from the accepted payload.')
-            _parsed_checks(parsed, manifest, digest, filing_id, sources)
+            _parsed_checks(parsed, manifest, digest, filing_id, sources, profile=profile)
             _active(conn, phase)
             phase = 'stored inventory verification'
             _verify_stored(conn, parsed, sources, fact_ids, occurrence_ids, document_set_id, reports, chunks, tables, issues)
@@ -315,7 +321,7 @@ def run_ingestion(conn, *, manifest_path, data_root, processing_set_key='automat
             phase = 'source processing seal'
             set_id = store_v4_processing_set(conn, V4ProcessingSetInput(filing_id=filing_id, set_key=processing_set_key,
                 document_set_id=document_set_id, source_checks=dict(validation.checks), semantic_checks=dict(validation.semantic_checks),
-                coverage=declared_coverage, configuration=deepcopy(configuration)),
+                coverage=declared_coverage, configuration=deepcopy(configuration), versions=parsed.versions),
                 table_ids=[identifier for values in tables.values() for identifier in values],
                 reports=[ReportMembershipInput(report_id=identifier) for identifier in reports.values()], issue_ids=list(issues.values()))
             row = conn.execute('SELECT document_set_id,source_validation_status,validation_status,counts,configuration FROM sec.source_processing_sets WHERE id=%s AND filing_id=%s',
