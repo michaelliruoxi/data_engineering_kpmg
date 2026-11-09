@@ -10,15 +10,16 @@ from collections import Counter, defaultdict
 from copy import deepcopy
 from dataclasses import replace
 from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import re
 
 from lxml import etree
 
-from .fact_extraction import _inline_number, _is_nil, _parse
+from .fact_extraction import XBRLI, _Reject, _context, _inline_number, _is_nil, _parse, _resolve, _unit
 from .source_cells_v3 import (
-    INLINE_NAMESPACES, SourceBindings, SourceCellError, fact_reference,
+    INLINE_NAMESPACES, SourceBindings, SourceCellError, _visible_marker, fact_reference,
 )
 from .source_locators import inline_source_xpath, source_xpath
 from .tables import _hidden, _column_periods, column_headers, layout_grid, local
@@ -261,3 +262,122 @@ def validate_transformation(tables, original_tables, source, facts):
             or {table.table_key: table for table in tables} != {table.table_key: table for table in rebuilt}):
         raise SourceCellError('V4 source bindings or review issues differ from original source reconstruction.')
     return True
+
+
+def corroborate_opening_cash_issue(issue, source, facts):
+    """Return a separate source-review diagnostic, never a replacement binding.
+
+    A matching visible occurrence at the expected prior-day instant can explain
+    an opening-date conflict. Both its raw context/unit and numeric transform
+    must agree with the extracted fact. Existing V4 payloads remain unchanged.
+    Unsupported, ambiguous or contradictory evidence produces no diagnostic.
+    """
+    if not isinstance(issue, dict) or issue.get('code') != 'opening_balance_date_not_prior_day':
+        return None
+    try:
+        checked = ReviewSource(source, facts)
+        evidence, expected, observed = issue['evidence'], issue['expected'], issue['observed']
+        if evidence['html_sha256'] != checked.bindings.sha256 or checked.bindings.unsupported_rendering:
+            return None
+        start = date.fromisoformat(expected['period']['startDate'])
+        end = date.fromisoformat(expected['period']['endDate'])
+        prior = start - timedelta(days=1)
+        if (start >= end or expected.get('opening_instant') != prior.isoformat()
+                or observed.get('period') != {'instant': start.isoformat()}):
+            return None
+        identifier = evidence['inline_id']
+        original_fact = checked.facts[identifier]
+        scope = _scope(original_fact)
+        source_scope = (original_fact.filing_id, original_fact.source_document_id, original_fact.extraction_version)
+        contexts, units = defaultdict(list), defaultdict(list)
+        root = checked.numeric[identifier][0].getroottree().getroot()
+        for node in root.iter():
+            if node.tag == f'{{{XBRLI}}}context':
+                contexts[node.get('id')].append(node)
+            elif node.tag == f'{{{XBRLI}}}unit':
+                units[node.get('id')].append(node)
+
+        def occurrence(fact):
+            key = fact.source_reference.get('element_id')
+            if (len(checked.numeric.get(key, [])) != 1 or len(checked.bindings.ids.get(key, [])) != 1
+                    or fact.is_nil or fact.numeric_value is None
+                    or Decimal(fact.raw_value) != fact.numeric_value
+                    or (fact.filing_id, fact.source_document_id, fact.extraction_version) != source_scope):
+                raise SourceCellError('Corroboration requires a unique original source occurrence.')
+            raw, visible = checked.numeric[key][0], checked.bindings.ids[key][0]
+            context_id, unit_id = raw.get('contextRef'), raw.get('unitRef')
+            if (not _visible_marker(visible) or _is_nil(raw)
+                    or _resolve(raw.get('name'), raw) != (fact.concept_namespace, fact.concept_name)
+                    or context_id != fact.source_reference.get('context_ref')
+                    or unit_id != fact.source_reference.get('unit_ref')
+                    or _inline_number(raw) != fact.numeric_value
+                    or len(contexts[context_id]) != 1 or len(units[unit_id]) != 1
+                    or len(checked.bindings.ids[context_id]) != 1 or len(checked.bindings.ids[unit_id]) != 1):
+                raise SourceCellError('Corroboration differs from original visible inline evidence.')
+            context = _context(contexts[context_id][0])
+            if (any(context[name] != getattr(fact, name) for name in
+                    ('period_kind', 'period_start', 'period_end', 'instant_date', 'dimensions'))
+                    or context['entity'] != fact.source_reference.get('entity')
+                    or _unit(units[unit_id][0]) != fact.unit or _scope(fact) != scope):
+                raise SourceCellError('Corroboration scope or period differs from original resources.')
+            return visible, {
+                **deepcopy(fact_reference(fact)), 'inline_id': key,
+                'inline_document_id': evidence['html_document_id'],
+                'inline_xpath': inline_source_xpath(checked.bindings.tree, visible),
+                'source_xpath': source_xpath(checked.bindings.tree, visible),
+                'display_text': ' '.join(''.join(visible.itertext()).split()),
+                'entity': deepcopy(scope['entity']),
+            }
+
+        original, original_reference = occurrence(original_fact)
+        if (not _gaap(original_fact, CASH_CONCEPTS)
+                or original_fact.instant_date != start
+                or any(observed.get(key) != original_reference[key] for key in
+                       ('period', 'concept', 'context_ref', 'unit_ref', 'unit', 'dimensions', 'raw_value', 'is_nil', 'entity'))
+                or evidence['inline_xpath'] != original_reference['inline_xpath']):
+            return None
+        original_row = next(original.iterancestors('tr'), None)
+        if original_row is None:
+            return None
+        labels = original_row.xpath('./td|./th')
+        if not labels or not BEGINNING.search(_words(''.join(labels[0].itertext()))):
+            return None
+        original_table = next(original.iterancestors('table'), None)
+        groups = evidence['core_coverage']['flow_xml_ids']
+        if len(groups) != len(FLOW_GROUPS):
+            return None
+        for identifiers, names in zip(groups, FLOW_GROUPS):
+            if not identifiers:
+                return None
+            for core_id in identifiers:
+                core = checked.facts[core_id]
+                node, reference = occurrence(core)
+                if (not _gaap(core, names) or reference['period'] != expected['period']
+                        or next(node.iterancestors('table'), None) is not original_table):
+                    return None
+        matches = []
+        for candidate in checked.facts.values():
+            if (candidate.period_kind != 'instant' or candidate.instant_date != prior
+                    or (candidate.concept_namespace, candidate.concept_name) !=
+                       (original_fact.concept_namespace, original_fact.concept_name)
+                    or (candidate.filing_id, candidate.source_document_id, candidate.extraction_version) != source_scope):
+                continue
+            if _scope(candidate) != scope:
+                continue
+            node, reference = occurrence(candidate)
+            if candidate.numeric_value != original_fact.numeric_value:
+                # Do not cherry-pick a matching value from conflicting source facts.
+                return None
+            matches.append(reference)
+        if not matches:
+            return None
+        return {
+            'diagnostic_version': 'opening-cash-corroboration-v1',
+            'status': 'corroborated_source_date_conflict', 'issue_key': issue['issue_key'],
+            'html_sha256': checked.bindings.sha256, 'observed_inline_id': identifier,
+            'observed_period': deepcopy(observed['period']), 'corroborated_period': {'instant': prior.isoformat()},
+            'corroborating_occurrences': sorted(matches, key=lambda ref: ref['inline_id']),
+            'runtime_scope': 'archived_dom_scripts_not_executed',
+        }
+    except (KeyError, IndexError, TypeError, ValueError, InvalidOperation, SourceCellError, _Reject):
+        return None

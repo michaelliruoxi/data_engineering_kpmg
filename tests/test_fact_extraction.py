@@ -489,7 +489,7 @@ class InlineCorrespondenceTests(unittest.TestCase):
                 self.assertEqual(self.check(run(INLINE_FACTS).facts, inline)["numeric_values_not_compared"], 1)
 
     def test_irregular_digit_grouping_is_reported_without_failing(self):
-        # NetApp's 10-Q 0000950170-24-023115 prints shares outstanding as "206,376,66"; SEC XML has 20637666.
+        # NetApp tags "206,376,66" with a final printed "1" outside the numeric tag; SEC XML has 20637666.
         report = self.check(run(INLINE_FACTS).facts, INLINE.replace("11,351", "1,13,51"))
         self.assertEqual(report["mismatches"], [])
         self.assertEqual(report["numeric_values_equal"], 3)
@@ -608,6 +608,19 @@ class LoadPreflightTests(unittest.TestCase):
         report = self.assert_preflight_blocked()
         self.assertEqual(report["inline_correspondence"]["mismatches"], [])
         self.assertEqual(report["inline_correspondence"]["inline_ids_without_fact"], ["html_only"])
+
+    def test_visible_digit_outside_matching_numeric_tag_blocks_checked_loading(self):
+        inline = INLINE.replace('<span>11,351</span></ix:nonFraction>',
+                                '<span>11,35</span></ix:nonFraction><span>1 </span>')
+        self.prepare(body=self.body.replace('-11351000000', '-1135000000'), inline=inline)
+        report = self.assert_preflight_blocked()
+        correspondence = report['inline_correspondence']
+        self.assertEqual(correspondence['mismatches'], [])
+        self.assertEqual(correspondence['inline_ids_without_fact'], [])
+        self.assertEqual(correspondence['numeric_values_equal'], 4)
+        issue, = correspondence['numeric_tag_boundary_issues']
+        self.assertEqual((issue['visible_display'], issue['tagged_display'], issue['xml_value']),
+                         ('11,351', '11,35', '-1135000000'))
 
     def test_xml_fact_without_inline_id_blocks_loading(self):
         self.prepare(body=self.body + '<ex:Other id="xml_only" contextRef="day" unitRef="usd">1</ex:Other>')

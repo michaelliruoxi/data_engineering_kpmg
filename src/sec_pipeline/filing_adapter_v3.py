@@ -183,6 +183,7 @@ def validate(context):
         "fact_inline_correspondence": (correspondence["matched"] == len(facts) == correspondence["inline_elements"]
                                        and not correspondence["mismatches"] and not correspondence["inline_ids_without_fact"]),
         "numeric_values_compared": correspondence["numeric_values_not_compared"] == 0,
+        "numeric_tag_boundaries_verified": correspondence["numeric_tag_boundary_issues"] == [],
         "table_fact_references": references, "table_source_cells": cells,
         "report_text_matches_cleaner": reports[0].full_text == clean_report(path, form=context.manifest["form"]).full_text,
         "section_bounds_and_coverage": bool(sections), "section_source_locators": locators,

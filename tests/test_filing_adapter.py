@@ -11,6 +11,7 @@ from uuid import UUID
 import pytest
 
 from sec_pipeline import filing_adapter as adapter
+from sec_pipeline import filing_adapter_v2, filing_adapter_v3, filing_adapter_v3_text
 from sec_pipeline.database import ReportInput
 from sec_pipeline.processing import (
     DryRunContext, ParseResult, PipelineContext, ProcessingError, SourceIds,
@@ -106,6 +107,32 @@ def test_actual_inline_value_mismatch_blocks_validation(sample):
     facts[index] = replace(facts[index], numeric_value=facts[index].numeric_value + Decimal("1"))
     outputs["facts"] = ParseResult(facts)
     assert adapter.validate(replace(sample, outputs=outputs)).checks["fact_inline_correspondence"] is False
+
+
+@pytest.mark.parametrize("profile", [adapter, filing_adapter_v2, filing_adapter_v3, filing_adapter_v3_text])
+def test_numeric_boundary_review_blocks_every_legacy_profile_without_faking_xml_mismatch(sample, profile, monkeypatch):
+    outputs = {}
+    context = replace(sample, versions=dict(profile.VERSIONS), outputs=outputs)
+    plan = profile.get_dry_run_plan()
+    for stage in ("facts", "tables", "report", "chunks"):
+        outputs[stage] = getattr(plan.stages, stage)(context)
+    checker_owner = adapter if profile is filing_adapter_v2 else profile
+    original = checker_owner.check_inline_correspondence
+
+    def split_number(path, facts):
+        result = original(path, facts)
+        result["numeric_tag_boundary_issues"] = [{"occurrence_key": facts[0].occurrence_key,
+                                                  "tagged_display": "206,376,66", "visible_display": "206,376,661"}]
+        return result
+
+    monkeypatch.setattr(checker_owner, "check_inline_correspondence", split_number)
+    validation = profile.validate(context)
+    assert validation.checks["fact_inline_correspondence"] is True
+    assert validation.checks["numeric_values_compared"] is True
+    assert validation.checks["numeric_tag_boundaries_verified"] is False
+    with pytest.raises(ProcessingError) as caught:
+        _check_validation(validation, context.versions, plan.required_checks)
+    assert caught.value.failed_checks == ("numeric_tag_boundaries_verified",)
 
 
 def test_absent_inline_occurrence_blocks_validation(sample):

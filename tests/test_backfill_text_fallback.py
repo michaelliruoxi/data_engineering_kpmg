@@ -295,3 +295,16 @@ def test_validation_failures_name_their_checks(ingestion):
         ingestion.run_import()
     assert caught.value.failed_checks == ("table_source_cells",)
     assert caught.value.stage == "validation"
+
+
+def test_numeric_boundary_failure_rolls_back_text_fallback_without_sealing_receipt(ingestion):
+    ingestion.validation = replace(ingestion.validation,
+        checks={"fixture_rows": True, "numeric_tag_boundaries_verified": False})
+    with patch("sec_pipeline.catalog.store_processing_set") as store:
+        with pytest.raises(ProcessingError) as caught:
+            ingestion.run_import(plan=without_tables(ingestion), processing_set_key="fixture-text",
+                                 coverage={"facts": "complete", "tables": "absent", "reports": "unknown", "chunks": "complete"})
+    store.assert_not_called()
+    assert caught.value.failed_checks == ("numeric_tag_boundaries_verified",)
+    assert caught.value.stage == "validation"
+    ingestion.assert_rollback()

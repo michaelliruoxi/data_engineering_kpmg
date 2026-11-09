@@ -27,6 +27,7 @@ from lxml import etree
 import psycopg
 
 from .database import DatabaseError, FactInput, connect, seed_manifest, store_fact
+from .source_locators import source_xpath
 
 DEFAULT_VERSION = "facts-v1"
 XML_ROLE = "extracted_xbrl_instance"
@@ -696,6 +697,20 @@ def _inline_scale(scale: str | None, sign: str | None) -> int:
     return int(value)
 
 
+def _modern_inline_number(text: str) -> str | None:
+    """Registry 4/5 numDotDecimalType, including its XML whitespace collapse.
+
+    These registries permit integer digit separators anywhere, unlike 2/3.
+    https://www.xbrl.org/Specification/inlineXBRL-transformationRegistry/REC-2022-02-16/inlineXBRL-transformationRegistry-REC-2022-02-16.html
+    """
+    shown = re.sub(r"[ \t\r\n]+", " ", text.strip(_XML_SPACE))
+    if not re.fullmatch(r"[0-9, \xa0]*(?:\.[0-9 \xa0]+)?", shown):
+        return None
+    normalized = re.sub(r"[, \xa0]", "", shown)
+    # The transform must still produce a decimal, not an empty separator run.
+    return normalized if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?|\.[0-9]+", normalized) else None
+
+
 def _inline_number(element: etree._Element) -> Decimal | None:
     """Return the value an ix:nonFraction displays, or None for an unhandled format."""
     format_name = element.get("format")
@@ -721,8 +736,8 @@ def _inline_number(element: etree._Element) -> Decimal | None:
         # The XML value must still equal the resulting zero in correspondence.
         shown = "0"
     elif local == "num-dot-decimal" and namespace in {IXT_PREFIX + "2020-02-12", IXT_PREFIX + "2022-02-16"}:
-        shown = re.sub(r"[,\s\xa0]", "", text_value)
-        if not re.fullmatch(r"[0-9]+(\.[0-9]*)?|\.[0-9]+", shown):
+        shown = _modern_inline_number(text_value)
+        if shown is None:
             return None
     else:
         shown = _legacy_inline_number(namespace, local, text_value)
@@ -745,9 +760,9 @@ def _irregular_grouping(element: etree._Element) -> str | None:
     """Return a dot-decimal display whose digit groups are not threes, such as "206,376,66".
 
     Such a value still compares equal once separators are removed, so it is not a
-    mismatch, but it usually means the filer dropped or added a digit. NetApp's 10-Q
-    0000950170-24-023115 prints shares outstanding as "206,376,66" and the SEC's
-    extracted value is 20637666.
+    mismatch. NetApp's 10-Q 0000950170-24-023115 tags "206,376,66" but prints
+    a final "1" outside the numeric tag; the SEC's extracted value is 20637666.
+    Irregular grouping alone does not establish a source error.
     """
     try:
         _, local = _resolve(element.get("format"), element)
@@ -759,12 +774,94 @@ def _irregular_grouping(element: etree._Element) -> str | None:
     return None if _GROUPED.fullmatch(shown) else shown
 
 
+_BOUNDARY_LAYOUT_PROPERTY = re.compile(
+    r"(?:display|visibility|position|vertical-align|margin(?:-\w+)?|padding(?:-\w+)?|text-indent)\s*:", re.I)
+
+
+def _boundary_style(element: etree._Element) -> str:
+    return re.sub(r"/\*.*?\*/", "", element.get("style", ""), flags=re.S)
+
+
+def _plain_inline(element: etree._Element) -> bool:
+    """Bound adjacency evidence to ordinary inline text, excluding note markers."""
+    if not isinstance(element.tag, str):
+        return False
+    name = etree.QName(element)
+    if (name.namespace not in (None, "http://www.w3.org/1999/xhtml")
+            or name.localname.lower() not in {"span", "b", "strong", "i", "em", "u", "font"}):
+        return False
+    return not ("hidden" in element.attrib or element.get("aria-hidden", "").lower() == "true"
+                or _BOUNDARY_LAYOUT_PROPERTY.search(_boundary_style(element)))
+
+
+def _following_inline_text(element: etree._Element):
+    """Return the immediately following text slot without crossing a block."""
+    current = element
+    for _ in range(8):
+        parent = current.getparent()
+        if parent is None or (not _plain_inline(parent) and etree.QName(parent).localname.lower()
+                              not in {"p", "div", "td", "th"}):
+            return None
+        if current.tail:
+            return current, "tail", current.tail
+        sibling = current.getnext()
+        if sibling is not None:
+            for _ in range(8):
+                if not _plain_inline(sibling):
+                    return None
+                if sibling.text:
+                    return sibling, "text", sibling.text
+                if not len(sibling):
+                    return None
+                sibling = sibling[0]
+            return None
+        if not _plain_inline(parent):
+            return None
+        current = parent
+    return None
+
+
+def _numeric_tag_boundary(element: etree._Element, displayed: str) -> dict[str, str] | None:
+    """Expose a split printed number as evidence; never extend the tagged value."""
+    if not re.fullmatch(r"[0-9]{1,3}(?:,[0-9]{3})*,[0-9]{1,2}", displayed):
+        return None
+    tagged_text = "".join(element.itertext())
+    if not tagged_text or tagged_text[-1] not in "0123456789":
+        return None  # Trailing whitespace inside the tag separates tokens too.
+    if _BOUNDARY_LAYOUT_PROPERTY.search(_boundary_style(element)):
+        return None  # Numeric tags can themselves insert space or a block boundary.
+    for ancestor in (element, *element.iterancestors()):
+        if (etree.QName(ancestor).localname.lower() in {"a", "sup", "sub"}
+                or "hidden" in ancestor.attrib or ancestor.get("aria-hidden", "").lower() == "true"
+                or re.search(r"display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse)|vertical-align\s*:\s*(?:super|sub)",
+                             _boundary_style(ancestor), re.I)):
+            return None
+    following = _following_inline_text(element)
+    if following is None:
+        return None
+    node, slot, text = following
+    # Require an explicit token boundary in this original text slot. A bare
+    # digit at the end of a span might continue in another nested/sibling node.
+    match = re.match(r"([0-9]+)(?=\s)", text)
+    if match is None:
+        return None
+    visible = displayed + match[1]
+    if not _GROUPED.fullmatch(visible):
+        return None
+    tree = element.getroottree()
+    return {"tagged_display": displayed, "visible_display": visible,
+            "untagged_digits": match[1], "inline_xpath": source_xpath(tree, element),
+            "adjacent_xpath": source_xpath(tree, node), "adjacent_text_slot": slot}
+
+
 def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput]) -> dict[str, Any]:
     """Compare extracted facts with the inline XBRL tags in the filing's HTML.
 
     Facts are matched by id only. For each match the concept, contextRef, unitRef, and
-    nil flag must agree, and a displayed number (after scale and sign) must equal the
-    XML value. Text values are not compared, because HTML text is transformed.
+    nil flag must agree, and the tagged number (after scale and sign) must equal the
+    XML value. Visible digits outside a numeric tag are reported separately as a
+    source-boundary issue, even when tagged/XML values agree. Text values are not
+    compared, because HTML text is transformed.
     """
     data = Path(html_path).read_bytes()
     root = _parse(data, "Inline XBRL HTML")
@@ -774,6 +871,7 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
 
     mismatches: list[dict[str, str]] = []
     irregular: list[dict[str, str]] = []
+    boundaries: list[dict[str, str]] = []
     matched = values_compared = values_not_compared = 0
     for fact in facts:
         element_id = fact.source_reference.get("element_id")
@@ -808,6 +906,11 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
                 displayed = _irregular_grouping(element)
                 if displayed is not None:
                     irregular.append({"occurrence_key": fact.occurrence_key, "displayed": displayed})
+                    boundary = _numeric_tag_boundary(element, displayed)
+                    if boundary is not None:
+                        boundaries.append({"occurrence_key": fact.occurrence_key,
+                                           "concept": fact.concept_name, "xml_value": str(fact.numeric_value),
+                                           **boundary})
         if problems:
             mismatches.append({"occurrence_key": fact.occurrence_key, "problem": "; ".join(problems)})
         else:
@@ -825,6 +928,7 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
         "inline_ids_without_fact": sorted(str(key) for key in inline if key not in fact_ids),
         # Equal after removing separators, but not grouped in threes as printed; worth a look.
         "irregular_number_display": irregular,
+        "numeric_tag_boundary_issues": boundaries,
     }
 
 
@@ -884,7 +988,8 @@ def main(argv: list[str] | None = None) -> int:
         # An HTML/XML disagreement in either direction includes an inline tag with no fact.
         correspondence = report.get("inline_correspondence", {})
         problems = (extraction.failures or correspondence.get("mismatches")
-                    or correspondence.get("inline_ids_without_fact"))
+                    or correspondence.get("inline_ids_without_fact")
+                    or correspondence.get("numeric_tag_boundary_issues"))
         if args.load and problems:
             print(json.dumps(report, indent=2, default=str))
             return 1
