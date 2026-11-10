@@ -2,12 +2,16 @@
 
 from uuid import UUID
 
-from .database import DataConflict, DatabaseError
+from .database import DataConflict, DatabaseError, _packaged_migrations, migration_checksum_matches
 
 
 def _begin(conn, filing_id):
     if conn.autocommit or not isinstance(filing_id, UUID):
         raise DatabaseError("Publication requires a filing UUID and caller-managed transaction.")
+    migration = "012_publication_readers.sql"
+    row = conn.execute("SELECT sha256 FROM sec.schema_migrations WHERE name=%s", (migration,)).fetchone()
+    if row is None or not migration_checksum_matches(row[0], dict(_packaged_migrations())[migration]):
+        raise DatabaseError("Apply the reviewed publication/readers migration before changing selections.")
     conn.execute("SELECT sec.lock_processing_filing(%s)", (filing_id,))
 
 
@@ -52,14 +56,19 @@ def rollback_corrected_set(conn, filing_id, processing_set_id):
         if served_selection(conn, filing_id) != ("source", processing_set_id):
             raise DataConflict("The requested set is not the current reader selection.")
         previous = conn.execute(
-            """SELECT old_preference,previous_served_family,previous_served_set_id
-               FROM sec.source_publication_history
-               WHERE filing_id=%s AND new_preference=%s ORDER BY event_id DESC LIMIT 1""",
+            """SELECT event_id,old_preference,previous_served_family,previous_served_set_id
+               FROM sec.source_publication_history h
+               WHERE filing_id=%s AND new_preference=%s AND event_kind='publish'
+                 AND NOT EXISTS(SELECT 1 FROM sec.source_publication_history r
+                                WHERE r.reverts_event_id=h.event_id)
+               ORDER BY event_id DESC LIMIT 1""",
             (filing_id, processing_set_id),
         ).fetchone()
         if previous is None:
             raise DatabaseError("No prior publication evidence is available for rollback.")
-        pointer, family, identifier = previous
+        event_id, pointer, family, identifier = previous
+        old_context = conn.execute("SELECT current_setting('sec.rollback_publication_event',true)").fetchone()[0]
+        conn.execute("SELECT set_config('sec.rollback_publication_event',%s,true)", (str(event_id),))
         if pointer is None:
             conn.execute(
                 "DELETE FROM sec.preferred_source_processing_sets WHERE filing_id=%s AND processing_set_id=%s",
@@ -70,6 +79,7 @@ def rollback_corrected_set(conn, filing_id, processing_set_id):
                 "UPDATE sec.preferred_source_processing_sets SET processing_set_id=%s WHERE filing_id=%s",
                 (pointer, filing_id),
             )
+        conn.execute("SELECT set_config('sec.rollback_publication_event',%s,true)", (old_context or "",))
         actual = served_selection(conn, filing_id)
         if actual != (family, identifier):
             raise DataConflict("The prior serving baseline changed; rollback was not applied.")

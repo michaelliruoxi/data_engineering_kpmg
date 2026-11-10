@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 from uuid import UUID
 
@@ -11,23 +12,15 @@ from sec_pipeline.publication import publish_corrected_set, rollback_corrected_s
 from process_filing import check_connection_target, explicit_database_environment, ingestion_settings
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("inventory", "validate", "publish", "rollback"))
-    parser.add_argument("--accession", required=True)
-    parser.add_argument("--processing-set-id", type=UUID)
-    parser.add_argument("--env-file", type=Path, required=True)
-    parser.add_argument("--database", required=True)
-    parser.add_argument("--data-root", type=Path, default=Path("."))
-    parser.add_argument("--expected-family", choices=("legacy", "source", "none"))
-    parser.add_argument("--expected-set-id", type=UUID)
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args(argv)
-    if args.action != "inventory" and args.processing_set_id is None:
-        parser.error("This action requires --processing-set-id.")
-    if args.action == "publish" and (args.expected_family is None or
-            (args.expected_family == "none") != (args.expected_set_id is None)):
-        parser.error("Publish requires the reviewed --expected-family and its --expected-set-id, or family none.")
+def _write_evidence(output, result):
+    output.seek(0)
+    output.write(json.dumps(result, indent=2, default=str) + "\n")
+    output.truncate()
+    output.flush()
+    os.fsync(output.fileno())
+
+
+def _review(args, output):
     with explicit_database_environment():
         settings = ingestion_settings(args.env_file, args.database)
         with connect(args.env_file, **settings) as conn:
@@ -55,12 +48,49 @@ def main(argv=None):
                 expected = (None if args.expected_family == "none" else args.expected_family, args.expected_set_id)
                 with conn.transaction():
                     result["served_selection_after"] = publish_corrected_set(conn, filing_id, args.processing_set_id, expected_current=expected)
+                    result["transaction_status"] = "prepared"
+                    _write_evidence(output, result)
+                result["transaction_status"] = "committed"
             elif args.action == "rollback":
                 with conn.transaction():
                     result["served_selection_after"] = rollback_corrected_set(conn, filing_id, args.processing_set_id)
-                result["status"] = "rolled_back"
+                    result["status"] = "rolled_back"
+                    result["transaction_status"] = "prepared"
+                    _write_evidence(output, result)
+                result["transaction_status"] = "committed"
+    return result
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("inventory", "validate", "publish", "rollback"))
+    parser.add_argument("--accession", required=True)
+    parser.add_argument("--processing-set-id", type=UUID)
+    parser.add_argument("--env-file", type=Path, required=True)
+    parser.add_argument("--database", required=True)
+    parser.add_argument("--data-root", type=Path, default=Path("."))
+    parser.add_argument("--expected-family", choices=("legacy", "source", "none"))
+    parser.add_argument("--expected-set-id", type=UUID)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args(argv)
+    if args.action != "inventory" and args.processing_set_id is None:
+        parser.error("This action requires --processing-set-id.")
+    if args.action == "publish" and (args.expected_family is None or
+            (args.expected_family == "none") != (args.expected_set_id is None)):
+        parser.error("Publish requires the reviewed --expected-family and its --expected-set-id, or family none.")
+    # Reserve a fresh evidence file before touching the database. Never truncate
+    # an earlier acceptance record or a source file on a failed run.
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2, default=str) + "\n")
+    with args.output.open("x", encoding="utf-8") as output:
+        result = _review(args, output)
+        try:
+            _write_evidence(output, result)
+        except OSError as error:
+            if result.get("transaction_status") == "committed":
+                print(json.dumps({"action": args.action, "status": "committed_evidence_incomplete",
+                                  "error_type": type(error).__name__, "output": str(args.output)}))
+                return 3
+            raise
     print(json.dumps({"action": args.action, "status": result.get("status", "inventoried"), "output": str(args.output)}))
     return 2 if result.get("status") == "failed" else 0
 

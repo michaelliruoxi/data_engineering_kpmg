@@ -17,7 +17,7 @@ def stored_receipt(conn, accession, set_key, expected, required_checks):
             return None
         configuration, versions, checks, semantic, status, source_status, counts, digest, contract, filing, selection_id, document_set_id, coverage = row
         if (configuration != expected or versions != expected['versions'] or contract != 2
-                or digest != expected['document_set_manifest_sha256'] or source_status != 'passed'
+                or configuration.get('document_set_manifest_sha256') != expected['document_set_manifest_sha256'] or source_status != 'passed'
                 or status not in {'passed', 'review_required'}
                 or not isinstance(checks, dict) or not isinstance(semantic, dict) or not isinstance(counts, dict)
                 or not all(checks.get(key) is True for key in required_checks)
@@ -32,7 +32,7 @@ def stored_receipt(conn, accession, set_key, expected, required_checks):
                        for key, value in coverage.items())):
             return None
         review = counts['quality_issues'] > 0
-        if versions.get('tables') == 'tables-v5' and semantic.get('primary_section_boundaries') is not True:
+        if versions.get('tables') in {'tables-v5', 'tables-v6'} and semantic.get('primary_section_boundaries') is not True:
             return None
         if (review != (status == 'review_required') or review != (counts['review_required_cells'] > 0)
                 or semantic.get('period_header_consistency') is not (not review)
@@ -55,7 +55,8 @@ def stored_receipt(conn, accession, set_key, expected, required_checks):
         if len(actual) != len(documents) or any(actual.get(path) != record for path, record in expected_documents.items()):
             return None
         return {'mode': 'stored_receipt', 'accession_number': accession, 'versions': deepcopy(versions),
-                'document_set_manifest_sha256': digest, 'source_hashes': deepcopy(expected['source_hashes']),
+                'document_set_manifest_sha256': configuration['document_set_manifest_sha256'],
+                'original_document_set_manifest_sha256': digest, 'source_hashes': deepcopy(expected['source_hashes']),
                 'source_documents': deepcopy(expected_documents),
                 'configuration': deepcopy(configuration), 'counts': deepcopy(counts), 'coverage': deepcopy(coverage),
                 'source_validation_status': source_status, 'validation_status': status,

@@ -188,7 +188,7 @@ def _statement_heading(value):
     value = re.sub(r'[^a-z0-9]+', ' ', value.lower()).strip()
     value = re.sub(r'^(?:(?:condensed|consolidated|combined|unaudited|audited)\s+)+', '', value)
     if re.fullmatch(r'(?:statements? of (?:income|operations|earnings)(?: (?:loss|and comprehensive (?:income|loss)))?'
-                    r'|statements? of comprehensive income(?: loss)?|(?:income|operations|earnings) statements?)', value):
+                    r'(?: loss)?|statements? of comprehensive income(?: loss)?|(?:income|operations|earnings) statements?)', value):
         return 'income_statement'
     if re.fullmatch(r'(?:balance sheets?|statements? of financial (?:position|condition))', value):
         return 'balance_sheet'
@@ -279,25 +279,30 @@ def select_statements(tree, *, concept_groups=None):
     concept_groups = _STATEMENT_CONCEPTS if concept_groups is None else concept_groups
     candidates = {kind: [] for kind in concept_groups}
     continued = set()
-    parent_contexts = {context.get('id') for context in tree.iter() if local(context) == 'context'
-                       and any(local(member) == 'explicitmember' and text(member).split(':')[-1] == 'ParentCompanyMember'
-                               for member in context.iter())}
+    contexts = {context.get('id'): context for context in tree.iter() if local(context) == 'context'}
+    dimensional_contexts = {key for key, context in contexts.items()
+                            if any(local(member) in {'explicitmember', 'typedmember'} for member in context.iter())}
+    entities = {key: {(node.get('scheme'), text(node)) for node in context.iter()
+                      if local(node) == 'identifier'} for key, context in contexts.items()}
+    candidate_entities = {}
     for table in tree.xpath('//table'):
         if _hidden(table) or table.xpath('.//table'):
             continue
         kinds = _statement_headings(table)
         consolidated = _statement_headings(table, consolidated=True)
         continued.update(_statement_headings(table, continued=True))
-        concepts = set()
+        concepts, table_entities = set(), set()
         for element in table.iter():
             if (local(element) != 'nonfraction' or _hidden(element)
-                    or element.get('contextref') in parent_contexts):
+                    or element.get('contextref') in dimensional_contexts):
                 continue
             name = element.get('name', '')
             prefix, sep, concept = name.partition(':')
             namespace = _inline_namespaces(element).get(prefix, '')
             if sep and re.fullmatch(r'https?://(?:fasb\.org|xbrl\.us)/us-gaap/[^/]+', namespace):
                 concepts.add(concept)
+                table_entities.update(entities.get(element.get('contextref'), ()))
+        candidate_entities[table] = table_entities
         for kind in kinds:
             if all(concepts.intersection(group) for group in concept_groups[kind]):
                 candidates[kind].append((table, kind in consolidated))
@@ -312,6 +317,9 @@ def select_statements(tree, *, concept_groups=None):
         result[kind] = matches[0][0]
     if len({id(table) for table in result.values()}) != len(result):
         raise TableExtractionError('Different statements must resolve to distinct tables')
+    selected_entities = set().union(*(candidate_entities[table] for table in result.values()))
+    if len(selected_entities) > 1:
+        raise TableExtractionError('Primary statements mix reporting entities')
     return result
 
 
@@ -1431,19 +1439,53 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None):
     return tuple(output)
 
 
+def _validate_primary_scope(segments, facts):
+    """Core evidence must establish one whole reporting entity for each kind.
+
+    Detail rows may legitimately use the same concepts with product/portfolio
+    dimensions. They cannot supply the undimensioned primary-statement evidence.
+    """
+    entities, undimensioned = set(), set()
+    for segment in segments:
+        concepts = set().union(*_STATEMENT_CONCEPTS[segment.statement_type])
+        for element in segment.element.iter():
+            if local(element) != 'nonfraction' or _hidden(element):
+                continue
+            ref = facts.get(element.get('id'))
+            if ref is None or ref['concept'].split('}', 1)[-1] not in concepts:
+                continue
+            if any(dimension.get('dimension', '').endswith('}LegalEntityAxis')
+                   or dimension.get('member', '').endswith('}ParentCompanyMember')
+                   for dimension in ref['dimensions']):
+                raise TableExtractionError('Primary statement core facts use another registrant scope')
+            entity = ref.get('entity')
+            if not isinstance(entity, dict) or not entity.get('scheme') or not entity.get('identifier'):
+                raise TableExtractionError('Primary statement core facts lack source entity identity')
+            entities.add((entity['scheme'], entity['identifier']))
+            if not ref['dimensions']:
+                undimensioned.add(segment.statement_type)
+    if undimensioned != {segment.statement_type for segment in segments}:
+        raise TableExtractionError('Primary statements lack undimensioned core facts')
+    if len(entities) != 1:
+        raise TableExtractionError('Primary statements require one reporting entity')
+    return segments
+
+
 def select_statement_segments(tree, facts):
-    """Preserve established selections; resolve proved joint filers on fallback."""
-    try:
-        return _select_statement_segments_v2(tree, facts)
-    except TableExtractionError:
-        from .joint_statements import select_joint_statement_segments
-        selected = select_joint_statement_segments(tree, facts)
-        if selected is None:
-            from .statement_aliases import select_alias_statement_segments
-            selected = select_alias_statement_segments(tree, facts)
-            if selected is None:
-                raise
+    """Resolve combined-filer identity before attempting ordinary selection."""
+    from .joint_statements import select_joint_statement_segments
+    source_facts = _segment_facts(facts)
+    selected = select_joint_statement_segments(tree, source_facts)
+    if selected is not None:
         return selected
+    try:
+        selected = _select_statement_segments_v2(tree, facts)
+    except TableExtractionError:
+        from .statement_aliases import select_alias_statement_segments
+        selected = select_alias_statement_segments(tree, facts)
+        if selected is None:
+            raise
+    return _validate_primary_scope(selected, source_facts)
 
 
 def validate_statement_segments(tables, tree, facts, *, xml_path=None):
@@ -1657,8 +1699,8 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                     except TableExtractionError as exc:
                         cell['fact_references'] = []
                         cell['classification'], cell['unresolved_reason'] = 'unresolved', str(exc)
-                elif not is_header and cell['column'] > 0 and re.fullmatch(
-                        r'\(?\s*[\d,]+(?:\.\d+)?\s*\)?|[-–—]', value):
+                elif not is_header and cell['column'] > 0 and (re.search(r'[0-9]', value)
+                        or re.fullmatch(r'[-–—]', value)):
                     if any(re.fullmatch(r'notereferencenumbers?', re.sub(r'\s+', '', heading), re.I)
                            for heading in cell['column_headings']):
                         cell['classification'] = 'label'

@@ -84,6 +84,17 @@ class DocumentSetTests(unittest.TestCase):
             self.assertNotIn(IDENTITY, saved.decode())
             self.assertEqual([row['role'] for row in result['files']].count(SUPPLEMENTAL_ROLE), 1)
 
+    def test_offline_missing_supplemental_receipt_is_actionable_and_preserves_sources(self):
+        core, payloads, url, _ = set_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            core_path = save_fixture(root, core, payloads)
+            originals = {path: path.read_bytes() for path in root.rglob('*') if path.is_file()}
+            with self.assertRaisesRegex(DocumentSetError, "Offline.*supplemental original.*verified download receipt"):
+                download_document_set(None, core_path, root)
+            self.assertFalse(core_path.with_name(MANIFEST_NAME).exists())
+            self.assertEqual({path: path.read_bytes() for path in root.rglob('*') if path.is_file()}, originals)
+
     def test_conflicting_index_rows_primary_type_hosts_and_sequences_fail(self):
         for change in ('duplicate', 'type', 'host', 'sequence', 'primary_marker'):
             core, payloads, _, _ = set_fixture()

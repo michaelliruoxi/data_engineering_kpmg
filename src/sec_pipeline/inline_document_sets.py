@@ -395,8 +395,8 @@ def read_inline_document_set(documents, facts, *, xml_sha256):
                                  'Nested numeric facts disagree on format, unit or scale.')
                 value = numeric_value(content, formatted, scale=node.get('scale'), sign=node.get('sign'))
                 _require(value == fact.numeric_value and value == Decimal(fact.raw_value), 'Transformed inline number differs from the original XML amount.')
-                displayed = fx._irregular_grouping(node)
-                boundary = fx._numeric_tag_boundary(node, displayed) if displayed is not None else None
+                displayed = "".join(node.itertext()).strip()
+                boundary = fx._numeric_tag_boundary(node, displayed)
                 if boundary is not None:
                     raise InlineDocumentSetError(
                         'Printed number extends outside its inline numeric tag: '

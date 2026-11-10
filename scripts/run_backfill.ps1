@@ -1,4 +1,8 @@
-param([switch]$CheckOnly)
+[CmdletBinding()]
+param(
+    [switch]$CheckOnly,
+    [ValidateRange(1, 2147483647)][int]$MaxDatabaseGiB = 14
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -37,7 +41,7 @@ Write-Host "Error log:  $errorLog"
 try {
     # Native stderr must be logged without PowerShell 5 treating it as a terminating error.
     $ErrorActionPreference = 'Continue'
-    & $pythonPath -u (Join-Path $PSScriptRoot 'check_backfill_ready.py') 2> $errorLog |
+    & $pythonPath -u (Join-Path $PSScriptRoot 'check_backfill_ready.py') --max-database-gib $MaxDatabaseGiB 2> $errorLog |
         Tee-Object -FilePath $outputLog
     $preflightExitCode = $LASTEXITCODE
     if ($preflightExitCode -ne 0) {
@@ -47,7 +51,7 @@ try {
     } else {
         $phase = 'import'
         & $pythonPath -u (Join-Path $PSScriptRoot 'backfill_sec.py') `
-            --ingest --tables-version tables-v3 --max-database-gib 14 `
+            --ingest --tables-version tables-v3 --max-database-gib $MaxDatabaseGiB `
             --universe data/backfill/2026-10-13/universe.json `
             --state data/backfill/2026-10-13/queue.json `
             --since 2021-10-13 --until 2026-10-13 `

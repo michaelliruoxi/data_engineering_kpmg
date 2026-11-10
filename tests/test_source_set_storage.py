@@ -111,14 +111,19 @@ def selection():
         coverage={key:'complete' for key in ('facts','tables','reports','chunks')},configuration={})
 
 
-def test_document_set_exact_replay_preserves_ids_and_rejects_members_or_manifest_changes():
+def test_document_set_reverification_preserves_first_receipt_and_exact_stable_membership():
     conn=Recorder()
     record,members=documents()
     first=store_document_set(conn,record,members)
     before=deepcopy(conn.tables)
     assert store_document_set(conn,record,list(reversed(members))) == first
     assert conn.tables == before
-    for changed, changed_members in [(replace(record,manifest_sha256='f'*64),members), (record,members[:1]),
+    assert store_document_set(conn, replace(record, manifest_sha256='f' * 64), members) == first
+    assert conn.tables == before
+    for changed, changed_members in [(replace(record, evidence=record.evidence | {'extra': 'changed'}), members),
+        (replace(record, xml_document_id=UUID(int=98)), members),
+        (replace(record, index_document_id=UUID(int=97)), members),
+        (record, [replace(members[0], source_sha256='f' * 64), members[1]]), (record,members[:1]),
         (record,[*members,replace(members[1],source_document_id=UUID(int=99),sequence=3)])]:
         with pytest.raises(DataConflict):
             store_document_set(conn,changed,changed_members)
@@ -259,3 +264,15 @@ def test_real_document_set_reader_evidence_fits_occurrence_storage_contract(acce
             html_document_id=UUID(item['inline_document_id']),inline_id=item['inline_id'],source_xpath=item['source_xpath'],
             evidence=item['evidence'],fragments=item['fragments']) for index,item in enumerate(result.occurrences)]
     assert len(records)==expected
+
+
+def test_processing_membership_requires_chunking_version_from_exact_profile():
+    from sec_pipeline.extraction_profiles import REVIEWED_PROFILE, versions_for
+    conn = Recorder()
+    record = replace(selection(), versions=versions_for(REVIEWED_PROFILE))
+    with pytest.raises(DatabaseError, match='selected chunking version'):
+        store_v4_processing_set(conn, record, table_ids=[UUID(int=5)],
+            reports=[ReportMembershipInput(report_id=UUID(int=7))])
+    assert not conn.queries
+    store_v4_processing_set(conn, record, table_ids=[UUID(int=5)],
+        reports=[ReportMembershipInput(report_id=UUID(int=7), chunking_version='paragraph-v2')])

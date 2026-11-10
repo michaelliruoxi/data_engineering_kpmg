@@ -116,6 +116,15 @@ class InlineDocumentSetTests(unittest.TestCase):
                 self.assertIn('206,376,661 is printed', caught.exception.issues[0]['problem'])
                 self.assertNotIn('differs from the original XML amount', caught.exception.issues[0]['problem'])
 
+    def test_regular_numeric_tag_with_untagged_fraction_fails(self):
+        # MSFT F_001220 has this source shape: tagged 16, printed 16.7 billion.
+        for suffix in ('.7 billion', ',700 million', '7 billion', '.7'):
+            body = '<p>' + numeric(text='16', scale='9', format='ixt:num-dot-decimal') + suffix + '</p>'
+            with self.subTest(suffix=suffix), self.assertRaises(InlineDocumentSetError):
+                self.read(body, target_numeric(value='16000000000'))
+        for suffix in (' billion', '<sup>7</sup>', '<span> .7 billion</span>'):
+            self.read('<p>' + numeric(text='16') + suffix + '</p>', target_numeric(value='16'))
+
     def test_irregular_grouping_without_split_number_keeps_exact_xml_value(self):
         result = self.read('<span>' + numeric(text='206,376,66', format='ixt:num-dot-decimal') + ' shares</span>',
                            target_numeric(value='20637666'))

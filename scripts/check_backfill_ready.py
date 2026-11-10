@@ -59,10 +59,10 @@ def main(argv=None):
                         if not conn.execute('SELECT has_table_privilege(current_user,%s,%s)', ('sec.' + table, privilege)).fetchone()[0]:
                             raise ValueError('The configured database identity lacks importer privileges.')
                 size = conn.execute('SELECT pg_database_size(current_database())').fetchone()[0]
-        print(f'Read-only preflight passed: tables-v3; schema 001-009; {len(state["filings"]):,} queued filings; database {size / 1024**3:.2f} GiB.')
         if database_at_limit(size, database_limit_bytes(args.max_database_gib)):
-            print(f'The {args.max_database_gib} GiB cutoff is reached. No import was started.')
+            print(f'The {args.max_database_gib} GiB cutoff is reached (database {size / 1024**3:.2f} GiB). No import was started.')
             return 2
+        print(f'Read-only preflight passed: tables-v3; schema 001-009; {len(state["filings"]):,} queued filings; database {size / 1024**3:.2f} GiB; limit {args.max_database_gib} GiB.')
         print('Instance free storage is NOT measured by this database-size guard; verify recent RDS FreeStorageSpace before launch (docs/automated-backfill.md).')
         return 0
     except Exception as exc:

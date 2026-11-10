@@ -15,6 +15,19 @@ SEC = '{http://www.sec.gov/inlineXBRL/transformation/2015-08-31}'
 
 
 class InlineValueTransformTests(unittest.TestCase):
+    def test_legacy_recurring_month_day_formats(self):
+        # XBRL registry 2/3 recurring month/day functions return xs:gMonthDay.
+        for registry in (TR2, TR3):
+            for value, name, expected in [('May 31', 'datemonthdayen', '--05-31'),
+                                          ('6/30', 'datemonthday', '--06-30'),
+                                          ('February 29', 'datemonthdayen', '--02-29')]:
+                validate_transform(registry + name, 'nonnumeric')
+                self.assertEqual(nonnumeric_value(value, registry + name), expected)
+            for value, name in [('February 30', 'datemonthdayen'), ('13/1', 'datemonthday'),
+                                ('6/30/2026', 'datemonthday')]:
+                with self.assertRaises(UnsupportedInlineTransform):
+                    nonnumeric_value(value, registry + name)
+
     def test_state_province_names_are_exact_postal_mappings(self):
         examples = {'Michigan': 'MI', 'Idaho': 'ID', 'Georgia': 'GA', 'Ohio': 'OH',
                     'Washington': 'WA', 'District of Columbia': 'DC', 'New York': 'NY',

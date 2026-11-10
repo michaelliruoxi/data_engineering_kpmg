@@ -93,7 +93,7 @@ def test_receipt_missing_numeric_boundary_verification_is_not_reused():
     lambda r:r.__setitem__(4,'passed'), lambda r:r.__setitem__(5,'failed'),
     lambda r:r[6].update(unaccounted_cells=1), lambda r:r[6].update(reports=0),
     lambda r:r[6].update(review_required_cells=0), lambda r:r[6].update(quality_issues=-1),
-    lambda r:r[3].update(other_check=False), lambda r:r.__setitem__(7,'e'*64),
+    lambda r:r[3].update(other_check=False), lambda r:r[0].update(document_set_manifest_sha256='e'*64),
     lambda r:r.__setitem__(8,1), lambda r:r[2].update(unverified=False),
     lambda r:r[6].update(unaccounted_cells=False), lambda r:r[12].update(reports='absent'),
 ])
@@ -225,3 +225,12 @@ def test_reused_v4_receipt_replaces_stale_versions_counts_validation_and_manifes
     assert 'old' not in first['result']['source_hashes']
     assert first['result']['configuration']['source_hashes']==first['result']['source_hashes']
     p.run_ingestion.assert_not_called()
+
+
+def test_regenerated_manifest_receipt_keeps_original_source_set_evidence():
+    expected, row = receipt()
+    row[7] = 'e' * 64  # first acquisition receipt; membership/source bytes unchanged
+    conn = ReceiptConnection(row, registered_documents(expected))
+    result = backfill_v4.stored_receipt(conn, 'accession', 'filing-import-v4', expected, ['complete'])
+    assert result['document_set_manifest_sha256'] == expected['document_set_manifest_sha256']
+    assert result['original_document_set_manifest_sha256'] == 'e' * 64

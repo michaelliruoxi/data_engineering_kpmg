@@ -51,7 +51,8 @@ class StatementSelectionTests(unittest.TestCase):
         for heading in ('CONDENSED CONSOLIDATED STATEMENTS OF INCOME (UNAUDITED)',
                         'Consolidated Statements of Earnings', 'Statements of Operations',
                         'ConsolidatedStatements of Operations',
-                        'Consolidated Statements of Income (Loss)', 'Income Statements'):
+                        'Consolidated Statements of Income (Loss)', 'Income Statements',
+                        'Consolidated Statements of Operations and Comprehensive Income (Loss)'):
             with self.subTest(heading=heading):
                 selected = select_statements(filing(income_statement=statement('income_statement', heading)))
                 self.assertEqual(selected['income_statement'].get('id'), 'income_statement')

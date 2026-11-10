@@ -157,6 +157,27 @@ to the source sizes and monitor instance capacity. Existing sealed receipts can
 still be verified without new artifact writes. The CLI exits 2 with
 `last_run.stopped_reason = 'database_size_limit'` when the limit is reached.
 
+After increasing RDS storage and verifying the live allocation, pass the chosen
+database cutoff to either launcher with `-MaxDatabaseGiB`. Both preflight and
+ingestion use that same value; the default remains 14 GiB. For example, **only
+after confirming at least 50 GiB is allocated**, a cutoff of 40 GiB leaves
+10 GiB for other storage and growth between checks:
+
+```powershell
+# Read-only preflight; this does not start an import or resize RDS.
+.\scripts\run_backfill.ps1 -CheckOnly -MaxDatabaseGiB 40
+# Resume using the same cutoff after the preflight succeeds.
+.\scripts\run_backfill.ps1 -MaxDatabaseGiB 40
+# Alternatively, start the background launcher instead of the foreground run.
+# .\scripts\start_backfill.ps1 -MaxDatabaseGiB 40
+```
+
+The headroom in this example is not a guarantee against storage exhaustion.
+Check RDS `FreeStorageSpace` as well as database size. Increasing the command's
+cutoff does not allocate AWS storage, and enabling autoscaling does not remove
+the importer's explicit cutoff. Do not start a second worker to change the
+limit; stop the existing worker normally, then resume with the selected value.
+
 The membership JSON and archived HTML must remain together. Changing the
 membership snapshot, date window, or form list requires a new queue. A queue
 remembers the history mapping's path and hash. An explicit discovery run may
@@ -405,10 +426,13 @@ It never changes preferences or chooses an arbitrary version. An explicit
 `--select ACCESSION=legacy:UUID` (or `source:UUID`) overrides only this report and
 must belong to the accession. This is not approval of the processing choice.
 
-- `fully_imported`: passed receipt, positive counts and complete declared
-  coverage in facts/tables/reports/chunks. This is not original-source acceptance.
+- `fully_imported`: passed receipt and positive counts for all four stored
+  artifact classes, with no source-quality or unaccounted-cell issues. The parser's
+  primary-statement `tables=partial` and section-label `reports=unknown` declarations
+  are retained; this describes completed ingestion, not exhaustive semantic coverage
+  or original-source acceptance.
 - `text_only`: passed facts/report/chunk receipt with zero/absent tables.
-- `review_required`: review flags, partial/unknown coverage, inconsistent counts,
+- `review_required`: review flags, incomplete artifact coverage, inconsistent counts,
   or stored candidates without a unique browsing selection.
 - `failed`: queue failure/access block and no stored receipt.
 - `pending`: no stored receipt; even a queue `ingested` claim cannot prove import.
@@ -455,3 +479,16 @@ reserve and forecast outside Git. A successful DB preflight alone is **not**
 instance-capacity approval. No automated resize is performed. If CloudWatch
 access is unavailable, obtain the current measurement from the authorized
 instance owner rather than inferring it from database size.
+
+
+### Parser revision changes during queue resumption
+
+A stored receipt from an earlier parser is not a content failure. The queue
+preserves a prior `ingested` status and its historical result, records
+`receipt_status=stale_receipt`, excludes it from current-run verified successes,
+and continues to pending work. Stale receipts do not consume the invocation's
+filing-attempt limit. The run remains incomplete until a separately scoped,
+versioned upgrade is verified. No old stored payload is overwritten or promoted.
+For legacy v3 filings, acquire/verify a complete document set and use the reviewed
+v6 profile in a separate queue; do not rerun changed parsing under old identities.
+A schema prerequisite failure stops before any filing entry is modified.

@@ -5,19 +5,94 @@ It reuses `table_relations`, `table_cells`, v4 occurrence contracts, original-DO
 section mapping, and the existing SEC acquisition client. It is not a second
 table identity system, a backfill runner, or an independent sign-off.
 
-## Candidate scope, not an invented final shortlist
+## Confirmed shortlist and bounded discovery snapshot
 
 The requested companies are AAPL, CASY, MCK, MDT, MSFT, MU, NKE, NTAP, PH and TTWO.
-The runner queries **all currently stored original 10-K/10-Q filings for these
-CIKs, without an inferred year filter**. DB holdings are only candidates.
+`config/shortlist.json` now confirms original 10-K/10-Q filings dated
+**2021-01-01 through 2026-12-31**, inclusively. The tracked
+`docs/validation/report-sections-2021-2026.json` supplies **233 discovered
+accessions**, with latest filing date 2026-10-28. It is a discovery/section
+snapshot, not proof of every table or of future filings through year-end.
+
+The legacy `validate_historical_tables.py` runner still queries all stored
+original filings for the requested CIKs without inferring a year filter.
 Supply repeatable `--manifest` inputs to union known un-ingested filings from
 Jace's `discovery.json`, source manifests, filing arrays, inventories or backfill
 queues. Unknown missing historical accessions remain unknown, not zero.
 
-Jace's `origin/jace/shortlist-acquisition-20261028` config currently labels its
-rolling filing-date window `pending_Emma_confirmation`. That is useful evidence,
-not approval to turn the window or the phrase "17 10Q/10K" into a final scope.
-The old Microsoft sample `0001193125-26-191507` is listed but not re-audited.
+The legacy default continues excluding old Microsoft sample
+`0001193125-26-191507`; use `--include-prior-sample` for an independent recheck.
+The confirmed-shortlist workflow below always includes it when present in the
+discovery snapshot. It never infers the meaning of "17" or drops un-ingested
+filings. Unknown future discoveries remain outside this snapshot's completeness.
+
+### Full discovery-snapshot reconciliation
+
+First obtain a receiving snapshot with the existing reader, **in your own
+interactive terminal**. No password is stored or placed in command arguments:
+
+```sh
+PYTHONPATH=src python scripts/validate_historical_tables.py \
+  --ca /private/path/to/us-east-1-bundle.pem --prompt-password \
+  --manifest docs/validation/report-sections-2021-2026.json \
+  --include-prior-sample --source-root /path/to/existing/archive \
+  --output /private/new-readonly-capture
+```
+
+Then use the scope-aware orchestration, reusing exactly those receiving IDs:
+
+```sh
+PYTHONPATH=src python scripts/validate_shortlist_tables.py \
+  --config config/shortlist.json \
+  --section-audit docs/validation/report-sections-2021-2026.json \
+  --snapshots /private/new-readonly-capture \
+  --source-root /path/to/existing/archive --output /private/new-table-validation
+```
+
+This command checks snapshot/config agreement, all expected accession rows,
+per-set receiving identity, actual original hashes and same-version table/cell
+reconstruction (including headers, periods and refs). It reuses V1/V2 extraction
+and V3/V4 transforms, without storage writes. It records Git baseline plus tested
+source-file digests, actual DB query time/identity and processing IDs.
+Optional `--ticker`, repeatable `--manifest`, `--processing-set` and actual
+`--table-chunks` inputs are supported. Ordinary paragraph chunks are not promoted
+to table chunks. Draft producer links are not published when table checks fail.
+
+Use a new, empty `--output` directory for each scoped validation. A nonempty
+destination is rejected before writing so previous snapshots and checks cannot
+leak into a new run or overwrite its evidence. Supplemental manifests use the
+same confirmed date window; excluded accessions and their origins are recorded
+in `candidate_manifest.json`. Missing/invalid filing dates and conflicting CIKs
+stop validation. New in-window discoveries remain visible separately from the
+older section snapshot, including separate missing-database counts.
+
+Do not replace a database hash with a section-snapshot hash. Different recorded
+hashes for the same URL are unresolved provenance conflicts, not proof of which
+bytes or financial values are wrong. With no original bytes, both receipts must
+be retained for Acquisition/Michael. Real-byte hash mismatches remain errors.
+
+Additional outputs:
+
+- `validation_errors.csv`: confirmed validation errors, not absent evidence.
+- `validation_evidence_gaps.csv`: missing originals, absent receiving records,
+  unsupported/incomplete checks and review-required cells.
+- `validation_provenance_conflicts.csv`: disagreements between recorded receipts,
+  separate from both real-byte failures and missing-original evidence.
+- `source_reconciliation.csv`: each known HTML/XML receipt, original paths,
+  original URLs, both hashes when applicable, local existence and observed hash.
+  Unknown XML receipts have no guessed URL, hash or database UUID.
+- `review_context_evidence.json`: original XML fact/context XPaths and exact
+  context text when hash-verified XML exists; otherwise explicit unavailable
+  status. NTAP dates are never silently corrected.
+- `actual_trace_examples.json`: receiving table/cell/fact/source traces with
+  unique section association or explicit ambiguity and actual-chunk status.
+- `run_metadata.json`, `run_status.json`: tested source version and scope,
+  timestamp, set results, completion/blocked counts; no credentials.
+
+The section audit's pass is never copied into table-validation status. Stored
+relationship consistency, original-source semantics, section mapping, producer
+acceptance and deployment remain distinct. `2` means incomplete/unverified;
+`1` means a confirmed validation error. Neither constitutes independent approval.
 
 ## Shared read-only run
 
@@ -155,6 +230,6 @@ Jazzy owns the validator, table-side defects, tests, reproducible outputs and PR
 Bryce owns fact/period/unit extraction dispositions; Acquisition owns discovery
 completeness and matching original bytes; Cleaning/Chunking owns unresolved
 section boundaries. Michael must confirm processing/schema/deployment choices;
-the scope owner must confirm final accessions and the meaning of "17". salu's
+the confirmed discovery snapshot remains bounded by its as-of date. salu's
 independent acceptance is not asserted. Missing sources or pending deployments
 must never be reported as all historical tables accepted.

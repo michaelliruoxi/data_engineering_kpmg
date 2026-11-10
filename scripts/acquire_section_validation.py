@@ -11,6 +11,8 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from lxml import html
@@ -22,10 +24,25 @@ def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def atomic_bytes(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def save(path, value):
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n")
-    temporary.replace(path)
+    atomic_bytes(path, (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode())
 
 
 class RecordedClient(SecClient):
@@ -38,7 +55,7 @@ class RecordedClient(SecClient):
         name = url.rsplit("/", 1)[-1]
         target = self.output / "discovery" / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
+        atomic_bytes(target, data)
         save(target.with_suffix(".receipt.json"), {"source_url": url, **metadata})
         value = json.loads(data)
         if not isinstance(value, dict):
@@ -96,7 +113,13 @@ def acquire(args):
                 for index, row in enumerate(selected, 1):
                     relative = Path("sources") / row["accession_number"] / row.get("primary_document", row["source_url"].rsplit("/", 1)[-1])
                     target = output / relative
+                    receipt_path = target.with_name(target.name + ".receipt.json")
                     if target.exists():
+                        if not row.get("sha256") and receipt_path.exists():
+                            receipt = json.loads(receipt_path.read_text())
+                            if receipt.get("source_url") != row["source_url"]:
+                                raise ValueError("Cached source receipt URL mismatch")
+                            row.update(receipt)
                         if hashlib.sha256(target.read_bytes()).hexdigest() != row.get("sha256"):
                             raise ValueError("Cached source hash mismatch; original bytes were not overwritten")
                         row.update(html_path=str(relative), acquisition_status="available")
@@ -107,7 +130,11 @@ def acquire(args):
                     if not document.xpath("//body"):
                         raise ValueError("Primary filing has no HTML body")
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(data)
+                    # Commit its receipt first so a crash after publishing bytes
+                    # can be recovered even before corpus_manifest is replaced.
+                    metadata = dict(metadata, sha256=hashlib.sha256(data).hexdigest(), size_bytes=len(data))
+                    save(receipt_path, dict(metadata, source_url=row["source_url"]))
+                    atomic_bytes(target, data)
                     row.update(html_path=str(relative), acquisition_status="available",
                                acquisition_method="SEC submissions primaryDocument", **metadata)
                     save(path, state)

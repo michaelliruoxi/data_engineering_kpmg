@@ -152,7 +152,11 @@ IDs can be reused; do not terminate an unrelated process with the same number.
   before resuming. Serious connection, permission, schema, storage, or transport
   errors now stop with the checkpoint preserved instead of failing the whole queue
   one filing at a time. No automatic retry loop is installed.
-- The cutoff is **14 GiB for this database**, checked before the next import.
+- The default cutoff is **14 GiB for this database**, checked before the next import.
+  After confirming a larger live RDS allocation, set `-MaxDatabaseGiB` on the
+  launcher; it passes the same cutoff to preflight and ingestion. Use
+  `-CheckOnly -MaxDatabaseGiB VALUE` for a read-only foreground preflight first.
+  See the [capacity example](automated-backfill.md#run-and-resume).
   One filing can cross it; it does not measure instance-wide free space or WAL.
   No RDS storage setting was changed for the handoff. Full history may need more
   capacity. The importer stops rather than resizing it.

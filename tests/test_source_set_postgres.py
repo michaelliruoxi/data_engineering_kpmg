@@ -227,3 +227,19 @@ def test_migration_declares_exact_v4_scope_and_keeps_legacy_preferences_closed()
         assert token in source
     assert 'CREATE OR REPLACE VIEW sec.filing_overview' not in source
     assert 'INSERT INTO sec.preferred_processing_sets' not in source
+
+
+def test_document_set_reverification_preserves_original_manifest_receipt(local_connection):
+    conn = local_connection
+    item = database_fixture(conn, review=False)
+    before = conn.execute('SELECT manifest_sha256,membership_sha256,evidence FROM sec.source_document_sets WHERE id=%s',
+                          (item.document_set,)).fetchone()
+    regenerated = replace(item.document_input, manifest_sha256='f' * 64)
+    assert store_document_set(conn, regenerated, list(reversed(item.members))) == item.document_set
+    assert conn.execute('SELECT manifest_sha256,membership_sha256,evidence FROM sec.source_document_sets WHERE id=%s',
+                        (item.document_set,)).fetchone() == before
+    changed_members = [replace(item.members[0], source_sha256='a' * 64), *item.members[1:]]
+    with pytest.raises(db.DataConflict):
+        store_document_set(conn, regenerated, changed_members)
+    assert conn.execute('SELECT manifest_sha256,membership_sha256,evidence FROM sec.source_document_sets WHERE id=%s',
+                        (item.document_set,)).fetchone() == before

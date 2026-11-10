@@ -1,5 +1,8 @@
 # Corrected section upgrade
 
+For the November code-review fixes, use the newer [reviewed-layout upgrade](reviewed-layout-upgrade.md),
+with `tables-v6`, `report-v3`, and `paragraph-v2`. This guide records the earlier v5 profile.
+
 PR #20 repairs the section detector, but rerunning it under existing immutable
 report/table identities is not a data migration. This upgrade gives corrected
 outputs distinct identities, verifies their original headings, and requires an
@@ -64,6 +67,28 @@ views are replaced atomically within the migration transaction.
 
 Use `scripts/backfill_sec.py` with a separately scoped universe/queue, the
 original complete document-set archives, and `--tables-version tables-v5`.
+A confirmed subset uses the supported `explicit-scope` universe schema, rather
+than a truncated `current-sp500` snapshot. Create it once from the reviewed
+shortlist (CIKs are mandatory; ticker labels may be absent):
+
+```sh
+uv run --locked python - <<'PY'
+import json
+from pathlib import Path
+from sec_pipeline.universe import scoped_snapshot
+config = json.loads(Path("config/shortlist.json").read_text())
+assert config["scope_status"] == "user_confirmed"
+target = Path("data/section-upgrade/universe.json")
+target.parent.mkdir(parents=True, exist_ok=True)
+with target.open("x") as output:
+    json.dump(scoped_snapshot(config["companies"], as_of="2026-11-10"), output, indent=2)
+PY
+```
+
+The queue binds the exact universe file hash and filing-date window. Editing
+its scope requires a new queue. The full S&P 500 schema retains its 490–510 issuer
+guard and original HTML/hash validation.
+
 Run discovery/download, then a dry run, then a one-filing canary:
 
 ```sh

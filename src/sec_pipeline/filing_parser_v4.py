@@ -20,7 +20,7 @@ from lxml import html
 from . import filing_adapter as base
 from . import filing_adapter_v3 as source_adapter
 from .chunking import chunk_report
-from .extraction_profiles import LEGACY_PROFILE, CORRECTED_PROFILE, versions_for, corrected_tables
+from .extraction_profiles import LEGACY_PROFILE, CORRECTED_PROFILE, REVIEWED_PROFILE, CORRECTED_PROFILES, versions_for, corrected_tables
 from .database import ChunkInput, FactInput, FinancialTableInput, ReportInput
 from .document_sets import verify_document_set
 from .fact_extraction import IX, XML_ROLE, extract_facts
@@ -259,8 +259,8 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
     union = read_inline_document_set(descriptors, facts, xml_sha256=xml_record['sha256'])
     selected = _choose_member(members, root, facts)
     tables = _checked_tables(manifest, root, filing, xml_record, selected, sources, facts, union.occurrences)
-    if profile == CORRECTED_PROFILE:
-        tables = corrected_tables(tables)
+    if profile in CORRECTED_PROFILES:
+        tables = corrected_tables(tables, profile=profile)
     documents = []
     for record in members:
         path = _path(root, record)
@@ -277,7 +277,7 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
         _require(sections and locators and chunk_bounds, 'Report sections or chunk bounds fail original-document validation.')
         _require(all(section.get('validation_status') in {'detected', 'unverified'} for section in report.sections),
                  'Heuristic report section labels cannot be promoted to validated.')
-        if profile == CORRECTED_PROFILE and record['is_primary']:
+        if profile in CORRECTED_PROFILES and record['is_primary']:
             from .report_validation import audit_report, source_heading_expectations
             expected = source_heading_expectations(path, form=manifest['form'])
             assessment = audit_report(path, form=manifest['form'], report=cleaned, chunks=chunks,
@@ -301,7 +301,7 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
     checks = {key: True for key in REQUIRED_CHECKS if key != 'fresh_source_reconstruction'}
     return ParsedFilingSet(filing, sources[xml_record['source_url']], json.dumps(manifest, sort_keys=True, separators=(',', ':')),
         hashlib.sha256(manifest_bytes).hexdigest(), facts, union.occurrences, tuple(documents), checks,
-        {'period_header_consistency': not issues, **({'primary_section_boundaries': True} if profile == CORRECTED_PROFILE else {})},
+        {'period_header_consistency': not issues, **({'primary_section_boundaries': True} if profile in CORRECTED_PROFILES else {})},
         issues, dict(COVERAGE), counts, union.inventory, registrants, profile)
 
 

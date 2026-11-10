@@ -1,14 +1,28 @@
 """Receipt revisions for parsing changes within existing storage contracts."""
 
 
+REPORT_REVISIONS = {
+    'report-v1': 'legacy-visible-layout-boundaries-v3',
+    'report-v2': 'corrected-visible-layout-boundaries-v3',
+    'report-v3': 'reviewed-original-source-boundaries-v3',
+}
+
+
 def policy_metadata(versions):
+    """Describe this implementation without relabelling historical receipts.
+
+    Legacy storage versions remain readable. A changed policy blocks replay into
+    old immutable identities; use the reviewed V6 profile to create replacements.
+    """
     revisions = {}
     if versions.get('facts') == 'facts-v1':
-        revisions['facts'] = 'numeric-tag-boundaries-v1'
-    if versions.get('reports') in {'report-v1', 'report-v2'}:
-        revisions['reports'] = 'visible-table-rows-v2'
-    if versions.get('tables') in {'tables-v2', 'tables-v3', 'tables-v4', 'tables-v5'}:
-        revisions['tables'] = 'logical-headers-v1'
+        revisions['facts'] = 'numeric-tag-boundaries-v2'
+    if versions.get('reports') in REPORT_REVISIONS:
+        revisions['reports'] = REPORT_REVISIONS[versions['reports']]
+    if versions.get('tables') in {'tables-v2', 'tables-v3', 'tables-v4', 'tables-v5', 'tables-v6'}:
+        revisions['tables'] = 'registrant-numeric-cell-validation-v2'
+    if versions.get('chunks') == 'paragraph-v2':
+        revisions['chunks'] = 'token-boundary-overlap-v2'
     return {'parser_revisions': revisions} if revisions else {}
 
 

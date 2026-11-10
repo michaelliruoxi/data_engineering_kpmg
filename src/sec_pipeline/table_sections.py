@@ -114,7 +114,8 @@ def map_table_section(table, report, sections, source, *, accession, processing_
         node = found[0]
         excluded = _excluded(node)
         if excluded:
-            rejected.append({"section_key": key, "reason": excluded, "xpath": path})
+            rejected.append({"section_key": key, "reason": excluded, "xpath": path,
+                             "dom_position": order[node]})
             continue
         if "container_xpath" in loc:
             if node == target or node in list(target.iterancestors()):
@@ -145,6 +146,12 @@ def map_table_section(table, report, sections, source, *, accession, processing_
     if not candidates:
         return failure("unresolved_section", **evidence)
     section, interval = candidates[0]
+    # A rejected descriptor still marks uncertain source territory. Dropping it
+    # must not extend the preceding accepted section across another Item.
+    candidate_start = interval.get("section_dom_start")
+    if candidate_start is not None and any(
+            candidate_start < boundary["dom_position"] <= end for boundary in rejected):
+        return failure("ambiguous", **evidence)
     result.update(section_uuid=section.get("id"), section_key=section.get("section_key", section.get("section_id")),
                   section_title=section.get("original_title", section.get("title")),
                   section_locator=deepcopy(section.get("source_locator")), mapping_status="mapped")

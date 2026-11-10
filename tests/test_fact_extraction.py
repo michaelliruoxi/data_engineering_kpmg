@@ -597,6 +597,14 @@ class LoadPreflightTests(unittest.TestCase):
         self.assertNotIn("loaded", report)
         return report
 
+    def test_uncompared_numeric_value_blocks_loading_and_cli_success(self):
+        self.prepare(inline=INLINE.replace('ixt:num-dot-decimal', 'ixt:num-comma-decimal'))
+        report = self.assert_preflight_blocked()
+        self.assertGreater(report['inline_correspondence']['numeric_values_not_compared'], 0)
+        self.assertLess(report['inline_correspondence']['matched'], report['inline_correspondence']['facts'])
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(fx.main(self.arguments[:-1] + ['--check-html']), 1)
+
     def test_html_value_mismatch_blocks_loading(self):
         self.prepare(inline=INLINE.replace(">4.27</", ">4.28</"))
         report = self.assert_preflight_blocked()

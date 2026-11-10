@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
-from .extraction_profiles import CORRECTED_PROFILE, versions_for
+from .extraction_profiles import CORRECTED_PROFILES, versions_for
 from .report_cleaning import clean_report
 from .report_validation import audit_report, source_heading_expectations
 from .sections import normalize_sections
@@ -18,7 +18,7 @@ def audit_corrected_set(conn, accession, processing_set_id, data_root):
     root = Path(data_root).resolve()
     errors, sources, paths, reports = [], {}, {}, []
     selected = snapshot["selected_processing_set"]
-    if selected["versions"] != versions_for(CORRECTED_PROFILE):
+    if not any(selected["versions"] == versions_for(profile) for profile in CORRECTED_PROFILES):
         errors.append({"check": "wrong_processing_versions"})
     if selected["validation_status"] != "passed" or selected["source_validation_status"] != "passed":
         errors.append({"check": "processing_set_not_passed"})
@@ -60,6 +60,16 @@ def audit_corrected_set(conn, accession, processing_set_id, data_root):
         audit = audit_report(path, form=snapshot["filing"]["form"], report=descriptor,
                              chunks=[SimpleNamespace(**c) for c in chunks],
                              expected_section_ids=expected["expected_section_ids"] if expected else None)
+        if report["source_document_id"] not in primary:
+            # Supplemental inline documents need exact source/section/chunk
+            # fidelity, but they are not annual/quarterly reports and need not
+            # have Part/Item headings. Keep their unclassified labels visible
+            # without treating that classification alone as corruption.
+            unclassified = [issue for issue in audit["issues"] if issue["check"] == "unclassified_section"]
+            audit["issues"] = [issue for issue in audit["issues"] if issue["check"] != "unclassified_section"]
+            audit["unclassified_supplemental_sections"] = unclassified
+            if unclassified and not audit["issues"]:
+                audit["status"] = "unverified"
         if audit["issues"] or (expected is not None and audit["status"] != "passed"):
             errors.append({"check": "stored_report_audit_failed", "report_id": report["id"], "issues": audit["issues"]})
         reports.append({"report_id": report["id"], "source_document_id": report["source_document_id"],

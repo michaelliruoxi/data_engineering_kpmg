@@ -96,3 +96,27 @@ def test_partial_text_receipt_remains_review_required(field,coverage):
     r=receipt(); r['coverage']['tables']='absent'; r['counts']['tables']=0
     r['coverage'][field]=coverage
     assert receipt_status(r)=='review_required'
+
+
+@pytest.mark.parametrize('queue_status', ['ingested', 'ingested_review_required', 'stale_receipt'])
+def test_stale_queue_receipt_cannot_be_reported_as_fully_imported(queue_status):
+    r = receipt()
+    queue = {'filings': {'a': {'status': queue_status, 'receipt_status': 'stale_receipt',
+                              'error_type': 'ParserRevisionConflict'}}}
+    original = deepcopy(queue)
+    result = reconcile(queue, [r], [r])
+    assert result['counts'] == {'review_required': 1}
+    row = result['filings'][0]
+    assert row['status'] == 'review_required'
+    assert row['queue_status'] == queue_status
+    assert row['queue_receipt_status'] == 'stale_receipt'
+    assert row['selected_receipt'] == r
+    assert row['issues'] == ['stale_receipt_requires_versioned_upgrade']
+    assert queue == original
+
+
+def test_stale_queue_receipt_stays_unverified_without_database_access():
+    queue = {'filings': {'a': {'status': 'ingested', 'receipt_status': 'stale_receipt'}}}
+    result = reconcile(queue)
+    assert result['counts'] == {'unverified': 1}
+    assert result['filings'][0]['issues'] == ['stale_receipt_requires_versioned_upgrade']

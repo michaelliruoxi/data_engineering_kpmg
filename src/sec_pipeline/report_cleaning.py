@@ -503,6 +503,49 @@ def _linked_exhibit_headings(document, full_text, anchors, form):
     return result
 
 
+def _separate_unnumbered_blocks(full_text, sections, anchors, heading_links):
+    """Keep explicit body appendices from inheriting the previous Item's topic.
+
+    These are standalone source headings, never prose mentions. In particular,
+    an index after Part IV introduces the separately paginated financials that
+    some issuers incorporate by reference in Item 8.
+    """
+    if not sections:
+        return sections
+    added, seen, offset = [], set(), 0
+    for line in full_text.splitlines(keepends=True):
+        title = _heading_text(line)
+        owner = next((section for section in reversed(sections)
+                      if section['offset_start'] <= offset), None)
+        key, kind = None, None
+        if owner and owner.get('section_id') not in {'front-matter', 'full-report', 'unclassified-prefix'}:
+            if (owner.get('section_type') in {'exhibits', 'summary'}
+                    and re.fullmatch(r'SIGNATURES[ .]*', title, re.I)):
+                key, kind = 'signatures', 'other_information'
+            elif (owner.get('part') == 'IV' and re.fullmatch(
+                    r'INDEX TO (?:THE )?(?:CONSOLIDATED )?FINANCIAL STATEMENTS[ .]*', title, re.I)):
+                key, kind = 'financial-statements-appendix', 'financial_statements'
+            elif (owner.get('section_type') == 'mine_safety' and re.fullmatch(
+                    r'(?:INFORMATION (?:ABOUT|REGARDING) )?(?:OUR |THE )?EXECUTIVE OFFICERS(?: OF THE REGISTRANT)?[ .]*',
+                    title, re.I)):
+                key, kind = 'executive-officers', 'directors_governance'
+        link = heading_links[offset]
+        if key and key not in seen and not (link is not None and link.get('href')):
+            anchor = anchors[offset]
+            # A table of contents can link only the page column. Such rows
+            # are navigation even when the title itself has no hyperlink.
+            if anchor is not None and not (anchor.tag == 'tr' and anchor.xpath('.//a[starts-with(@href,"#")]')):
+                seen.add(key)
+                added.append({'section_id': key, 'section_type': kind, 'title': title,
+                              'original_title': title, 'part': None, 'item': None,
+                              'offset_start': offset, 'validation_status': 'detected'})
+        offset += len(line)
+    boundaries = sorted(sections + added, key=lambda row: row['offset_start'])
+    for index, section in enumerate(boundaries):
+        section['offset_end'] = boundaries[index + 1]['offset_start'] if index + 1 < len(boundaries) else len(full_text)
+    return boundaries
+
+
 def clean_report(html_path: str | Path, *, form: str | None = None) -> CleanedReport:
     """Render visible SEC HTML with original-node locators and final text offsets.
 
@@ -533,6 +576,7 @@ def clean_report(html_path: str | Path, *, form: str | None = None) -> CleanedRe
     sections = detect_sections(full_text, form=form,
                                excluded_heading_offsets=_navigation_heading_offsets(full_text, anchors, heading_links),
                                linked_headings=_linked_exhibit_headings(document, full_text, anchors, form))
+    sections = _separate_unnumbered_blocks(full_text, sections, anchors, heading_links)
     tree = document.getroottree()
     for section in sections:
         anchor = anchors[section["offset_start"]]

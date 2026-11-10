@@ -23,9 +23,9 @@ from tests.test_filing_ingestion_v4 import scenario, ingest
 def test_every_active_profile_has_report_revision_and_correct_table_policy(table_version):
     versions = {**filing_adapter.VERSIONS, 'tables': table_version}
     revisions = policy_metadata(versions)['parser_revisions']
-    assert revisions['facts'] == 'numeric-tag-boundaries-v1'
-    assert revisions['reports'] == 'visible-table-rows-v2'
-    assert revisions.get('tables') == (None if table_version == 'tables-v1' else 'logical-headers-v1')
+    assert revisions['facts'] == 'numeric-tag-boundaries-v2'
+    assert revisions['reports'] == 'legacy-visible-layout-boundaries-v3'
+    assert revisions.get('tables') == (None if table_version == 'tables-v1' else 'registrant-numeric-cell-validation-v2')
 
 
 @pytest.mark.parametrize('document_set', [False, True])
@@ -75,13 +75,13 @@ def test_receipt_without_numeric_boundary_check_is_not_reused(queue):
     assert backfill._stored_set(Connection(receipt), accession, 'filing-import-v1', expected) is False
 
 
-def test_revision_conflict_stops_backfill_without_text_fallback(fallback_queue):
+def test_revision_conflict_marks_stale_receipt_without_text_fallback(fallback_queue):
     fallback_queue.ingest.side_effect = ParserRevisionConflict('Stored processing set uses an older parser revision.')
-    with pytest.raises(ParserRevisionConflict, match='older parser revision'):
-        run_fallback_queue(fallback_queue)
-    assert fallback_queue.ingest.call_count == 1
+    run_fallback_queue(fallback_queue)
+    assert fallback_queue.ingest.call_count == len(fallback_queue.state['filings'])
     assert fallback_queue.text_plans == []
-    assert fallback_queue.state['last_run']['stopped_reason'] == 'parser_revision_mismatch'
+    assert all(entry['receipt_status'] == 'stale_receipt' for entry in fallback_queue.state['filings'].values())
+    assert fallback_queue.state['last_run']['complete'] is False
 
 
 def test_legacy_ingestion_checks_revision_before_calling_fact_writer(tmp_path, monkeypatch):

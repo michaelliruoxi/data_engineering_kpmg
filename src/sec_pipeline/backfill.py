@@ -1,6 +1,7 @@
 """Durable per-accession queue for a fixed membership snapshot and date window."""
 
 from collections import Counter
+from copy import deepcopy
 from .capacity import database_at_limit
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
@@ -24,11 +25,12 @@ def _fatal_runtime_error(error):
     import httpx
     import psycopg
     from .processing import ParserRevisionConflict
+    from .filing_ingestion_v5 import MigrationPrerequisiteError
 
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
-        if isinstance(error, ParserRevisionConflict):
+        if isinstance(error, (ParserRevisionConflict, MigrationPrerequisiteError)):
             return True
         state = getattr(error, 'sqlstate', None)
         if state and state[:2] in {'08', '28', '3D', '3F', '42', '53', '57', '58', 'XX'}:
@@ -281,6 +283,9 @@ def adapter_profile(tables_version):
     if tables_version == "tables-v3":
         from . import filing_adapter_v3
         return filing_adapter_v3, "filing-import-v3"
+    if tables_version == "tables-v6":
+        from . import filing_ingestion_v6
+        return filing_ingestion_v6, "automated-v6"
     if tables_version == "tables-v5":
         from . import filing_ingestion_v5
         return filing_ingestion_v5, "automated-v5"
@@ -381,7 +386,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             raise ValueError("Queue accession keys must be canonical and match their filing records.")
     profile, set_key = adapter_profile(tables_version)
     text_profile = text_fallback_profile(tables_version) if mode != "download" else None
-    is_document_set = tables_version in {"tables-v4", "tables-v5"}
+    is_document_set = tables_version in {"tables-v4", "tables-v5", "tables-v6"}
     versions = profile.VERSIONS
     required_checks = profile.REQUIRED_SOURCE_CHECKS if is_document_set else profile.REQUIRED_CHECKS
     verified_successes = set()
@@ -393,12 +398,22 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
         state["last_run"]["max_database_bytes"] = max_database_bytes
     save_state(path, state)
 
+    if mode == "ingest" and hasattr(profile, "preflight"):
+        try:
+            profile.preflight(connection)
+        except Exception as exc:
+            state["last_run"].update(stopped_reason="infrastructure_error",
+                error_type=type(exc).__name__, finished_at_utc=datetime.now(timezone.utc).isoformat())
+            save_state(path, state)
+            raise
+
     def record_success(accession):
+        if accession in verified_successes:
+            return
         verified_successes.add(accession)
         state['last_run']['verified_successes'] = len(verified_successes)
-        state['last_run']['review_required_successes'] = sum(
-            state['filings'][key].get('status') in {'validated_review_required', 'ingested_review_required'}
-            for key in verified_successes)
+        state['last_run']['review_required_successes'] = state['last_run'].get('review_required_successes', 0) + int(
+            state['filings'][accession].get('status') in {'validated_review_required', 'ingested_review_required'})
 
     attempted = 0
     ordered_filings = sorted(state["filings"].items(), key=lambda item: (
@@ -413,6 +428,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
         if not re.fullmatch(r"\d{10}-\d{2}-\d{6}", accession) or entry["filing"].get("accession_number") != accession:
             raise ValueError("Queue accession keys must be canonical and match their filing records.")
         manifest_path = data_root / "data" / "raw" / "sec" / accession / "source_manifest.json"
+        original_entry = deepcopy(entry)
         counted = False
         tables_unavailable = None
         phase = "source acquisition"
@@ -496,11 +512,13 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                             "mode": "stored_receipt", "accession_number": accession, "versions": dict(versions),
                             "source_hashes": source_hashes, "set_key": text_profile.SET_KEY,
                             "tables_unavailable": text_receipt})
+                    entry.pop("receipt_status", None)
                     entry.pop("error_type", None)
                     entry.pop("error_stage", None)
                     entry.pop("error_detail", None)
                     record_success(accession)
-                    save_state(path, state)
+                    if entry != original_entry:
+                        save_state(path, state)
                     continue
             if mode == "ingest" and max_database_bytes is not None:
                 with connection.transaction():
@@ -513,7 +531,8 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             if mode == "download" and entry.get("status") in {"downloaded", "validated", "ingested", "validated_review_required", "ingested_review_required"}:
                 entry["manifest"] = str(manifest_path.relative_to(data_root))
                 record_success(accession)
-                save_state(path, state)
+                if entry != original_entry:
+                    save_state(path, state)
                 continue
             if not counted:
                 attempted += 1
@@ -576,6 +595,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             if mode != "download":
                 entry["processing_versions"] = dict(versions)
             record_success(accession)
+            entry.pop("receipt_status", None)
             entry.pop("error_type", None)
             entry.pop("error_stage", None)
             entry.pop("error_detail", None)
@@ -599,6 +619,25 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                     connection.rollback()
                 except Exception:
                     rollback_failed = True
+            from .processing import ParserRevisionConflict, ProcessingError
+            if isinstance(exc, ParserRevisionConflict) and not rollback_failed:
+                # A sealed old import still exists. Keep its original status and
+                # receipt, but never count it as verified under the new parser.
+                if counted:
+                    attempted -= 1
+                entry.clear()
+                entry.update(original_entry)
+                if not entry.get("status", "").startswith("ingested"):
+                    entry["status"] = "stale_receipt"
+                entry["receipt_status"] = "stale_receipt"
+                entry["error_type"] = type(exc).__name__
+                entry["error_stage"] = "Stored output requires an explicit versioned upgrade."
+                entry["error_detail"] = _failure_detail(exc, phase)
+                state['last_run']['stale_receipts'] = state['last_run'].get('stale_receipts', 0) + 1
+                emit(json.dumps({"event": "stale_receipt", "accession": accession}))
+                if entry != original_entry:
+                    save_state(path, state)
+                continue
             if not counted:
                 attempted += 1
                 entry["attempts"] += 1
@@ -611,11 +650,6 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             if isinstance(exc, ProcessingError):
                 entry["error_stage"] = str(exc)[:250]
             emit(json.dumps({"event": "failed", "accession": accession, "error_type": type(exc).__name__}))
-            if isinstance(exc, ParserRevisionConflict):
-                state['last_run'].update(stopped_reason='parser_revision_mismatch', complete=False,
-                    finished_at_utc=datetime.now(timezone.utc).isoformat())
-                save_state(path, state)
-                raise
             if rollback_failed or _fatal_runtime_error(exc):
                 state['last_run'].update(stopped_reason='infrastructure_error', complete=False,
                     finished_at_utc=datetime.now(timezone.utc).isoformat())

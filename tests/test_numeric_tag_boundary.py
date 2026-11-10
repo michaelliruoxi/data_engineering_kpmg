@@ -1,6 +1,6 @@
 """Report visible digits outside a numeric tag without changing the XML fact."""
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import date
 from decimal import Decimal
 import hashlib
@@ -66,8 +66,8 @@ def test_contiguous_untagged_digit_is_source_evidence_not_a_corrected_fact(tmp_p
     '<sup>1</sup>', '<sub>1</sub>', '<a href="#note">1</a>',
     '<span style="vertical-align:super">1</span>', '<span hidden="hidden">1</span>',
     '<span style="display:none">1</span>', '<span style="margin-left:3pt">1</span>',
-    '<span> 1 shares</span>', '<span>1st entry</span>', '<span>1.23</span>',
-    '<div>1 shares</div>', '<br/>1 shares', '<span>1,234</span>', '<span>1<b>2</b> shares</span>',
+    '<span> 1 shares</span>', '<span>1st entry</span>',
+    '<div>1 shares</div>', '<br/>1 shares',
     '<ix:nonFraction id="other" name="dei:EntityCommonStockSharesOutstanding" contextRef="asof" '
     'unitRef="shares" decimals="INF">1</ix:nonFraction>',
 ])
@@ -144,3 +144,90 @@ def test_original_ntap_xml_and_visible_sentence_remain_distinct():
     assert any("visible number is '206,376,661'" in reason and 'unchanged XML value is 20637666' in reason
                for reason in assessment['review'])
     assert assessment['inline_correspondence']['numeric_tag_boundary_issues'] == [issue]
+
+
+@pytest.mark.parametrize('suffix', ['1.23', '1,234', '1<b>2</b> shares'])
+def test_contiguous_plain_numeric_suffix_requires_review(tmp_path, fact, suffix):
+    source = tmp_path / 'filing.htm'
+    source.write_text(document(f'<p><span>{TAG}</span><span>{suffix}</span></p>'))
+    assert check_inline_correspondence(source, [fact])['numeric_tag_boundary_issues']
+
+
+@pytest.mark.parametrize('suffix, expected', [('.7 billion', '16.7'), (',700 million', '16,700'), ('7 billion', '167')])
+def test_regular_numeric_tag_fraction_is_reviewed_without_altering_fact(tmp_path, fact, suffix, expected):
+    source = tmp_path / 'filing.htm'
+    tag = TAG.replace('206,376,66', '16')
+    source.write_text(document(f'<p>{tag}{suffix}</p>'))
+    fact = replace(fact, numeric_value=Decimal('16'), raw_value='16')
+    result = check_inline_correspondence(source, [fact])
+    assert result['numeric_values_equal'] == 1
+    issue, = result['numeric_tag_boundary_issues']
+    assert issue['visible_display'] == expected
+    assert fact.numeric_value == Decimal('16')
+
+
+@pytest.mark.parametrize('body', [
+    '<p>9{tag}</p>',
+    '<p><span>9</span><span>{tag}</span></p>',
+    '<p><b><span><i>9</i></span></b><span>{tag}</span></p>',
+    '<p><b>Leading text <i>prefix</i>9</b><span>{tag}</span></p>',
+    '<p><sup>1</sup>9{tag}</p>',
+])
+def test_contiguous_numeric_prefix_requires_review_without_changing_fact(tmp_path, fact, body):
+    source = tmp_path / 'filing.htm'
+    tag = TAG.replace('206,376,66', '1,234')
+    source.write_text(document(body.format(tag=tag)))
+    fact = replace(fact, numeric_value=Decimal('1234'), raw_value='1234')
+    original, original_fact = source.read_bytes(), asdict(fact)
+    result = check_inline_correspondence(source, [fact])
+    assert result['mismatches'] == []
+    assert result['numeric_values_equal'] == 1
+    issue, = result['numeric_tag_boundary_issues']
+    assert (issue['tagged_display'], issue['visible_display'], issue['xml_value'], issue['untagged_digits']) == (
+        '1,234', '91,234', '1234', '9')
+    tree = etree.fromstring(original).getroottree()
+    adjacent, = tree.xpath(issue['adjacent_xpath'])
+    assert getattr(adjacent, issue['adjacent_text_slot']).endswith(issue['untagged_digits'])
+    assert asdict(fact) == original_fact and source.read_bytes() == original
+
+
+@pytest.mark.parametrize('prefix,expected', [('9.', '9.16'), ('9,', '9,16'), ('9,700', '9,70016')])
+def test_numeric_prefix_preserves_decimal_and_grouping_evidence(tmp_path, fact, prefix, expected):
+    source = tmp_path / 'filing.htm'
+    source.write_text(document(f'<p>{prefix}{TAG.replace("206,376,66", "16")}</p>'))
+    fact = replace(fact, numeric_value=Decimal('16'), raw_value='16')
+    issue, = check_inline_correspondence(source, [fact])['numeric_tag_boundary_issues']
+    assert issue['visible_display'] == expected
+
+
+def test_numeric_prefix_before_tagged_fraction_requires_review(tmp_path, fact):
+    source = tmp_path / 'filing.htm'
+    source.write_text(document(f'<p>9{TAG.replace("206,376,66", ".5")}</p>'))
+    fact = replace(fact, numeric_value=Decimal('0.5'), raw_value='0.5')
+    result = check_inline_correspondence(source, [fact])
+    assert result['numeric_values_equal'] == 1
+    issue, = result['numeric_tag_boundary_issues']
+    assert issue['visible_display'] == '9.5'
+
+
+@pytest.mark.parametrize('preceding', [
+    '<sup>1</sup>', '<sub>1</sub>', '<a href="#note">1</a>',
+    '<span style="vertical-align:super">1</span>', '<span hidden="hidden">1</span>',
+    '<span style="display:none">1</span>', '<span style="margin-right:3pt">1</span>',
+    '<span>1 </span>', '<span>1st</span>', '<span>item1</span>',
+    '<div>1</div>', '1<br/>',
+    '<ix:nonFraction id="other" name="dei:EntityCommonStockSharesOutstanding" contextRef="asof" '
+    'unitRef="shares" decimals="INF">1</ix:nonFraction>',
+])
+def test_prefix_guard_does_not_join_notes_values_or_blocks(tmp_path, fact, preceding):
+    source = tmp_path / 'filing.htm'
+    source.write_text(document(f'<p>{preceding}<span>{TAG}</span></p>'))
+    assert check_inline_correspondence(source, [fact])['numeric_tag_boundary_issues'] == []
+
+
+@pytest.mark.parametrize('spacing', [' ', '\n', '\xa0'])
+def test_leading_space_inside_tag_separates_preceding_value(tmp_path, fact, spacing):
+    source = tmp_path / 'filing.htm'
+    spaced = TAG.replace('206,376,66', spacing + '206,376,66')
+    source.write_text(document(f'<p>9<span>{spaced}</span></p>'))
+    assert check_inline_correspondence(source, [fact])['numeric_tag_boundary_issues'] == []

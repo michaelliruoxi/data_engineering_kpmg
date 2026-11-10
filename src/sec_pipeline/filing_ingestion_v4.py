@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import UUID
 
 from .bulk_storage import store_many
-from .extraction_profiles import LEGACY_PROFILE, CORRECTED_PROFILE, versions_for
+from .extraction_profiles import LEGACY_PROFILE, CORRECTED_PROFILE, REVIEWED_PROFILE, CORRECTED_PROFILES, versions_for
 from .chunking import store_chunks
 from .database import (
     ChunkInput, CompanyInput, FactInput, FinancialTableInput, ReportInput, SourceDocumentInput,
@@ -57,7 +57,7 @@ def configuration_from_manifest(manifest, manifest_sha256, *, profile=LEGACY_PRO
              and all(character in '0123456789abcdef' for character in manifest_sha256), 'Invalid document-set manifest hash.')
     _require(len({record['local_path'] for record in records}) == len(records), 'Source paths are repeated.')
     return {'versions': versions, **policy_metadata(versions),
-            **({'extraction_profile': profile, 'section_validation_policy': 'original-heading-v1'} if profile == CORRECTED_PROFILE else {}),
+            **({'extraction_profile': profile, 'section_validation_policy': ('source-boundaries-v2' if profile == REVIEWED_PROFILE else 'original-heading-v1')} if profile in CORRECTED_PROFILES else {}),
             'source_hashes': {record['local_path']: record['sha256'] for record in records},
             'source_documents': {record['local_path']: {key: record[key] for key in ('role', 'source_url', 'sha256', 'size_bytes')}
                                  for record in records},
@@ -323,7 +323,7 @@ def run_ingestion(conn, *, manifest_path, data_root, processing_set_key='automat
                 document_set_id=document_set_id, source_checks=dict(validation.checks), semantic_checks=dict(validation.semantic_checks),
                 coverage=declared_coverage, configuration=deepcopy(configuration), versions=parsed.versions),
                 table_ids=[identifier for values in tables.values() for identifier in values],
-                reports=[ReportMembershipInput(report_id=identifier) for identifier in reports.values()], issue_ids=list(issues.values()))
+                reports=[ReportMembershipInput(report_id=identifier, chunking_version=versions_for(profile)['chunks']) for identifier in reports.values()], issue_ids=list(issues.values()))
             row = conn.execute('SELECT document_set_id,source_validation_status,validation_status,counts,configuration FROM sec.source_processing_sets WHERE id=%s AND filing_id=%s',
                                (set_id, filing_id)).fetchone()
             _require(row is not None and row[0] == document_set_id and row[1] == 'passed' and row[2] == _status(parsed)

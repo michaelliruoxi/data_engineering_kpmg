@@ -201,10 +201,16 @@ class VersionedHeadingIntegrationTests(unittest.TestCase):
     def test_existing_v1_and_v2_heading_successes_never_call_recovery(self):
         from sec_pipeline.tables import select_statement_segments
         from tests.test_statement_segments import fixture as segments_fixture
-        from tests.test_statement_selection import filing
 
         with patch("sec_pipeline.statement_headings.recover_headings", side_effect=AssertionError("Legacy success must be preserved")):
-            self.assertEqual(len(select_statement_segments(filing(), {})), 3)
+            # Valid ordinary statements now also require source entity evidence.
+            ordinary, source_facts = segments_fixture(complete_duplicate=True)
+            duplicate = ordinary.xpath('//table[@id="cash2"]')[0]
+            duplicate.getparent().remove(duplicate.getprevious())
+            duplicate.getparent().remove(duplicate)
+            source_facts = {key: value for key, value in source_facts.items()
+                            if not key.startswith("cash2-")}
+            self.assertEqual(len(select_statement_segments(ordinary, source_facts)), 3)
             tree, facts = segments_fixture()
             self.assertEqual(len(select_statement_segments(tree, facts)), 4)
 
