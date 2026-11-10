@@ -1,6 +1,6 @@
 # Reviewed source-layout upgrade
 
-The Claude-review corrections use a separate V6 profile. Use this profile for
+The independent-review corrections use a separate V6 profile. Use this profile for
 new remediation runs; V4 and V5 remain supported for identifying historical
 artifacts. Reusing a processing-set name does not upgrade stored content.
 

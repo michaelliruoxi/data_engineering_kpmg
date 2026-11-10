@@ -1,8 +1,8 @@
-# Claude review implementation — November 10, 2026
+# Independent review implementation — November 10, 2026
 
 This change integrates the reviewed PR #22 tree `99846c7494d584b26aa8fe64704622bd155ec2ae`
 with the PR #24 tree `027e11f9e3c6087cc7edd933f9b6d7a20e0f8e54` and addresses
-Claude's main review and financial-extraction addendum. The original root
+the independent main review and financial-extraction addendum. The original root
 checkout and both prior review snapshots are preserved.
 
 ## Findings and implementation
@@ -102,9 +102,8 @@ the PR along with the final revision's full-suite result.
 
 ## Integration and hosted validation
 
-The fixes are committed in the isolated checkout
-`output/claude-review-fixes-20261110/` on
-`codex/claude-review-fixes-20261110`. The original checkout is unchanged.
+The fixes are committed in the isolated review checkout, on the branch of the
+separate draft pull request. The original checkout is unchanged.
 This integration preserves PR #24 head
 `1efd5042df7e3248ac4bf0707c99edd2e189a8cc` and PR #22 head
 `c68684943682108f407c8f2a5d64e06593c2f5db` as upstream parents. Local snapshot
