@@ -85,13 +85,20 @@ The November 10 retry produced these results (suites overlap):
   with zero audit errors or oversized-token failures. All six Take-Two annual
   filings passed. Source hashes and results match the committed evidence JSON.
 - Python compilation, CLI help and whitespace checks passed.
+- Initial hosted PostgreSQL run 42766984050: 1,635 passed, 148 explicit skips,
+  1,022 passing subtests, and one outdated finance-view inventory assertion.
+  The expected inventory now includes `processing_revision`, retaining the
+  exact schema inventory check and extending reader SELECT/no-write checks
+  to that new view. This quick contract check runs before the full suite.
 
 These are report/chunk and local code results, not complete financial-value or
 live-database acceptance. Local database startup was unavailable because the
 sandbox prohibits PostgreSQL shared-memory allocation; opt-in database skips
 are not passes. The hosted workflow enables the new V4/V5/V6 coexistence tests
-and committed Microsoft ingestion/replay/rollback tests for both V5 and V6,
-but that workflow has not run on this implementation.
+and committed Microsoft ingestion/replay/rollback tests for both V5 and V6.
+The separate ingestion, relationship and citation stages were skipped after
+the initial failed inventory assertion; their final results are recorded in
+the PR along with the final revision's full-suite result.
 
 ## Integration and hosted validation
 
