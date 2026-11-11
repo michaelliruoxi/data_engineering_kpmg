@@ -270,6 +270,56 @@ statement checks. Use the stored parser revisions for the implementation
 identity and V6 for new remediation. No V5 profile or historical receipt is
 silently relabelled or deleted.
 
+## Source acceptance measured on the complete shortlist
+
+On November 11, 2026 the complete document sets of all **233** shortlist
+filings (10 issuers, 59 annual and 174 quarterly reports filed from January 1,
+2021 through October 29, 2026) were acquired and parsed with the reviewed
+profile. Before the changes below, 209 were accepted and 24 rejected. Eighteen
+of the rejections were not source defects; they came from four rules that were
+stricter than the source evidence requires:
+
+| Rejected because | Filings | Now accepted when | Recorded evidence |
+| --- | ---: | --- | --- |
+| A year-typed fact is printed as `2024 ` and extracted as `2024` | 8 (MSFT 6, NTAP 2) | A plain, untransformed `ix:nonNumeric` value differs from a whitespace-free XML value only by surrounding space, tab or line breaks. XML Schema collapses that whitespace for every item type except strings. | `inline_whitespace` with policy `xml-schema-collapse-single-token-v1` and the original text; `value_comparison` stays `exact` on the collapsed value |
+| A text block contains the filer's own link to an anchor that no member document defines | 1 (MCK) | The identical literal `#fragment` link is in both sources and the anchor is absent from every member document | `target_status: absent_from_every_member` on that link; a link whose anchor exists has unchanged evidence |
+| The closing cash rows read "Net (decrease) increase" or "Cash, cash equivalents and restricted cash" | 6 (CASY) | The labels identify the table; the dated opening, change and closing facts must still reconcile exactly with the three activity totals | unchanged `closure_evidence` |
+| A caption such as "Three Months Ended June 30," is marked up over the first year column only | 3 (MCK) | The header holds exactly one such caption and otherwise only bare years, units or row labels, and the tagged facts in the bare-year column carry exactly the resulting period | `header_sources` cites the caption cell |
+
+Text containing whitespace, an anchor that exists only in another member
+document, duplicated or empty fragments, changed link text, balances that do not
+reconcile, a second caption, and a tagged period that differs from the printed
+one are all still rejected; each has a regression test.
+
+Every one of the 209 filings accepted before the change parses to a
+byte-identical payload after it (facts, source occurrences, reports, sections,
+chunks, tables, issues and checks were fingerprinted with both versions). The
+rules only turn a former rejection into an acceptance, so no stored receipt
+changes content and the parser revisions are unchanged.
+
+After the change 225 filings pass, 2 pass source verification with a
+review-required cell, and 6 are rejected. All eight have a defect in the
+filer's own tagging; none is repaired or guessed:
+
+| Filing | Outcome | Source defect |
+| --- | --- | --- |
+| NTAP `0000950170-23-045061`, `0001193125-26-380207` | Review required | Opening cash balance is dated the first day of the period instead of the day before |
+| CASY `0000726958-21-000078` (10-K) | Rejected | Goodwill in the April 30, 2021 column is tagged as of April 30, 2020 |
+| MDT `0001613103-24-000011` | Rejected | A dash in the January 27, 2023 quarter column is tagged with the January 26, 2024 quarter |
+| NTAP `0000950170-22-017904` | Rejected | Opening cash balance is dated April 29, 2021; the period begins May 1, 2021 |
+| NTAP `0001193125-25-297237` | Rejected | The prior-year six months start on April 26, 2024, one day early (183 days) |
+| NTAP `0000950170-24-023115` | Rejected | Printed `206,376,661` is tagged `206,376,66` |
+| MSFT `0001564590-22-015675` | Rejected | Printed `16.7` is tagged `16` |
+
+The first four rejected filings validate under `tables-v3`, which loads their
+facts, report and chunks through its text-only fallback and records why the
+statement tables are unavailable. The last two fail the numeric-tag check that
+every profile shares, so no profile loads them. A review-required set is stored
+and cannot be published.
+
+These counts come from dry runs on archived sources and from a local PostgreSQL
+rehearsal. They are not a statement about the shared database.
+
 ## Operational status and evidence outcomes
 
 `fully_imported` is deliberately an ingestion-completion label. This PR relaxes

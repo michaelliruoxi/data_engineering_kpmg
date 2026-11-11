@@ -50,6 +50,73 @@ def columns(headers, period, *, before='', prose='', mutate=None, advanced=True)
     return periods.get(1), provenance, tree, rows
 
 
+def comparative(caption_row, years=('2024', '2023'), *, prior=None, advanced=True):
+    """Two year columns; the caption row is supplied exactly as the filer marked it up."""
+    current = {'startDate': '2024-04-01', 'endDate': '2024-06-30'}
+    prior = prior or {'startDate': '2023-04-01', 'endDate': '2023-06-30'}
+    cells = lambda context, offset: ''.join(
+        f'<tr><td>{concept}</td>' + ''.join(
+            f'<td><ix:nonfraction id="f{column}{index}" name="g:{concept}" contextref="c{column}" unitref="usd">1'
+            f'</ix:nonfraction></td>' for column in (1, 2)) + '</tr>'
+        for index, concept in enumerate(('Revenues', 'NetIncomeLoss')))
+    tree = html.document_fromstring(
+        f'<html xmlns:g="{GAAP}" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"><body><table>{caption_row}'
+        f'<tr><td></td><td>{years[0]}</td><td>{years[1]}</td></tr>{cells(None, 0)}</table></body></html>').getroottree()
+    facts, ids = {}, {}
+    for column, period in ((1, current), (2, prior)):
+        for index, concept in enumerate(('Revenues', 'NetIncomeLoss')):
+            key = f'f{column}{index}'
+            ids[key] = 1
+            facts[key] = {'xml_id': key, 'concept': '{' + GAAP + '}' + concept, 'context_ref': f'c{column}',
+                          'unit_ref': 'usd', 'period': dict(period), 'raw_value': '1', 'is_nil': False}
+    rows, _ = layout_grid(tree.xpath('//table')[0], tree)
+    periods, provenance = _column_periods(rows, 2, facts, {'g': GAAP}, ids, advanced=advanced)
+    return periods, provenance, current, prior, tree
+
+
+class MisalignedDurationCaptionTests(unittest.TestCase):
+    CAPTION = '<tr><td></td><td>Three Months Ended June 30,</td><td></td></tr>'
+
+    def test_caption_over_the_first_year_column_reaches_the_second_when_facts_agree(self):
+        periods, provenance, current, prior, tree = comparative(self.CAPTION)
+        self.assertEqual((periods[1], periods[2]), (current, prior))
+        proof = provenance['2']
+        self.assertEqual(proof['period'], prior)
+        self.assertEqual(sorted(proof['xml_ids']), ['f20', 'f21'])
+        [source] = proof['header_sources']
+        self.assertEqual(source['display_text'], 'Three Months Ended June 30,')
+        self.assertEqual(tree.xpath(source['source_xpath'])[0].text, 'Three Months Ended June 30,')
+
+    def test_caption_spanning_both_columns_is_unchanged_and_needs_no_inference(self):
+        periods, provenance, current, prior, _ = comparative(
+            '<tr><td></td><td colspan="2">Three Months Ended June 30,</td></tr>')
+        self.assertEqual((periods[1], periods[2]), (current, prior))
+        self.assertNotIn('header_sources', provenance.get('2', {}))
+
+    def test_inferred_caption_never_adopts_a_tagged_period_that_differs_from_the_printed_one(self):
+        """The column keeps the printed three months, so differently tagged cells stay unmatched."""
+        printed = {'startDate': '2023-04-01', 'endDate': '2023-06-30'}
+        for prior in ({'startDate': '2023-01-01', 'endDate': '2023-06-30'},      # six months, not three
+                      {'startDate': '2023-04-01', 'endDate': '2023-06-29'}):     # another end date
+            with self.subTest(prior=prior):
+                periods, _, _, _, _ = comparative(self.CAPTION, prior=prior)
+                self.assertEqual(periods[2], printed)
+                self.assertNotEqual(periods[2], prior)
+
+    def test_two_captions_or_other_period_text_are_never_shared(self):
+        for caption_row in ('<tr><td></td><td>Three Months Ended June 30,</td><td>Six Months Ended</td></tr>',
+                            '<tr><td></td><td>Three Months Ended June 30,</td><td></td></tr>'
+                            '<tr><td></td><td>Three Months Ended June 30,</td><td></td></tr>',
+                            '<tr><td></td><td>Three Months Ended June 30,</td><td>As restated</td></tr>'):
+            with self.subTest(caption_row=caption_row):
+                periods, _, _, prior, _ = comparative(caption_row)
+                self.assertNotEqual(periods[2], prior)
+
+    def test_frozen_basic_profile_does_not_infer_the_caption(self):
+        periods, _, _, prior, _ = comparative(self.CAPTION, advanced=False)
+        self.assertNotEqual(periods[2], prior)
+
+
 class HeaderPeriodV2Tests(unittest.TestCase):
     def test_year_only_calendar_fiscal_year_needs_exact_corroborated_annual_dates(self):
         for period in ({'startDate': '2025-07-01', 'endDate': '2026-06-30'},

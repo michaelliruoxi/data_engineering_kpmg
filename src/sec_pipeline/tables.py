@@ -610,6 +610,22 @@ def _v2_period_headers(rows, first_data, column, headers):
             caption, node = next(iter(captions.items()))
             revised.insert(0, caption)
             sources.append(_period_source(node))
+    # The same centering occurs with an ordinary duration caption: the cell
+    # "Three Months Ended June 30," physically spans the first year column
+    # only. One such caption, in a header whose other cells are bare years,
+    # units or row labels, applies to a bare-year column. It supplies the
+    # printed wording only; the column is accepted when the tagged source
+    # facts carry exactly the resulting period.
+    printed = [value.strip() for value in revised if value.strip()]
+    if printed and all(re.fullmatch(r'(?:19|20)\d\d', value) for value in printed):
+        header_cells = [cell for row in rows[:first_data] for cell in row if cell['display_text']]
+        captions = [cell for cell in header_cells if re.fullmatch(
+            r'(?:3|6|9|12) months ended [a-z]+\.? \d{1,2},?', _period_text(cell['display_text']).strip())]
+        if len(captions) == 1 and all(
+                cell is captions[0] or cell['column'] == 0 or _heading_qualifier(cell['display_text'])
+                or re.fullmatch(r'(?:19|20)\d\d', cell['display_text'].strip()) for cell in header_cells):
+            revised.insert(0, captions[0]['display_text'])
+            sources.append(_period_source(captions[0]['_element']))
     return revised, sources
 
 
@@ -1082,9 +1098,13 @@ def _cash_closing_continuation(tree, candidates, facts, html_ids):
     if data is None or len(first_grid[0]) != len(grid[0]):
         return None
     labels = ' '.join(cell['display_text'].lower() for row in rows for cell in row if cell['column'] == 0)
-    if (not re.search(r'\bnet (?:increase|decrease|change)\b', labels)
-            or not re.search(r'\bcash and cash equivalents at beginning of (?:the )?period\b', labels)
-            or not re.search(r'\bcash and cash equivalents at end of (?:the )?period\b', labels)):
+    # Wording varies ("Net (decrease) increase", "Cash, cash equivalents and
+    # restricted cash"). The labels only identify the candidate; the dated
+    # opening, change and closing facts below must still reconcile exactly.
+    cash = r'cash(?: and|,) cash equivalents(?:,? and restricted cash)?'
+    if (not re.search(r'\bnet \(?(?:increase|decrease|change)\b', labels)
+            or not re.search(r'\b' + cash + r' at beginning of (?:the )?period\b', labels)
+            or not re.search(r'\b' + cash + r' at end of (?:the )?period\b', labels)):
         return None
     inherited = {}
     for column in {cell['column'] for row in rows[data:] for cell in row if cell['column'] > 0}:
