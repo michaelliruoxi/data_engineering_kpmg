@@ -115,6 +115,114 @@ Do not interpret a successful local parser run as a completed receiving-database
 migration or verified historical extraction. Preserve missing-source and semantic
 review outcomes, and run transactional canaries before expanding the scope.
 
+## Rollout sequence
+
+Run each step on the ingest machine, in order. Steps 1, 3 and 5 are read-only.
+The examples use the scoped queue from the commands above; substitute the
+recorded scope, dates and capacity ceiling. On Windows use
+`.\.venv\Scripts\python.exe` in place of `uv run --locked python`.
+
+**1. Inventory the receiving database before migrating.** This runs the count
+above and records it together with the migration ledger:
+
+```sh
+uv run --locked python scripts/check_upgrade_ready.py \
+  --env-file .env.aws --database sec_filings \
+  --output data/section-upgrade/evidence/before-migration.json
+```
+
+The evidence file lists every packaged migration as applied, pending or changed,
+predicts what `sec-db migrate` would apply, counts stored processing sets by the
+parser revisions they recorded (`stale_for_this_checkout` sets cannot be
+replayed under their identity and need the V6 profile), counts the served
+selections, and runs the reader-impact count. Exit 0 means nothing is pending
+or the pending batch has no recorded concern. Exit 2 means the `assessment`
+names a decision or a blocker: a changed or out-of-order ledger blocks
+`sec-db migrate` itself; a nonzero reader-impact count, other active sessions or
+a missing `sec_reader` role need an operator decision. The file is evidence, not
+approval, and contains the database host name; keep it outside Git.
+
+**2. Back up, rehearse and migrate** as described in
+[the deployment guide](aws-deployment.md#applying-future-schema-updates). Run
+step 1 again afterwards with a new output path; `pending` must be empty.
+
+**3. Preflight the queue with the profile it will use.** The preflight checks the
+migrations and tables of the selected profile, so pass the same profile and
+scope as the import:
+
+```sh
+uv run --locked python scripts/check_backfill_ready.py --tables-version tables-v6 \
+  --universe data/section-upgrade/universe.json \
+  --state data/section-upgrade/queue.json --since 2021-01-01 --until 2026-11-09 \
+  --max-database-gib 14
+```
+
+Without options it checks the October 13 `tables-v3` queue against migrations
+001–009, as before. That default result says nothing about a V6 run: a database
+at 001–009 passes it and cannot start `tables-v6`. `scripts/run_backfill.ps1`
+and `scripts/start_backfill.ps1` remain the `tables-v3` launchers for the
+October 13 queue; start a V6 run with the `backfill_sec.py` commands above.
+`--env-file` and `--database` select another target, such as a restored
+rehearsal copy. Only a loopback database may omit `verify-full` TLS.
+
+**4. Dry-run, then ingest a one-filing canary** with the two `backfill_sec.py`
+commands above. Replay it with `--replay` and confirm the same IDs and counts.
+
+**5. Audit what was ingested.** One read-only command audits every reviewed set
+the queue ingested into this database and records what each filing serves now:
+
+```sh
+uv run --locked python scripts/publish_reviewed_queue.py plan \
+  --state data/section-upgrade/queue.json --data-root . \
+  --env-file .env.aws --database sec_filings \
+  --output-dir data/section-upgrade/evidence/plan-001 --limit 1
+```
+
+It runs `review_section_upgrade.py validate` for each filing, writes one
+evidence file per filing and `plan.json`, and prints the plan's SHA-256. Queue
+entries that are review-required, stale, from another profile or ingested into
+another database are counted under `skipped_queue_entries` and never planned.
+A set that is served now and no longer passes is listed under
+`served_sets_failing_audit`; the command does not withdraw it.
+
+**6. Publish the reviewed plan.** Review `plan.json`, then pass its SHA-256:
+
+```sh
+uv run --locked python scripts/publish_reviewed_queue.py publish \
+  --plan data/section-upgrade/evidence/plan-001/plan.json --plan-sha256 PLAN_SHA256 \
+  --data-root . --env-file .env.aws --database sec_filings \
+  --output-dir data/section-upgrade/evidence/publish-001
+```
+
+Each filing is published through `review_section_upgrade.py publish` with the
+selection recorded in the plan as its expected selection, so a filing whose
+selection changed since the plan is reported as `selection_conflict` and left
+alone. A changed plan file, or a plan made for another database, publishes
+nothing. An unacknowledged commit stops the batch with exit 3 and
+`outcome_unknown`; inspect `finance.filing` and the publication history before
+continuing. Publishing the same plan again leaves already-published filings
+unchanged. External retrieval indexes are not refreshed.
+
+**7. Withdraw a batch** with the summary that publication wrote. Each filing is
+restored to its exact earlier selection, or left alone if that baseline changed:
+
+```sh
+uv run --locked python scripts/publish_reviewed_queue.py rollback \
+  --published data/section-upgrade/evidence/publish-001/publish-summary.json \
+  --env-file .env.aws --database sec_filings \
+  --output-dir data/section-upgrade/evidence/rollback-001
+```
+
+Use a new `--output-dir` for every run; earlier evidence is never replaced.
+Repeat steps 4 to 6 with a larger `--limit` only after the canary's plan,
+publication and rollback evidence has been reviewed.
+
+Verification limits: the batch command is tested against the real review
+command with only the database layer replaced. The inventory's SQL statements
+are executed only by the hosted workflow's PostgreSQL tests in
+`tests/test_upgrade_readiness.py`; check that run for the revision in use. None
+of these commands has run against the shared database.
+
 
 ## Parser receipts and unchanged storage labels
 

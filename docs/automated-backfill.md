@@ -452,7 +452,12 @@ been verified in the 2026-10-29 isolated cloud review.
 
 `start_backfill.ps1 -MaxDatabaseGiB 25` passes the same 25 GiB ceiling to both
 `check_backfill_ready.py --max-database-gib 25` and ingestion. The existing
-launcher/preflight default remains **14 GiB**. The guard stops at or above the
+launcher/preflight default remains **14 GiB**. Both launchers and the default
+preflight cover only the October 13 `tables-v3` queue and migrations 001–009.
+For another profile or queue, pass `--tables-version`, `--state`, `--universe`,
+`--since` and `--until` to the preflight; it then requires the migrations and
+tables that profile writes. See the
+[reviewed rollout sequence](reviewed-layout-upgrade.md#rollout-sequence). The guard stops at or above the
 ceiling, before the next filing transaction; a single transaction can still
 cross it. Choose headroom for the largest expected filing plus index/temp growth.
 
