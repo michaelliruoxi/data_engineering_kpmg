@@ -63,6 +63,15 @@ def fixture():
 
 
 class JointStatementTests(unittest.TestCase):
+    def test_combined_filer_uses_joint_selection_before_generic_titles(self):
+        tree, facts = fixture()
+        tree.xpath('//*[@id="1-income_statement"]/tr[2]/td')[0].text = (
+            'Consolidated Statements of Operations and Comprehensive Income (Loss)')
+        selected = t.select_statement_segments(tree, facts)
+        self.assertTrue(all(segment.element.get('id').startswith('1-') for segment in selected))
+        self.assertTrue(all(segment.group['joint_statement']['registrant_cik'] == '0000000001'
+                            for segment in selected))
+
     def test_selection_keeps_original_parent_nodes_and_fact_scopes(self):
         tree, facts = fixture()
         before = deepcopy(facts)

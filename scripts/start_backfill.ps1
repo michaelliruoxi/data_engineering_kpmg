@@ -13,9 +13,10 @@ Set $env:EDGAR_IDENTITY to your name and contact email first.
 .\scripts\start_backfill.ps1 -RetryFailedOnly   # first load facts/text for earlier failures
 .\scripts\start_backfill.ps1                    # then continue the pending queue
 #>
+[CmdletBinding()]
 param(
     [switch]$RetryFailedOnly,
-    [ValidateRange(1, 100)][int]$MaxDatabaseGiB = 14
+    [ValidateRange(1, 2147483647)][int]$MaxDatabaseGiB = 14
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot

@@ -41,7 +41,15 @@ def receipt_status(receipt):
         if (coverage.get('tables') == 'absent' and counts.get('tables') == 0
                 and all(coverage.get(key) == 'complete' for key in ('facts', 'reports', 'chunks'))):
             return 'text_only'
-        if present('tables') and all(coverage.get(key) == 'complete' for key in ('facts', 'tables', 'reports', 'chunks')):
+        # Complete *ingestion* is distinct from exhaustive semantic coverage:
+        # the parser intentionally reports primary-statement tables as partial
+        # and section classification as unknown even for fully stored outputs.
+        if (present('tables') and coverage.get('facts') == 'complete'
+                and coverage.get('chunks') == 'complete'
+                and coverage.get('tables') in {'complete', 'partial'}
+                and coverage.get('reports') in {'complete', 'unknown'}
+                and not any(counts.get(key, 0) for key in
+                            ('quality_issues', 'review_required_cells', 'unaccounted_cells'))):
             return 'fully_imported'
     return 'review_required'
 
@@ -81,12 +89,19 @@ def reconcile(queue, receipts=None, selections=(), *, observed_at=None, override
             status = 'failed'
         else:
             status = 'pending'
+        if entry.get('receipt_status') == 'stale_receipt' or entry.get('status') == 'stale_receipt':
+            issues.append('stale_receipt_requires_versioned_upgrade')
+            # A historical passed receipt proves prior ingestion, not acceptance
+            # by the current parser. Offline reports remain explicitly unverified.
+            if receipts is not None:
+                status = 'review_required'
         if receipts is not None and entry.get('status', '').startswith('ingested') and not candidates:
             issues.append('queue_claims_import_but_no_database_receipt')
         if candidates and accession not in entries:
             issues.append('database_receipt_not_in_queue')
         rows.append({'accession_number': accession, 'status': status,
-                     'queue_status': entry.get('status'), 'selection_reason': selection_reason,
+                     'queue_status': entry.get('status'), 'queue_receipt_status': entry.get('receipt_status'),
+                     'selection_reason': selection_reason,
                      'selected_receipt': receipt, 'processing_candidates': candidates, 'issues': issues})
     unknown_overrides = set(overrides) - {row['accession_number'] for row in rows}
     if unknown_overrides:

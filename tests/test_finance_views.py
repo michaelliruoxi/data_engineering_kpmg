@@ -411,7 +411,7 @@ def test_reader_can_select_all_finance_views_without_schema_or_data_write_privil
     expected = {
         "company", "filing_version", "filing", "statement", "filing_report", "filing_section", "filing_chunk",
         "metric_definition", "metric_evidence", "period", "metric_value", "income_statement", "balance_sheet",
-        "cash_flow_statement",
+        "cash_flow_statement", "processing_revision",
     }
     actual = {row[0] for row in conn.execute("SELECT viewname FROM pg_views WHERE schemaname='finance'").fetchall()}
     assert actual == expected

@@ -75,6 +75,19 @@ def input_facts(facts):
 
 
 class StatementSegmentTests(unittest.TestCase):
+    def test_ordinary_statements_cannot_mix_core_entity_or_dimension_scopes(self):
+        for change in ('dimension', 'entity'):
+            tree, facts = fixture()
+            for key, fact in facts.items():
+                if key.startswith('income-'):
+                    if change == 'dimension':
+                        fact['dimensions'] = [{'kind': 'explicit', 'dimension': '{urn:test}LegalEntityAxis',
+                                               'member': '{urn:test}SubsidiaryMember'}]
+                    else:
+                        fact['entity'] = {'scheme': 'http://www.sec.gov/CIK', 'identifier': '0000000002'}
+            with self.subTest(change=change), self.assertRaises(TableExtractionError):
+                select_statement_segments(tree, facts)
+
     def test_complementary_segments_preserve_original_nodes_and_order(self):
         tree, facts = fixture()
         segments = select_statement_segments(tree, facts)

@@ -20,8 +20,8 @@ class V4CellWriteResult:
 
 def v4_relational_cells(table_id, table):
     """Reuse all existing grid/reference checks, then validate explicit conflicts."""
-    if table.extraction_version != 'tables-v4' or table.structure.get('schema_version') != 3:
-        raise TableCellError('V4 cells require tables-v4 and structure schema3.')
+    if table.extraction_version not in {'tables-v4', 'tables-v5', 'tables-v6'} or table.structure.get('schema_version') != 3:
+        raise TableCellError('Document-set cells require tables-v4/tables-v5 and structure schema3.')
     original = {cell['cell_id']: cell for row in table.structure['rows'] for cell in row}
     surrogate = deepcopy(table.structure)
     surrogate['schema_version'] = 2

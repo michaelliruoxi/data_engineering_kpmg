@@ -221,14 +221,14 @@ def audit_snapshot(snapshot, sources):
     for table in snapshot["tables"]:
         structure, tid = table["structure"], table["id"]
         table_trace_count = 0
-        if table["extraction_version"] == "tables-v4" and not document_set:
+        if table["extraction_version"] in {"tables-v4", "tables-v5", "tables-v6"} and not document_set:
             unverified.append({"table_id": tid, "reason": "source_document_set_unselected"})
         cells = [c for c in snapshot["table_cells"] if c["table_id"] == tid]
         links = [link for link in snapshot["cell_fact_links"] if link["table_id"] == tid]
         members = [m for m in snapshot["financial_table_facts"] if m["table_id"] == tid]
         record = FinancialTableInput(**{k: table[k] for k in FinancialTableInput.__dataclass_fields__})
         try:
-            parsed = v4_relational_cells(tid, record) if table["extraction_version"] == "tables-v4" else relational_cells(tid, record)
+            parsed = v4_relational_cells(tid, record) if table["extraction_version"] in {"tables-v4", "tables-v5", "tables-v6"} else relational_cells(tid, record)
         except ValueError as failure:
             if table.get("relational_cells_version") is None:
                 unverified.append({"table_id": tid, "reason": "legacy_structure_not_relational", "detail": str(failure)})
@@ -331,7 +331,7 @@ def audit_snapshot(snapshot, sources):
                 original = original_facts.get(xml_id, {}).get(fact["occurrence_key"])
                 if xml_id in original_facts and not _same_original_fact(original, fact):
                     error(table, "stored_fact_differs_from_original_XML", cell_key=key, fact_id=fact["id"])
-                if table["extraction_version"] == "tables-v4" and document_set:
+                if table["extraction_version"] in {"tables-v4", "tables-v5", "tables-v6"} and document_set:
                     occurrences = [o for o in snapshot.get("fact_source_occurrences", []) if o["fact_id"] == fact["id"]
                                    and o["document_set_id"] == document_set]
                     if len(occurrences) != 1 or not _valid_occurrence(occurrences[0], ref, fact, table, document_set, tree):

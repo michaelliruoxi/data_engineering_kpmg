@@ -126,6 +126,22 @@ class TableTests(unittest.TestCase):
             path.write_bytes(html.tostring(tree))
             return extract_tables(path, XML, **SCOPE)
 
+    def test_untagged_amount_variants_are_unresolved(self):
+        for amount in ('$ 32,105', '32,105 (a)', '32,105*', '−32,105', 'US$32,105'):
+            def change(tree):
+                table = select_statements(tree)['income_statement']
+                tag = next(node for node in table.iter() if str(node.tag) == 'ix:nonfraction')
+                cell = tag.xpath('ancestor::td[1]')[0]
+                for child in list(cell):
+                    cell.remove(child)
+                cell.text = amount
+            with self.subTest(amount=amount):
+                tables = self.changed_html(change)
+                cell = next(cell for row in tables[0].structure['rows'] for cell in row
+                            if cell['display_text'] == amount)
+                self.assertEqual(cell['classification'], 'unresolved')
+                self.assertEqual(cell['unresolved_reason'], 'untagged_financial_cell')
+
     def test_missing_inline_id_is_unresolved(self):
         def change(tree):
             e = next(e for e in select_statements(tree)['income_statement'].iter() if str(e.tag) == 'ix:nonfraction')

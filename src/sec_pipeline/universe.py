@@ -79,6 +79,9 @@ def fetch_snapshot(path, *, as_of=None):
 def load_snapshot(path):
     path = Path(path)
     result = json.loads(path.read_text(encoding="utf-8"))
+    if result.get("universe") == "explicit-scope":
+        _validate_scoped_snapshot(result)
+        return result
     if result.get("schema_version") != 1 or result.get("universe") != "current-sp500":
         raise ValueError("Unsupported membership snapshot.")
     source = path.with_suffix(".html").read_bytes()
@@ -93,3 +96,42 @@ def load_snapshot(path):
     if date.fromisoformat(result["as_of"]).isoformat() != result["as_of"]:
         raise ValueError("Invalid membership date.")
     return result
+
+
+def scoped_snapshot(companies, *, as_of):
+    """Build an explicitly confirmed, self-contained subset; never a full index."""
+    normalized = [{"cik": str(c["cik"]).zfill(10),
+                   "name": c.get("name", c.get("ticker", c["cik"])),
+                   "tickers": c.get("tickers", [c["ticker"]] if c.get("ticker") else [])}
+                  for c in companies]
+    result = {"schema_version": 1, "universe": "explicit-scope",
+              "scope_status": "user_confirmed", "as_of": as_of,
+              "source_kind": "explicit user-confirmed issuer scope",
+              "companies": normalized, "company_count": len(normalized),
+              "security_count": sum(len(c["tickers"]) for c in normalized)}
+    _validate_scoped_snapshot(result)
+    return result
+
+
+def _validate_scoped_snapshot(result):
+    if result.get("schema_version") != 1 or result.get("scope_status") != "user_confirmed":
+        raise ValueError("Scoped universe must be explicit and user-confirmed.")
+    if date.fromisoformat(result["as_of"]).isoformat() != result["as_of"]:
+        raise ValueError("Invalid membership date.")
+    companies = result.get("companies")
+    if not isinstance(companies, list) or not companies or result.get("company_count") != len(companies):
+        raise ValueError("Unexpected scoped membership count.")
+    ciks, tickers = set(), set()
+    for company in companies:
+        cik, symbols = company.get("cik"), company.get("tickers")
+        if (not isinstance(cik, str) or not re.fullmatch(r"[0-9]{10}", cik) or int(cik) == 0
+                or cik in ciks or not isinstance(company.get("name"), str) or not company["name"]
+                or not isinstance(symbols, list)):
+            raise ValueError("Invalid or duplicate scoped issuer.")
+        ciks.add(cik)
+        for symbol in symbols:
+            if not isinstance(symbol, str) or not symbol or symbol != symbol.strip() or symbol in tickers:
+                raise ValueError("Invalid or duplicate scoped ticker.")
+            tickers.add(symbol)
+    if result.get("security_count") != len(tickers):
+        raise ValueError("Unexpected scoped security count.")

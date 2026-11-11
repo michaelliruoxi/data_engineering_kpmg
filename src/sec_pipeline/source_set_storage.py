@@ -19,6 +19,8 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from .database import DataConflict, DatabaseError
+from .extraction_profiles import supported_versions
+from .processing_identity import same_processing_identity
 
 
 POLICY = 'inline-set-v1'
@@ -223,7 +225,7 @@ class ReportMembershipInput:
 
     def __post_init__(self):
         _uuid(self.report_id, 'report_id')
-        if self.chunking_version != VERSIONS['chunks']:
+        if self.chunking_version not in {'paragraph-v1', 'paragraph-v2'}:
             raise DatabaseError('Unsupported V4 chunking version.')
 
 
@@ -242,7 +244,7 @@ class V4ProcessingSetInput:
         _uuid(self.filing_id, 'filing_id')
         _uuid(self.document_set_id, 'document_set_id')
         _text(self.set_key, 'set_key')
-        if self.versions != VERSIONS:
+        if not supported_versions(self.versions):
             raise DatabaseError('V4 selection requires exact supported artifact versions.')
         if (not isinstance(self.source_checks, dict) or not SOURCE_CHECKS <= self.source_checks.keys()
                 or any(not isinstance(key, str) or not key.strip() or value is not True
@@ -310,13 +312,18 @@ def store_document_set(conn, record: DocumentSetInput, members: Sequence[Documen
     _begin(conn, record.filing_id)
     existing = _lookup(conn, 'source_document_sets', data, ('filing_id', 'set_key'))
     identifier = existing or uuid4()
+    # The first manifest digest is immutable provenance, not document identity.
+    # Reverification changes manifest timestamps even when membership, original
+    # source hashes and every target/index proof are unchanged. Check all stable
+    # fields below and preserve the first digest instead of replacing it.
+    replay_data = {key: value for key, value in data.items() if key != 'manifest_sha256'}
     with conn.transaction():
         if existing:
             actual = conn.execute('SELECT source_document_id FROM sec.source_document_set_members WHERE document_set_id=%s',
                                   (identifier,)).fetchall()
             if {row[0] for row in actual} != {member['source_document_id'] for member in members}:
                 raise DataConflict('Document-set replay cannot omit or add members.')
-            _exact(conn, 'source_document_sets', data, ('filing_id', 'set_key'))
+            _exact(conn, 'source_document_sets', replay_data, ('filing_id', 'set_key'))
         for member in members:
             _exact(conn, 'source_document_set_members', {'document_set_id': identifier,
                    'filing_id': record.filing_id, **member}, ('document_set_id', 'source_document_id'))
@@ -325,7 +332,7 @@ def store_document_set(conn, record: DocumentSetInput, members: Sequence[Documen
         if {row[0] for row in actual} != {member['source_document_id'] for member in members}:
             raise DataConflict('Document-set replay cannot omit or add members.')
         if existing:
-            return _exact(conn, 'source_document_sets', data, ('filing_id', 'set_key'))
+            return _exact(conn, 'source_document_sets', replay_data, ('filing_id', 'set_key'))
         return _exact(conn, 'source_document_sets', {'id': identifier, **data}, ('filing_id', 'set_key'))
 
 
@@ -395,6 +402,8 @@ def store_v4_processing_set(conn, record: V4ProcessingSetInput, *, table_ids: Se
     data = _checked(record, V4ProcessingSetInput)
     tables, issues = list(table_ids), list(issue_ids)
     report_data = [_checked(report, ReportMembershipInput) for report in reports]
+    if any(item['chunking_version'] != record.versions['chunks'] for item in report_data):
+        raise DatabaseError('Report membership must use the selected chunking version.')
     for identifier in [*tables, *issues]:
         _uuid(identifier, 'member identifier')
     if (not tables or not report_data or len(set(tables)) != len(tables) or len(set(issues)) != len(issues)
@@ -407,6 +416,14 @@ def store_v4_processing_set(conn, record: V4ProcessingSetInput, *, table_ids: Se
                       ('source_processing_reports', 'report_id', report_data),
                       ('source_processing_issues', 'issue_id', [{'issue_id': value} for value in issues])]
     with conn.transaction():
+        if existing:
+            original = conn.execute('SELECT configuration FROM sec.source_processing_sets WHERE id=%s',
+                                    (identifier,)).fetchone()[0]
+            if not same_processing_identity(original, data['configuration']):
+                raise DataConflict('Conflicting immutable source_processing_sets configuration.')
+            # Keep the first manifest digests as provenance. Membership and all
+            # remaining sealed fields are still compared exactly below.
+            data['configuration'] = original
         for table, key, entries in specifications:
             query = sql.SQL('SELECT {} FROM sec.{} WHERE processing_set_id=%s').format(sql.Identifier(key), sql.Identifier(table))
             if existing:

@@ -799,11 +799,13 @@ def _following_inline_text(element: etree._Element):
     current = element
     for _ in range(8):
         parent = current.getparent()
+        # The tag's own tail is adjacent text even in a list, heading, link,
+        # or Inline XBRL wrapper. Restrict only traversal beyond that slot.
+        if current.tail:
+            return current, "tail", current.tail
         if parent is None or (not _plain_inline(parent) and etree.QName(parent).localname.lower()
                               not in {"p", "div", "td", "th"}):
             return None
-        if current.tail:
-            return current, "tail", current.tail
         sibling = current.getnext()
         if sibling is not None:
             for _ in range(8):
@@ -821,37 +823,80 @@ def _following_inline_text(element: etree._Element):
     return None
 
 
+def _preceding_inline_text(element: etree._Element):
+    """Return the immediately preceding text slot without crossing a block."""
+    current = element
+    for _ in range(8):
+        parent = current.getparent()
+        if parent is None:
+            return None
+        sibling = current.getprevious()
+        if sibling is None:
+            if parent.text:
+                return parent, "text", parent.text
+        elif sibling.tail:
+            # A tail belongs to the parent text flow, not the sibling's body.
+            return sibling, "tail", sibling.tail
+        if (not _plain_inline(parent) and etree.QName(parent).localname.lower()
+                not in {"p", "div", "td", "th"}):
+            return None
+        if sibling is not None:
+            for _ in range(8):
+                if not _plain_inline(sibling):
+                    return None
+                if len(sibling):
+                    sibling = sibling[-1]
+                    if sibling.tail:
+                        return sibling, "tail", sibling.tail
+                else:
+                    return (sibling, "text", sibling.text) if sibling.text else None
+            return None
+        if not _plain_inline(parent):
+            return None
+        current = parent
+    return None
+
+
 def _numeric_tag_boundary(element: etree._Element, displayed: str) -> dict[str, str] | None:
     """Expose a split printed number as evidence; never extend the tagged value."""
-    if not re.fullmatch(r"[0-9]{1,3}(?:,[0-9]{3})*,[0-9]{1,2}", displayed):
-        return None
     tagged_text = "".join(element.itertext())
-    if not tagged_text or tagged_text[-1] not in "0123456789":
-        return None  # Trailing whitespace inside the tag separates tokens too.
+    if not tagged_text:
+        return None
     if _BOUNDARY_LAYOUT_PROPERTY.search(_boundary_style(element)):
         return None  # Numeric tags can themselves insert space or a block boundary.
     for ancestor in (element, *element.iterancestors()):
-        if (etree.QName(ancestor).localname.lower() in {"a", "sup", "sub"}
+        if (etree.QName(ancestor).localname.lower() in {"sup", "sub"}
+                or ancestor.tag == f"{{{IX}}}hidden"
                 or "hidden" in ancestor.attrib or ancestor.get("aria-hidden", "").lower() == "true"
                 or re.search(r"display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse)|vertical-align\s*:\s*(?:super|sub)",
                              _boundary_style(ancestor), re.I)):
             return None
-    following = _following_inline_text(element)
-    if following is None:
-        return None
-    node, slot, text = following
-    # Require an explicit token boundary in this original text slot. A bare
-    # digit at the end of a span might continue in another nested/sibling node.
-    match = re.match(r"([0-9]+)(?=\s)", text)
-    if match is None:
-        return None
-    visible = displayed + match[1]
-    if not _GROUPED.fullmatch(visible):
-        return None
     tree = element.getroottree()
-    return {"tagged_display": displayed, "visible_display": visible,
-            "untagged_digits": match[1], "inline_xpath": source_xpath(tree, element),
-            "adjacent_xpath": source_xpath(tree, node), "adjacent_text_slot": slot}
+    # Whitespace inside either edge of the numeric tag also separates tokens.
+    for direction, edge, adjacent in (
+        ("following", tagged_text[-1], _following_inline_text),
+        ("preceding", tagged_text[0], _preceding_inline_text),
+    ):
+        if edge not in "0123456789" and not (
+                direction == "preceding" and re.match(r"[.,][0-9]", tagged_text)):
+            continue
+        nearby = adjacent(element)
+        if nearby is None:
+            continue
+        node, slot, text = nearby
+        # Adjacent digits or a decimal/grouping separator extend the printed
+        # number even when the tagged part is well-formed. Do not join an
+        # alphanumeric label or ordinal to an otherwise independent amount.
+        match = (re.match(r"((?:[.,]?[0-9]+)+)(?=$|[^0-9A-Za-z])", text)
+                 if direction == "following" else
+                 re.search(r"(?<![0-9A-Za-z])([0-9]+(?:[.,][0-9]+)*[.,]?)$", text))
+        if match is None:
+            continue
+        visible = displayed + match[1] if direction == "following" else match[1] + displayed
+        return {"tagged_display": displayed, "visible_display": visible,
+                "untagged_digits": match[1], "inline_xpath": source_xpath(tree, element),
+                "adjacent_xpath": source_xpath(tree, node), "adjacent_text_slot": slot}
+    return None
 
 
 def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput]) -> dict[str, Any]:
@@ -906,14 +951,14 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
                 displayed = _irregular_grouping(element)
                 if displayed is not None:
                     irregular.append({"occurrence_key": fact.occurrence_key, "displayed": displayed})
-                    boundary = _numeric_tag_boundary(element, displayed)
-                    if boundary is not None:
-                        boundaries.append({"occurrence_key": fact.occurrence_key,
-                                           "concept": fact.concept_name, "xml_value": str(fact.numeric_value),
-                                           **boundary})
+                boundary = _numeric_tag_boundary(element, "".join(element.itertext()).strip(_XML_SPACE + "\xa0"))
+                if boundary is not None:
+                    boundaries.append({"occurrence_key": fact.occurrence_key,
+                                       "concept": fact.concept_name, "xml_value": str(fact.numeric_value),
+                                       **boundary})
         if problems:
             mismatches.append({"occurrence_key": fact.occurrence_key, "problem": "; ".join(problems)})
-        else:
+        elif fact.numeric_value is None or shown is not None:
             matched += 1
 
     fact_ids = {fact.source_reference.get("element_id") for fact in facts}
@@ -989,7 +1034,8 @@ def main(argv: list[str] | None = None) -> int:
         correspondence = report.get("inline_correspondence", {})
         problems = (extraction.failures or correspondence.get("mismatches")
                     or correspondence.get("inline_ids_without_fact")
-                    or correspondence.get("numeric_tag_boundary_issues"))
+                    or correspondence.get("numeric_tag_boundary_issues")
+                    or correspondence.get("numeric_values_not_compared"))
         if args.load and problems:
             print(json.dumps(report, indent=2, default=str))
             return 1

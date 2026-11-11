@@ -17,7 +17,8 @@ from uuid import UUID
 from lxml import etree, html
 
 from .chunking import chunk_report
-from .report_cleaning import clean_report
+from .report_cleaning import clean_report, _original_statement_tables, _statement_table_follows
+from .primary_statement_sections import primary_statement_section_issues
 
 
 TARGET_TICKERS = ("AAPL", "CASY", "MCK", "MDT", "MSFT", "MU", "NKE", "NTAP", "PH", "TTWO")
@@ -45,7 +46,7 @@ def _original_body_outline(tree, *, form, toc_tables=()):
             continue
         if any(ancestor in toc_tables for ancestor in (node, *node.iterancestors())):
             continue
-        if item and re.search(r"\s\d+\s*$", text):
+        if item and re.search(r"\s\d+\s*$", text) and not re.search(r"\b(?:NOTE|SECTION)\s+\d+\s*$", text, re.I):
             continue
         if node.xpath(".//a[starts-with(@href, '#')]") or any(a.get("href") for a in node.iterancestors("a")):
             continue
@@ -184,6 +185,7 @@ def source_heading_expectations(html_path, *, form):
     additions = [heading for heading in body_outline if heading["section_id"] not in expected]
     return {"status": "derived_from_original_toc", "method": "Original DOM table rows with resolving navigation targets and page columns, supplemented by explicit original body headings absent from the TOC; independent of report parser",
             "expected_section_ids": expected + [heading["section_id"] for heading in additions], "rows": evidence,
+            "body_headings": body_outline,
             "body_headings_absent_from_toc": additions}
 
 
@@ -211,7 +213,161 @@ def _heading_starts_in_navigation(node):
     return False
 
 
-def audit_report(html_path, *, form, expected_section_ids=None, report=None, chunks=None):
+def _audit_source_boundaries(tree, report, evidence, issue):
+    """Check original DOM positions independently of cleaned range coverage."""
+    nodes = list(tree.getroot().iter())
+    order = {node: index for index, node in enumerate(nodes)}
+    resolved = {}
+    for section in report.sections:
+        path = section.get('source_locator', {}).get('xpath')
+        try:
+            matches = tree.xpath(path) if isinstance(path, str) else []
+        except etree.XPathError:
+            matches = []
+        if len(matches) == 1 and isinstance(matches[0], etree._Element):
+            resolved[section['section_id']] = matches[0]
+    toc_paths = [row['source_xpath'] for row in evidence.get('rows', [])]
+    for section in report.sections:
+        key = section['section_id']
+        node = resolved.get(key)
+        if node is None or not (section.get('item') or section.get('section_type') == 'part_heading'):
+            continue
+        xpath = section.get('source_locator', {}).get('xpath', '')
+        toc_row = next((ancestor for ancestor in (node, *node.iterancestors()) if ancestor.tag == 'tr'), None)
+        page_navigation = False
+        if toc_row is not None:
+            cells = [' '.join(' '.join(cell.itertext()).split()) for cell in toc_row if cell.tag in {'td', 'th'}]
+            page_navigation = (any(re.fullmatch(r'(?:[IVX]+[-–])?\d+(?:[-–]\d+)?', value) for value in cells)
+                               and bool(toc_row.xpath('.//a[starts-with(@href,"#")]')))
+        if page_navigation or any(xpath == path or xpath.startswith(path + '/') for path in toc_paths):
+            issue('section_starts_in_original_toc', section_id=key, xpath=xpath)
+
+    # TOC rows establish ordering even if the inventory also includes body-only
+    # headings (which are appended to the expectation list by the source reader).
+    expected_order = [row['section_id'] for row in evidence.get('rows', [])]
+    if not expected_order:
+        expected_order = [row['section_id'] for row in evidence.get('body_headings', [])]
+    expected_order = [key for key in expected_order if key in resolved]
+    actual_order = [row['section_id'] for row in report.sections if row['section_id'] in expected_order]
+    if expected_order != actual_order:
+        issue('section_order_mismatch', expected=expected_order, actual=actual_order)
+
+    for heading in evidence.get('body_headings', []):
+        actual = resolved.get(heading['section_id'])
+        expected = tree.xpath(heading['source_xpath'])
+        if actual is None or len(expected) != 1:
+            continue
+        original = expected[0]
+        related = actual in (original, *original.iterancestors()) or original in tuple(actual.iterancestors())
+        if not related and ('-item-' in heading['section_id'] or abs(order[actual] - order[original]) > 30):
+            issue('section_body_heading_position_mismatch', section_id=heading['section_id'],
+                  expected_xpath=heading['source_xpath'])
+
+    targets = {}
+    for node in nodes:
+        for identifier in (node.get('id'), node.get('name')):
+            if identifier:
+                targets.setdefault(identifier, []).append(node)
+    for row in evidence.get('rows', []):
+        node = resolved.get(row['section_id'])
+        if node is None or not row.get('navigation_targets') or row.get('navigation_on_child_rows'):
+            continue
+        linked = [target for name in set(row['navigation_targets']) for target in targets.get(unquote(name), [])]
+        section_index = next(index for index, value in enumerate(report.sections) if value['section_id'] == row['section_id'])
+        next_node = next((resolved[value['section_id']] for value in report.sections[section_index + 1:]
+                          if value['section_id'] in resolved), None)
+        limit = order[next_node] if next_node is not None else len(nodes)
+        # Empty anchors can precede a heading by page furniture or occur in its
+        # children. Some source TOCs point within the Item (e.g. exhibit index).
+        if linked and not any(order[node] - 30 <= order[target] < limit for target in linked):
+            issue('section_navigation_target_mismatch', section_id=row['section_id'],
+                  xpath=row['source_xpath'], targets=row['navigation_targets'])
+
+    toc_nodes = {tree.xpath(path)[0] for path in toc_paths if tree.xpath(path)}
+    # Unsupported combined headings must not silently disappear in both the
+    # cleaner and the independent inventory. They require explicit review.
+    blocks = {'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'tr'}
+    seen_special = set()
+    statement_tables = None
+    section_nodes = [(order[node], next(s for s in report.sections if s['section_id'] == key))
+                     for key, node in resolved.items()]
+    section_nodes.sort(key=lambda pair: pair[0])
+    for node in nodes:
+        if node.tag not in blocks or any(child.tag in blocks for child in node.iterdescendants()):
+            continue
+        lineage = (node, *node.iterancestors())
+        if any(ancestor in toc_nodes or 'hidden' in ancestor.attrib or
+               re.search(r'display\s*:\s*none', ancestor.get('style', ''), re.I) for ancestor in lineage):
+            continue
+        title = ' '.join(' '.join(node.itertext()).split())
+        if len(title) > 300 or node.xpath('.//a[starts-with(@href,"#")]'):
+            continue
+        combined = re.match(r'^ITEMS?\s+\d+[A-Z]?(?:\s*(?:AND|&|,)\s*\d+[A-Z]?)+[.:]?\s+(.+)', title, re.I)
+        if combined and not re.match(r'(?:are|is|were|have|has|not|of|above|below)\b', combined[1], re.I):
+            issue('unsupported_combined_item_heading', title=title)
+        owner = next((section for position, section in reversed(section_nodes) if position <= order[node]), None)
+        if owner is None or owner.get('section_id') in {'front-matter', 'full-report', 'unclassified-prefix'}:
+            continue
+        # The independent inventory also has conservative heading heuristics.
+        # A short source Item label omitted by both detectors must not certify
+        # its content under the preceding Item. Include bare split-block labels
+        # and issuer titles styled by a CSS class, without guessing their bounds.
+        candidate = re.match(
+            r'^ITEM\s*(\d(?:\s*\d)?(?:\s*[A-Z])?)(\([A-Z]+\))?(?=[\s.:\u2013\u2014-]|$)'
+            r'[\s.:\u2013\u2014-]*(.*)$', title, re.I)
+        if candidate:
+            number, modifier, remainder = candidate.groups()
+            number = re.sub(r'\s+', '', number)
+            heading_signal = (title == title.upper() or any(
+                element.tag in {'b', 'strong', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'}
+                or re.search(r'font-weight\s*:\s*(?:bold|[6-9]00)', element.get('style', ''), re.I)
+                or re.search(r'(?:^|[\s_-])(?:h[1-6]|heading|title)(?:$|[\s_-])', element.get('class', ''), re.I)
+                for element in node.iter()))
+            prose_reference = re.match(
+                r'(?:of|and|are|is|was|were|have|has|above|below|herein|see|refers?|describes?|discusses?)\b',
+                remainder, re.I)
+            if heading_signal and not prose_reference:
+                if modifier:
+                    issue('unsupported_item_heading_modifier', title=title)
+                elif owner.get('part'):
+                    key = f"part-{owner['part'].lower()}-item-{number.lower()}"
+                    if key not in resolved:
+                        issue('unrepresented_original_item_heading', expected=key, title=title)
+        special = None
+        row = next(node.iterancestors('tr'), None)
+        if row is not None and ' '.join(' '.join(row.itertext()).split()) != title:
+            # A leaf label in an index row is not a standalone body heading;
+            # inspect the page column and sibling links as part of that row.
+            continue
+        if (owner.get('section_type') in {'exhibits', 'summary'} or owner.get('section_id') in {'signatures', 'financial-statements-appendix'}) and re.fullmatch(r'SIGNATURES?[ .]*', title, re.I):
+            special = 'signatures'
+        elif re.fullmatch(
+                r'(?:(?:INDEX TO )?(?:THE )?(?:(?:CONDENSED|CONSOLIDATED|COMBINED) )*'
+                r'FINANCIAL STATEMENTS(?: AND (?:FINANCIAL STATEMENT )?SCHEDULES?)?'
+                r'|REPORTS? OF (?:THE )?INDEPENDENT REGISTERED PUBLIC ACCOUNTING FIRMS?'
+                r'|(?:(?:CONDENSED|CONSOLIDATED|COMBINED) )*(?:BALANCE SHEETS?'
+                r'|STATEMENTS? OF (?:INCOME|EARNINGS|OPERATIONS|CASH FLOWS?|FINANCIAL POSITION)'
+                r'(?: AND COMPREHENSIVE (?:INCOME|LOSS))?)(?: \(LOSS\))?(?: \(UNAUDITED\))?)[ .]*', title, re.I):
+            if owner.get('part') == 'IV' or owner.get('section_id') == 'financial-statements-appendix':
+                special = 'financial-statements-appendix'
+                if not re.fullmatch(r'INDEX TO (?:THE )?(?:CONSOLIDATED )?FINANCIAL STATEMENTS[ .]*', title, re.I):
+                    if statement_tables is None:
+                        statement_tables = _original_statement_tables(tree.getroot())
+                    limit = next((position for position, section in section_nodes
+                                  if position > order[node] and (section.get('item')
+                                      or section.get('section_type') == 'part_heading')), len(nodes))
+                    if not _statement_table_follows(node, limit, statement_tables, order):
+                        special = None
+        elif re.fullmatch(r'(?:INFORMATION (?:ABOUT|REGARDING) )?(?:OUR |THE )?EXECUTIVE OFFICERS(?: OF THE REGISTRANT)?[ .]*', title, re.I):
+            if owner.get('section_type') == 'mine_safety' or owner.get('section_id') == 'executive-officers':
+                special = 'executive-officers'
+        if special and special not in seen_special:
+            seen_special.add(special)
+            if owner['section_id'] != special:
+                issue('unnumbered_body_boundary_missing', expected=special, actual=owner['section_id'], title=title)
+
+
+def audit_report(html_path, *, form, expected_section_ids=None, report=None, chunks=None, selected_tables=None):
     """Audit supplied outputs, or run the cleaner/chunker when outputs are absent.
 
     Source XPath checks use a separate parse of the unchanged original bytes.
@@ -288,6 +444,12 @@ def audit_report(html_path, *, form, expected_section_ids=None, report=None, chu
                 issue("section_starts_in_toc_link", section_id=key, xpath=xpath)
     if text[previous_end:].strip():
         issue("uncovered_report_text", start=previous_end, end=len(text))
+
+    source_evidence = source_heading_expectations(html_path, form=form)
+    _audit_source_boundaries(tree, report, source_evidence, issue)
+    if selected_tables is not None:
+        issues.extend(primary_statement_section_issues(
+            selected_tables, {'sections': report.sections}, source, accession=html_path.stem))
 
     heading_status = "unverified"
     if expected_section_ids is not None:

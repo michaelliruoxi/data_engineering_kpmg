@@ -503,6 +503,112 @@ def _linked_exhibit_headings(document, full_text, anchors, form):
     return result
 
 
+def _original_statement_tables(document):
+    """Find headed statement bodies, excluding a list of statement/page references.
+
+    This corroborates broadened appendix labels; it is not the acceptance gate.
+    Acceptance separately maps every actually selected primary statement table.
+    """
+    from .tables import _hidden, _statement_headings, local
+
+    found = []
+    for table in document.xpath('//table'):
+        if table.xpath('.//table') or _hidden(table) or not _statement_headings(table):
+            continue
+        if any(local(node) == 'nonfraction' and not _hidden(node) for node in table.iter()):
+            found.append(table)
+            continue
+        # Plain-HTML statement fixtures and older untagged statements still
+        # need a financial row label and a separate numeric value, not a page.
+        for row in table.xpath('./tr|./thead/tr|./tbody/tr|./tfoot/tr'):
+            cells = [' '.join(''.join(cell.itertext()).split()) for cell in row.xpath('./td|./th')]
+            cells = [value for value in cells if value]
+            if (len(cells) > 1 and re.fullmatch(
+                    r'(?:total )?(?:assets|liabilities)(?: and (?:stockholders|shareholders).? equity)?'
+                    r'|cash(?: and cash equivalents)?|net (?:income|earnings|loss)|net cash.*|revenues?|sales',
+                    cells[0], re.I) and any(re.fullmatch(r'[$(+-]?\s*\d[\d,.]*\s*\)?', value)
+                                           for value in cells[1:])):
+                found.append(table)
+                break
+    return found
+
+
+def _statement_table_follows(anchor, limit, tables, order):
+    start = order[anchor]
+    return any(start <= order[table] < limit or
+               (order[table] < start < limit and anchor in table.iterdescendants()) for table in tables)
+
+
+def _separate_unnumbered_blocks(full_text, sections, anchors, heading_links, document):
+    """Keep explicit body appendices from inheriting the previous Item's topic.
+
+    These are standalone source headings, never prose mentions. In particular,
+    an index after Part IV introduces the separately paginated financials that
+    some issuers incorporate by reference in Item 8.
+    """
+    if not sections:
+        return sections
+    added, seen, offset = [], set(), 0
+    statement_tables, order = None, None
+    for line in full_text.splitlines(keepends=True):
+        title = _heading_text(line)
+        owner = next((section for section in reversed(sections)
+                      if section['offset_start'] <= offset), None)
+        key, kind = None, None
+        if owner and owner.get('section_id') not in {'front-matter', 'full-report', 'unclassified-prefix'}:
+            if (owner.get('section_type') in {'exhibits', 'summary'}
+                    and re.fullmatch(r'SIGNATURES?[ .]*', title, re.I)):
+                key, kind = 'signatures', 'other_information'
+            elif (owner.get('part') == 'IV' and re.fullmatch(
+                    r'(?:(?:INDEX TO )?(?:THE )?(?:(?:CONDENSED|CONSOLIDATED|COMBINED) )*'
+                    r'FINANCIAL STATEMENTS(?: AND (?:FINANCIAL STATEMENT )?SCHEDULES?)?'
+                    r'|REPORTS? OF (?:THE )?INDEPENDENT REGISTERED PUBLIC ACCOUNTING FIRMS?'
+                    r'|(?:(?:CONDENSED|CONSOLIDATED|COMBINED) )*(?:BALANCE SHEETS?'
+                    r'|STATEMENTS? OF (?:INCOME|EARNINGS|OPERATIONS|CASH FLOWS?|FINANCIAL POSITION)'
+                    r'(?: AND COMPREHENSIVE (?:INCOME|LOSS))?)(?: \(LOSS\))?(?: \(UNAUDITED\))?)[ .]*', title, re.I)):
+                key, kind = 'financial-statements-appendix', 'financial_statements'
+            elif (owner.get('section_type') == 'mine_safety' and re.fullmatch(
+                    r'(?:INFORMATION (?:ABOUT|REGARDING) )?(?:OUR |THE )?EXECUTIVE OFFICERS(?: OF THE REGISTRANT)?[ .]*',
+                    title, re.I)):
+                key, kind = 'executive-officers', 'directors_governance'
+        elif (owner and owner.get('section_id') == 'full-report' and re.fullmatch(
+                r'(?:(?:INDEX TO )?(?:THE )?(?:(?:CONDENSED|CONSOLIDATED|COMBINED) )*'
+                r'FINANCIAL STATEMENTS(?: AND (?:FINANCIAL STATEMENT )?SCHEDULES?)?'
+                r'|(?:(?:CONDENSED|CONSOLIDATED|COMBINED) )*(?:BALANCE SHEETS?'
+                r'|STATEMENTS? OF (?:INCOME|EARNINGS|OPERATIONS|CASH FLOWS?|FINANCIAL POSITION)'
+                r'(?: AND COMPREHENSIVE (?:INCOME|LOSS))?)(?: \(LOSS\))?(?: \(UNAUDITED\))?)[ .]*', title, re.I)):
+            # A supplemental statement member can have no numbered Items at all.
+            # Its standalone statement heading still establishes financial ownership.
+            key, kind = 'financial-statements-appendix', 'financial_statements'
+        link = heading_links[offset]
+        if key and key not in seen and not (link is not None and link.get('href')):
+            anchor = anchors[offset]
+            if key == 'financial-statements-appendix' and not re.fullmatch(
+                    r'INDEX TO (?:THE )?(?:CONSOLIDATED )?FINANCIAL STATEMENTS[ .]*', title, re.I):
+                if statement_tables is None:
+                    statement_tables = _original_statement_tables(document)
+                    order = {node: index for index, node in enumerate(document.iter())}
+                end = owner['offset_end']
+                limit = order[anchors[end]] if end < len(anchors) else len(order)
+                if anchor is None or not _statement_table_follows(anchor, limit, statement_tables, order):
+                    offset += len(line)
+                    continue
+            # A table of contents can link only the page column. Such rows
+            # are navigation even when the title itself has no hyperlink.
+            if anchor is not None and not (anchor.tag == 'tr' and anchor.xpath('.//a[starts-with(@href,"#")]')):
+                seen.add(key)
+                added.append({'section_id': key, 'section_type': kind, 'title': title,
+                              'original_title': title, 'part': None, 'item': None,
+                              'offset_start': offset, 'validation_status': 'detected'})
+        offset += len(line)
+    if any(section['offset_start'] == 0 for section in added):
+        sections = [section for section in sections if section['section_id'] != 'full-report']
+    boundaries = sorted(sections + added, key=lambda row: row['offset_start'])
+    for index, section in enumerate(boundaries):
+        section['offset_end'] = boundaries[index + 1]['offset_start'] if index + 1 < len(boundaries) else len(full_text)
+    return boundaries
+
+
 def clean_report(html_path: str | Path, *, form: str | None = None) -> CleanedReport:
     """Render visible SEC HTML with original-node locators and final text offsets.
 
@@ -533,6 +639,7 @@ def clean_report(html_path: str | Path, *, form: str | None = None) -> CleanedRe
     sections = detect_sections(full_text, form=form,
                                excluded_heading_offsets=_navigation_heading_offsets(full_text, anchors, heading_links),
                                linked_headings=_linked_exhibit_headings(document, full_text, anchors, form))
+    sections = _separate_unnumbered_blocks(full_text, sections, anchors, heading_links, document)
     tree = document.getroottree()
     for section in sections:
         anchor = anchors[section["offset_start"]]

@@ -53,9 +53,38 @@ class OriginalFragmentLinkTests(unittest.TestCase):
             with self.subTest(target=target), self.assertRaises(InlineDocumentSetError):
                 self.read(nonnumeric(text=source, escape='true'), target_text(value=target))
 
-    def test_missing_cross_document_duplicate_and_empty_fragment_targets_fail(self):
+    def test_link_to_an_anchor_no_member_defines_is_kept_and_recorded_as_dangling(self):
+        """The filer's own broken link is identical in both sources; nothing is repaired."""
+        markup = '<p>Original text.</p><a href="#destination">See text</a>'
+        docs, facts, digest = self.fixture(nonnumeric(text=markup, escape='true'), target_text(value=markup),
+                                           extra='<p id="elsewhere">Other member.</p>')
+        before = deepcopy(facts)
+        evidence = read_inline_document_set(docs, facts, xml_sha256=digest).occurrences[0]['evidence']
+        self.assertEqual(facts, before)
+        self.assertEqual(evidence['inline_mapped_value'], markup)
+        self.assertEqual(evidence['value_comparison'], MARKUP_POLICY)
+        self.assertEqual(evidence['inline_canonical_sha256'], evidence['xml_canonical_sha256'])
+        [link] = evidence['inline_uri_mapping']['links']
+        self.assertEqual((link['href'], link['target_id'], link['target_status']),
+                         ('#destination', 'destination', 'absent_from_every_member'))
+        # The same literal link is required: a different, resolved or removed link still fails.
+        for target in (markup.replace('#destination', '#other'),
+                       markup.replace('#destination', 'https://example.invalid/primary.htm#destination'),
+                       markup.replace('<a href="#destination">See text</a>', 'See text'),
+                       markup.replace('Original text.', 'Changed text.')):
+            with self.subTest(target=target), self.assertRaises(InlineDocumentSetError):
+                self.read(nonnumeric(text=markup, escape='true'), target_text(value=target))
+
+    def test_evidence_for_a_link_whose_anchor_exists_is_unchanged(self):
+        """Stored occurrences of already accepted filings must replay byte for byte."""
+        markup = '<p id="destination">Original text.</p><a href="#destination">See text</a>'
+        evidence = self.read(nonnumeric(text=markup, escape='true'), target_text(value=markup)).occurrences[0]['evidence']
+        [link] = evidence['inline_uri_mapping']['links']
+        self.assertEqual(set(link), {'href', 'target_id', 'source_xpath', 'source_document_id', 'source_url', 'source_dom'})
+
+    def test_cross_document_duplicate_and_empty_fragment_targets_fail(self):
         source = '<a href="#destination">See text</a>'
-        cases = [(source, source, ''), (source, source, '<p id="destination">Elsewhere</p>'),
+        cases = [(source, source, '<p id="destination">Elsewhere</p>'),
                  ('<p id="destination">A</p><p id="destination">B</p>' + source,
                   '<p id="destination">A</p><p id="destination">B</p>' + source, ''),
                  ('<a href="#">Empty</a>', '<a href="#">Empty</a>', '')]

@@ -27,6 +27,7 @@ def main(argv=None):
     parser.add_argument("--download-missing", action="store_true", help="Only missing HTML/XML receipts, through the existing sequential SEC client; no ingest")
     parser.add_argument("--download-root", type=Path, help="Explicit new private archive root; existing bytes are never overwritten")
     parser.add_argument("--identity-approved", action="store_true", help="Authorize using configured EDGAR_IDENTITY; no value is logged")
+    parser.add_argument("--include-prior-sample", action="store_true", help="Independently revalidate the old MSFT sample when the declared full inventory includes it")
     args = parser.parse_args(argv)
     selections = parse_selections(args.processing_set)
     companies = {ticker: COMPANIES[ticker] for ticker in args.ticker}
@@ -35,12 +36,14 @@ def main(argv=None):
         parser.error("--download-missing requires an explicit --download-root.")
     def run(inventory, reader):
         if args.download_missing:
-            status = download_required_sources(source_requirements(inventory, companies, args.source_root), args.download_root,
+            status = download_required_sources(source_requirements(inventory, companies, args.source_root,
+                                               include_prior_sample=args.include_prior_sample), args.download_root,
                                                identity_approved=args.identity_approved)
             args.output.mkdir(parents=True, exist_ok=True)
             save_json(args.output / "source-download-status.json", status)
             args.source_root.append(args.download_root)
-        return run_validation(inventory, inputs, companies, args.source_root, args.output, reader, selections)
+        return run_validation(inventory, inputs, companies, args.source_root, args.output, reader, selections,
+                              include_prior_sample=args.include_prior_sample)
     if args.replay:
         inventory = json.loads((args.replay / "shared-inventory.json").read_text())
         inventory["evidence_origin"] = "saved_shared_snapshot_replay_not_live"

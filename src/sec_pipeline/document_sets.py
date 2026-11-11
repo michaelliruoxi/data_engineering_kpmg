@@ -266,6 +266,9 @@ def download_document_set(client, core_manifest_path, data_root):
         if descriptor['is_primary']:
             record = next(record for record in files if record['role'] == 'main_inline_xbrl_filing')
         else:
+            _require(client is not None,
+                     f'Offline document-set acquisition is blocked: supplemental original {url} '
+                     'needs a verified download receipt. Acquire the complete document set online first.')
             data, receipt = client.get(url)
             _require(sum(len(value) for value in payloads.values()) + len(data) <= MAX_SET_BYTES,
                      'Document set exceeds the combined source size bound.')

@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 
+from .processing_identity import same_processing_identity
+
 
 def stored_receipt(conn, accession, set_key, expected, required_checks):
     """Return current sealed metadata without retaining an older queue result."""
@@ -16,8 +18,8 @@ def stored_receipt(conn, accession, set_key, expected, required_checks):
         if not row:
             return None
         configuration, versions, checks, semantic, status, source_status, counts, digest, contract, filing, selection_id, document_set_id, coverage = row
-        if (configuration != expected or versions != expected['versions'] or contract != 2
-                or digest != expected['document_set_manifest_sha256'] or source_status != 'passed'
+        if (not same_processing_identity(configuration, expected) or versions != expected['versions'] or contract != 2
+                or source_status != 'passed'
                 or status not in {'passed', 'review_required'}
                 or not isinstance(checks, dict) or not isinstance(semantic, dict) or not isinstance(counts, dict)
                 or not all(checks.get(key) is True for key in required_checks)
@@ -32,6 +34,8 @@ def stored_receipt(conn, accession, set_key, expected, required_checks):
                        for key, value in coverage.items())):
             return None
         review = counts['quality_issues'] > 0
+        if versions.get('tables') in {'tables-v5', 'tables-v6'} and semantic.get('primary_section_boundaries') is not True:
+            return None
         if (review != (status == 'review_required') or review != (counts['review_required_cells'] > 0)
                 or semantic.get('period_header_consistency') is not (not review)
                 or any(type(value) is not bool or (value is False and key != 'period_header_consistency')
@@ -53,7 +57,8 @@ def stored_receipt(conn, accession, set_key, expected, required_checks):
         if len(actual) != len(documents) or any(actual.get(path) != record for path, record in expected_documents.items()):
             return None
         return {'mode': 'stored_receipt', 'accession_number': accession, 'versions': deepcopy(versions),
-                'document_set_manifest_sha256': digest, 'source_hashes': deepcopy(expected['source_hashes']),
+                'document_set_manifest_sha256': configuration['document_set_manifest_sha256'],
+                'original_document_set_manifest_sha256': digest, 'source_hashes': deepcopy(expected['source_hashes']),
                 'source_documents': deepcopy(expected_documents),
                 'configuration': deepcopy(configuration), 'counts': deepcopy(counts), 'coverage': deepcopy(coverage),
                 'source_validation_status': source_status, 'validation_status': status,

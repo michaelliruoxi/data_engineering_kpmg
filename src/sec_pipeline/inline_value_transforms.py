@@ -102,7 +102,7 @@ def validate_transform(format_name, kind):
                or (namespace == ORIGINAL and name == 'numdash')
                or (namespace in SEC and name == 'numwordsen'))
     nonnumeric = ((namespace in MODERN and name in {'fixed-true', 'fixed-false', 'fixed-empty', *MODERN_DATES})
-                  or (namespace in OLDER and name in {'booleantrue', 'booleanfalse', 'datemonthdayyearen'})
+                  or (namespace in OLDER and name in {'booleantrue', 'booleanfalse', 'datemonthdayyearen', 'datemonthday', 'datemonthdayen'})
                   or (namespace in SEC and name in {'duryear', 'durmonth', 'durweek', 'durday', 'durwordsen',
                       'entityfilercategoryen', 'stateprovnameen', 'exchnameen', 'boolballotbox', 'yesnoballotbox',
                       'datequarterend', 'countrynameen', 'edgarprovcountryen'}))
@@ -270,8 +270,10 @@ def nonnumeric_value(text, format_name=None):
         # Registry 2/3 booleans are fixed values, whatever text the filer shows.
         if name in {'booleantrue', 'booleanfalse'}:
             return 'true' if name == 'booleantrue' else 'false'
-        if name == 'datemonthdayyearen':
-            return _date_value(value, 'date-monthname-day-year-en')
+        legacy_dates = {'datemonthdayyearen': 'date-monthname-day-year-en',
+                        'datemonthdayen': 'date-monthname-day-en', 'datemonthday': 'date-month-day'}
+        if name in legacy_dates:
+            return _date_value(value, legacy_dates[name])
     if namespace in SEC:
         lowered = value.lower().translate(HYPHENS)
         if name in {'duryear', 'durmonth', 'durweek', 'durday'}:

@@ -224,6 +224,7 @@ def coverage_check(snapshot, sources):
 
 def audit_candidate(snapshot, roots):
     from decimal import Decimal, InvalidOperation
+    from .table_source_reconstruction import reconstruct_original_tables
     sources, availability = available_sources(snapshot, roots)
     result = audit_snapshot(snapshot, sources)
     # This is an internal stored-fact consistency check, NOT proof of the
@@ -243,6 +244,11 @@ def audit_candidate(snapshot, roots):
                 "raw_value": fact["raw_value"], "numeric_value": fact["numeric_value"], "is_nil": fact["is_nil"]})
     result["source_availability"] = availability
     result["coverage_check"] = coverage_check(snapshot, sources)
+    result["original_table_reconstruction"] = reconstruct_original_tables(snapshot, sources)
+    if result["original_table_reconstruction"]["status"] == "failed":
+        result["errors"].append({"reason": "original_table_reconstruction_mismatch", "evidence": result["original_table_reconstruction"]})
+    elif result["original_table_reconstruction"]["status"] != "passed":
+        result["unverified"].append({"reason": "original_headers_and_cells_not_reconstructed"})
     mapped_ids = {m["table_id"] for m in result["section_mappings"]}
     for table in snapshot["tables"]:
         if table["id"] not in mapped_ids:
@@ -261,7 +267,16 @@ def audit_candidate(snapshot, roots):
         result["errors"].append({"reason": "statement_segment_coverage_mismatch", "evidence": result["coverage_check"]})
     if result["coverage_check"]["status"] != "passed":
         result["unverified"].append({"reason": "original_statement_coverage_not_verified"})
-    result["relational_checks_status"] = "failed" if result["errors"] else "passed_stored_evidence_only"
+    source_reasons = {"HTML_hash_mismatch", "XML_hash_mismatch", "original_grid_mismatch", "table_locator_not_unique",
+        "stored_fact_differs_from_original_XML", "original_inline_evidence_mismatch", "original_marker_evidence_mismatch",
+        "statement_segment_coverage_mismatch", "original_table_reconstruction_mismatch"}
+    # A bad section boundary or different original-file hash is not proof that
+    # the stored table/cell/fact foreign scopes disagree. Keep layers separate.
+    result["section_errors"] = [e for e in result["errors"] if e["reason"].startswith("section_mapping_")]
+    result["original_source_errors"] = [e for e in result["errors"] if e["reason"] in source_reasons]
+    result["database_relationship_errors"] = [e for e in result["errors"]
+        if e not in result["section_errors"] and e not in result["original_source_errors"]]
+    result["relational_checks_status"] = "failed" if result["database_relationship_errors"] else "passed_stored_evidence_only"
     if result["errors"]:
         result["status"] = "failed"
     elif result["unverified"] or result.get("processing_validation_status") != "passed":
@@ -284,12 +299,16 @@ def audit_candidate(snapshot, roots):
 
 def issue_rows(accession, selection, result):
     rows = []
+    originals_missing = any(u["reason"] in {"original_HTML_missing", "original_XML_missing"} for u in result.get("unverified", []))
     for kind in ("errors", "unverified"):
         for issue in result.get(kind, []):
             reason = issue["reason"]
-            owner = ("Acquisition" if "missing" in reason.lower() and any(x in reason.lower() for x in ("html", "xml", "source")) else
+            owner = ("Michael" if any(x in reason for x in ("processing_set", "processing_selection", "matching_report_missing")) else
+                     "Acquisition" if ("missing" in reason.lower() and any(x in reason.lower() for x in ("html", "xml", "source")))
+                        or (originals_missing and reason in {"original_statement_coverage_not_verified", "original_headers_and_cells_not_reconstructed"}) else
+                     "Acquisition + Michael" if reason in {"HTML_hash_mismatch", "XML_hash_mismatch"} else
                      "Cleaning/Chunking" if "section" in reason or "report" in reason else
-                     "Bryce/Financial Data + Jazzy" if any(x in reason for x in ("fact_evidence", "original_XML", "scoped_fact", "review_required", "unresolved_cell")) else "Jazzy")
+                     "Bryce/Financial Data" if any(x in reason for x in ("fact_evidence", "original_XML", "scoped_fact", "review_required", "unresolved_cell", "stored_fact_raw_numeric")) else "Jazzy")
             rows.append({"accession": accession, "processing_family": selection["contract"], "processing_set_id": selection["id"],
                 **{k: issue.get(k) for k in ("table_id", "table_key", "cell_id", "cell_key")}, "check": reason,
                 "actual_value": issue, "expected_evidence": "Exact pinned processing scope and unchanged HTML/XML receipts; see per-set snapshot and checks",
@@ -298,7 +317,7 @@ def issue_rows(accession, selection, result):
     return rows
 
 
-def summarize(candidate, checks, snapshots, issues, inventory, sets=None):
+def summarize(candidate, checks, snapshots, issues, inventory, sets=None, *, include_prior_sample=False):
     row = dict(candidate)
     sets = processing_candidates(inventory, candidate.get("filing_id")) if sets is None else sets
     row.update(processing_family="|".join(sorted({s["contract"] for s in sets})),
@@ -312,7 +331,7 @@ def summarize(candidate, checks, snapshots, issues, inventory, sets=None):
     row["source_document_set"] = "|".join(sorted({str(s["row"]["document_set_id"]) for s in sets if s["row"].get("document_set_id")}))
     row["report_version"] = "|".join(sorted({r["extraction_version"] for snap in snapshots for r in snap["reports"]})) or row["report_version"]
     row["chunk_version"] = "|".join(sorted({c["chunking_version"] for snap in snapshots for c in snap.get("chunks", [])})) or row["chunk_version"]
-    if candidate["accession"] == PRIOR_SAMPLE:
+    if candidate["accession"] == PRIOR_SAMPLE and not include_prior_sample:
         row.update(validation_status="excluded_prior_sample_not_revalidated", source_status="not_rechecked", table_coverage="not_rechecked",
             database_relationship_status="not_rechecked", original_source_semantics_status="not_rechecked")
         return row
@@ -345,7 +364,7 @@ def write_csv(path, rows, columns):
             writer.writerow({key: json.dumps(value, sort_keys=True, ensure_ascii=False) if isinstance(value, (dict, list)) else value for key, value in row.items() if key in columns})
 
 
-def source_requirements(inventory, companies, roots):
+def source_requirements(inventory, companies, roots, *, include_prior_sample=False):
     """Receipt paths may refer to another import machine; resolve, never assume."""
     filings = {str(f["id"]): f for f in inventory.get("filings", []) if f.get("ticker") in companies}
     rows = []
@@ -364,7 +383,7 @@ def source_requirements(inventory, companies, roots):
             if path.is_file():
                 existing.append(str(path))
                 hashes.append(hashlib.sha256(path.read_bytes()).hexdigest())
-        excluded = filing["accession_number"] == PRIOR_SAMPLE
+        excluded = filing["accession_number"] == PRIOR_SAMPLE and not include_prior_sample
         rows.append({"ticker": filing["ticker"], "accession": filing["accession_number"], "source_document_id": str(source["id"]),
             "source_url": source["source_url"], "local_path": relative, "SHA-256": source["sha256"], "file_type": source["role"],
             "local_exists": bool(existing), "resolved_paths": existing, "attempted_paths": attempted,
@@ -422,11 +441,11 @@ def download_required_sources(requirements, root, *, identity_approved):
     return status
 
 
-def run_validation(inventory, inputs, companies, roots, output, snapshot_reader, selections=None):
+def run_validation(inventory, inputs, companies, roots, output, snapshot_reader, selections=None, *, include_prior_sample=False):
     from .table_sections import canonical
     inventory = canonical(inventory)
     candidates, conflicts, discovery_complete = merge_candidates(inventory, inputs, companies)
-    requirements = source_requirements(inventory, companies, roots)
+    requirements = source_requirements(inventory, companies, roots, include_prior_sample=include_prior_sample)
     selections = selections or {}
     known = {c["accession"]: c for c in candidates}
     for accession, selection in selections.items():
@@ -450,7 +469,7 @@ def run_validation(inventory, inputs, companies, roots, output, snapshot_reader,
         sets = processing_candidates(inventory, candidate.get("filing_id"))
         if accession in selections:
             sets = [s for s in sets if {k: s[k] for k in ("contract", "id")} == selections[accession]]
-        if accession != PRIOR_SAMPLE:
+        if accession != PRIOR_SAMPLE or include_prior_sample:
             for selection in sets:
                 key = f"{selection['contract']}--{selection['id']}"
                 directory = output / accession / key
@@ -486,8 +505,8 @@ def run_validation(inventory, inputs, companies, roots, output, snapshot_reader,
                     issues.append({"accession": accession, "processing_family": selection["contract"], "processing_set_id": selection["id"],
                         "check": "snapshot_or_audit_incomplete", "actual_value": failure, "issue_type": "blocked",
                         "owner": "Jazzy + Michael", "fix_status": "not_written_to_shared_database", "retest_result": "unverified"})
-        row = summarize(candidate, checks, snapshots, issues, inventory, sets)
-        if len(checks) != len(sets) and accession != PRIOR_SAMPLE and row["validation_status"] != "failed":
+        row = summarize(candidate, checks, snapshots, issues, inventory, sets, include_prior_sample=include_prior_sample)
+        if len(checks) != len(sets) and (accession != PRIOR_SAMPLE or include_prior_sample) and row["validation_status"] != "failed":
             row["validation_status"] = "blocked"
         if accession in selections:
             row["selection_status"] = "explicit_override_pinned_not_approval_of_team_scope"
@@ -528,7 +547,7 @@ Original-file semantics status: `{json.dumps(source_counts, sort_keys=True)}`.
 Minimum missing or mismatching HTML/XML receipts: {len(minimum)}. See missing_sources_minimal.csv;
 source_requirements.csv includes all {len(requirements)} source receipts and their resolved local availability.
 SEC downloads require the configured real EDGAR_IDENTITY and explicit approval; see source-download-status.json when attempted.
-The old Microsoft sample {PRIOR_SAMPLE} is excluded from revalidation.
+The old Microsoft sample {PRIOR_SAMPLE} is {"included for independent revalidation" if include_prior_sample else "excluded from revalidation"}.
 No filing is accepted against an owner-approved final processing selection in this run.
 No shared database rows, preferences, permissions, migrations or sealed results were changed.
 

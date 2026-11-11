@@ -116,6 +116,15 @@ class InlineDocumentSetTests(unittest.TestCase):
                 self.assertIn('206,376,661 is printed', caught.exception.issues[0]['problem'])
                 self.assertNotIn('differs from the original XML amount', caught.exception.issues[0]['problem'])
 
+    def test_regular_numeric_tag_with_untagged_fraction_fails(self):
+        # MSFT F_001220 has this source shape: tagged 16, printed 16.7 billion.
+        for suffix in ('.7 billion', ',700 million', '7 billion', '.7'):
+            body = '<p>' + numeric(text='16', scale='9', format='ixt:num-dot-decimal') + suffix + '</p>'
+            with self.subTest(suffix=suffix), self.assertRaises(InlineDocumentSetError):
+                self.read(body, target_numeric(value='16000000000'))
+        for suffix in (' billion', '<sup>7</sup>', '<span> .7 billion</span>'):
+            self.read('<p>' + numeric(text='16') + suffix + '</p>', target_numeric(value='16'))
+
     def test_irregular_grouping_without_split_number_keeps_exact_xml_value(self):
         result = self.read('<span>' + numeric(text='206,376,66', format='ixt:num-dot-decimal') + ' shares</span>',
                            target_numeric(value='20637666'))
@@ -225,6 +234,47 @@ class InlineDocumentSetTests(unittest.TestCase):
         self.assertEqual(result.occurrences[0]['evidence']['inline_mapped_value'], value)
         with self.assertRaises(InlineDocumentSetError):
             self.read(nonnumeric(text=value), target_text(value='First line last'))
+
+    def test_single_token_value_ignores_only_surrounding_xml_whitespace(self):
+        """A year printed as "2024 " is extracted as "2024"; the original text stays recorded."""
+        for printed in ('2024 ', ' 2024', '\n\t2024 \r\n', '2024<ix:exclude>note</ix:exclude> '):
+            with self.subTest(printed=printed):
+                docs, facts, digest = self.fixture(nonnumeric(text=printed), target_text(value='2024'))
+                before = [asdict(fact) for fact in facts]
+                result = read_inline_document_set(docs, facts, xml_sha256=digest)
+                evidence = result.occurrences[0]['evidence']
+                self.assertEqual([asdict(fact) for fact in facts], before)
+                self.assertEqual((evidence['inline_mapped_value'], evidence['raw_value'], evidence['value_comparison']),
+                                 ('2024', '2024', 'exact'))
+                self.assertEqual(evidence['inline_whitespace']['policy'], 'xml-schema-collapse-single-token-v1')
+                self.assertEqual(evidence['inline_whitespace']['original_text'].strip(' \t\r\n'), '2024')
+                self.assertNotEqual(evidence['inline_whitespace']['original_text'], '2024')
+                self.assertEqual(result.inventory['nonnumeric_surrounding_whitespace_collapsed'], 1)
+                self.assertEqual(result.inventory['nonnumeric_values_equal'], 1)
+
+    def test_exact_token_records_no_whitespace_policy(self):
+        result = self.read(nonnumeric(text='2024'), target_text(value='2024'))
+        self.assertNotIn('inline_whitespace', result.occurrences[0]['evidence'])
+        self.assertNotIn('nonnumeric_surrounding_whitespace_collapsed', result.inventory)
+
+    def test_whitespace_tolerance_never_reaches_text_other_tokens_or_other_characters(self):
+        cases = [('2024 ', '2023'),                       # a different value
+                 ('20 24', '2024'),                       # whitespace inside the printed token
+                 ('First line ', 'First line'),           # text with whitespace keeps exact comparison
+                 (' First\n line\tlast ', 'First line last'),
+                 ('2024\u00a0', '2024'),                  # a no-break space is content, not XML whitespace
+                 ('2024.', '2024'), ('2024', '2024 '),    # punctuation, or whitespace only in the XML value
+                 (' ', '')]                               # an empty value is not a token
+        for printed, extracted in cases:
+            with self.subTest(printed=printed, extracted=extracted), self.assertRaises(InlineDocumentSetError):
+                self.read(nonnumeric(text=printed), target_text(value=extracted))
+
+    def test_whitespace_tolerance_does_not_apply_to_escaped_or_transformed_values(self):
+        with self.assertRaises(InlineDocumentSetError):
+            self.read(nonnumeric(text='<b>2024</b> ', escape='true'), target_text(value='<b>2024</b>x'))
+        with self.assertRaises(InlineDocumentSetError):
+            self.read(nonnumeric(text='June 30, 2026 ', format='ixt:date-monthname-day-year-en'),
+                      target_text(value='2026-07-01'))
 
     def test_registered_nonnumeric_transform_uses_original_displayed_value(self):
         for content, transform, expected in [('June 30, 2026', 'ixt:date-monthname-day-year-en', '2026-06-30'),

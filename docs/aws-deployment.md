@@ -1,5 +1,25 @@
 # AWS PostgreSQL deployment
 
+## Storage increase: October 29, 2026
+
+The owner approved increasing `sec-filings` in `us-east-1` from **20 to 50 GiB**.
+The RDS console accepted the change with **Apply immediately**. Verification
+confirmed **50 GiB** in the Configuration tab. The instance status was
+**Storage-optimization**, with the storage operation **Optimizing** at 0%;
+the larger allocation is active while background optimization continues.
+
+The storage remains encrypted gp3 with 3,000 IOPS and 125 MiB/s
+throughput. Storage autoscaling remains disabled. At the published Single-AZ
+PostgreSQL gp3 rate of $0.115 per GB-month in this Region, 50 GiB is approximately
+**$5.75/month for storage**, $3.45 above 20 GiB, before credits, taxes, compute,
+and other charges. [AWS price catalog](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRDS/current/us-east-1/index.json).
+
+With the larger allocation verified, use an explicit **40 GiB** importer
+cutoff and monitor `FreeStorageSpace`. The updated launchers pass
+`-MaxDatabaseGiB 40` to both preflight and ingestion; their default remains
+14 GiB. See the [launch commands](automated-backfill.md#run-and-resume).
+No import was started as part of this storage change.
+
 ## Financial browsing schema: October 22, 2026
 
 Migration `010_finance_browsing.sql` adds **14 read-only views in `finance`**.

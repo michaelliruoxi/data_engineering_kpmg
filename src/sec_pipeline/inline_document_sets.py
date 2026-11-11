@@ -31,6 +31,11 @@ XML = 'http://www.w3.org/XML/1998/namespace'
 KINDS = {f'{{{IX}}}nonFraction': 'numeric', f'{{{IX}}}nonNumeric': 'nonnumeric'}
 POLICY = 'inline-document-set-v1'
 MARKUP_POLICY = 'escaped-markup-infoset-v1'
+# XML Schema collapses surrounding whitespace for every item type except
+# strings, so a year, date or other single-token value printed as "2024 " is
+# extracted as "2024". Text containing whitespace keeps exact comparison.
+TOKEN_WHITESPACE_POLICY = 'xml-schema-collapse-single-token-v1'
+XML_WHITESPACE = ' \t\r\n'
 INLINE_NAMES = {'header', 'hidden', 'references', 'resources', 'nonFraction', 'nonNumeric', 'continuation',
                 'exclude', 'footnote', 'relationship', 'tuple', 'fraction'}
 
@@ -108,8 +113,14 @@ def _append_text(parts, value, escaped):
         parts.append(escape(value, quote=False) if escaped else value)
 
 
-def _content(node, escaped, source_url, *, fragment_ids=None, preserved_links=None):
-    """Map one original fragment, preserving all relevant text and markup."""
+def _content(node, escaped, source_url, *, fragment_ids=None, preserved_links=None, other_member_ids=frozenset()):
+    """Map one original fragment, preserving all relevant text and markup.
+
+    A preserved same-document link normally names an anchor in its own
+    document. A link whose anchor no member document defines is a dangling link
+    in the original filing: it stays the identical literal link and is recorded
+    as such. An anchor that exists only in another member remains unsupported.
+    """
     parts = []
     _append_text(parts, node.text, escaped)
     for child in node:
@@ -121,7 +132,8 @@ def _content(node, escaped, source_url, *, fragment_ids=None, preserved_links=No
         if child.tag == f'{{{IX}}}exclude':
             pass
         elif name.namespace == IX or not escaped:
-            parts.append(_content(child, escaped, source_url, fragment_ids=fragment_ids, preserved_links=preserved_links))
+            parts.append(_content(child, escaped, source_url, fragment_ids=fragment_ids, preserved_links=preserved_links,
+                                  other_member_ids=other_member_ids))
         else:
             _require(name.namespace == XHTML, 'Escaped text contains unsupported non-XHTML markup.')
             attributes = []
@@ -135,15 +147,19 @@ def _content(node, escaped, source_url, *, fragment_ids=None, preserved_links=No
                 if (fragment_ids is not None and key == 'href' and name.localname == 'a'
                         and value.startswith('#')):
                     identifier = value[1:]
-                    _require(_ncname(identifier) and identifier in fragment_ids,
+                    _require(_ncname(identifier) and (identifier in fragment_ids or identifier not in other_member_ids),
                              'A preserved fragment link requires a unique target in its original document.')
+                    # Evidence for a link whose anchor exists is unchanged, so
+                    # already stored occurrences replay byte for byte.
                     preserved_links.append({'href': value, 'target_id': identifier,
-                                            'source_xpath': child.getroottree().getpath(child)})
+                                            'source_xpath': child.getroottree().getpath(child),
+                                            **({} if identifier in fragment_ids else {'target_status': 'absent_from_every_member'})})
                 elif key in {'href', 'src'}:
                     value = urljoin(source_url, value)
                 encoded = escape(value, quote=False).replace('"', '&quot;').replace('\t', '&#9;').replace('\n', '&#10;').replace('\r', '&#13;')
                 attributes.append(' ' + key + '="' + encoded + '"')
-            content = _content(child, True, source_url, fragment_ids=fragment_ids, preserved_links=preserved_links)
+            content = _content(child, True, source_url, fragment_ids=fragment_ids, preserved_links=preserved_links,
+                               other_member_ids=other_member_ids)
             tag = name.localname
             parts.append('<' + tag + ''.join(attributes) + ('>' + content + '</' + tag + '>' if content else '/>'))
         _append_text(parts, child.tail, escaped)
@@ -395,8 +411,8 @@ def read_inline_document_set(documents, facts, *, xml_sha256):
                                  'Nested numeric facts disagree on format, unit or scale.')
                 value = numeric_value(content, formatted, scale=node.get('scale'), sign=node.get('sign'))
                 _require(value == fact.numeric_value and value == Decimal(fact.raw_value), 'Transformed inline number differs from the original XML amount.')
-                displayed = fx._irregular_grouping(node)
-                boundary = fx._numeric_tag_boundary(node, displayed) if displayed is not None else None
+                displayed = "".join(node.itertext()).strip()
+                boundary = fx._numeric_tag_boundary(node, displayed)
                 if boundary is not None:
                     raise InlineDocumentSetError(
                         'Printed number extends outside its inline numeric tag: '
@@ -406,6 +422,13 @@ def read_inline_document_set(documents, facts, *, xml_sha256):
                 counts['numeric_values_equal'] += 1
             else:
                 mapped = nonnumeric_value(content, formatted)
+                if (mapped != fact.raw_value and not escaped and formatted is None
+                        and isinstance(fact.raw_value, str) and fact.raw_value
+                        and not any(character.isspace() for character in fact.raw_value)
+                        and mapped.strip(XML_WHITESPACE) == fact.raw_value):
+                    canonical['inline_whitespace'] = {'policy': TOKEN_WHITESPACE_POLICY, 'original_text': mapped}
+                    mapped = fact.raw_value
+                    counts['nonnumeric_surrounding_whitespace_collapsed'] += 1
                 if mapped != fact.raw_value:
                     _require(escaped and formatted is None, 'Transformed nonnumeric value differs from target XML.')
                     original_canonical, target_canonical = _markup_canonical(mapped), _markup_canonical(fact.raw_value)
@@ -420,7 +443,9 @@ def read_inline_document_set(documents, facts, *, xml_sha256):
                             owner = owners[member]
                             local_links = []
                             preserved_values.append(_content(member, True, owner.descriptor.source_url,
-                                fragment_ids=owner.original_ids, preserved_links=local_links))
+                                fragment_ids=owner.original_ids, preserved_links=local_links,
+                                other_member_ids=frozenset().union(*(other.original_ids for other in docs
+                                                                     if other is not owner))))
                             links.extend({**link, 'source_document_id': owner.document_id,
                                           'source_url': owner.descriptor.source_url, 'source_dom': 'original_xhtml'}
                                          for link in local_links)

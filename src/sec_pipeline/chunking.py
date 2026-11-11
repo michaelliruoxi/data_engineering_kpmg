@@ -108,6 +108,14 @@ def chunk_report(
                         end = whitespace_end
 
             text = full_text[cursor:end]
+            if (chunking_version == "paragraph-v2" and end < section_end
+                    and not full_text[end - 1].isspace() and not full_text[end].isspace()):
+                # Never invent a suffix of a financial amount as a new token.
+                # Drop overlap first; an indivisible oversized token fails closed.
+                if cursor < previous_chunk_end:
+                    cursor = previous_chunk_end
+                    continue
+                raise ValueError("A report token exceeds max_chars for paragraph-v2")
             if text.strip():
                 metadata = {
                     "section_id": section.get("section_id"),
@@ -137,6 +145,11 @@ def chunk_report(
 
             # Preserve overlap while ensuring the next chunk moves forward.
             cursor = max(cursor + 1, end - overlap)
+            if chunking_version == "paragraph-v2":
+                # Move to a whitespace boundary already covered by the previous
+                # chunk. This can shorten overlap but cannot leave a text gap.
+                while cursor < end and not full_text[cursor - 1].isspace():
+                    cursor += 1
 
     return chunks
 
