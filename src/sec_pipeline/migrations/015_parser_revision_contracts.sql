@@ -153,10 +153,10 @@ BEGIN
  -- lineage above has been proved. A normal new publication needs this parser.
  IF rollback_event IS NULL AND TG_OP<>'DELETE' AND
     target.configuration->'parser_revisions' IS DISTINCT FROM
-      CASE target.versions->>'tables' WHEN 'tables-v5' THEN
+      (CASE target.versions->>'tables' WHEN 'tables-v5' THEN
         '{"facts":"numeric-tag-boundaries-v3","reports":"corrected-visible-layout-boundaries-v4","tables":"registrant-numeric-cell-validation-v2"}'::jsonb
       ELSE
-        '{"facts":"numeric-tag-boundaries-v3","reports":"reviewed-original-source-boundaries-v4","tables":"registrant-numeric-cell-validation-v2","chunks":"token-boundary-overlap-v2"}'::jsonb END THEN
+        '{"facts":"numeric-tag-boundaries-v3","reports":"reviewed-original-source-boundaries-v4","tables":"registrant-numeric-cell-validation-v2","chunks":"token-boundary-overlap-v2"}'::jsonb END) THEN
    RAISE EXCEPTION 'New publication requires current parser revisions; historical receipts remain immutable' USING ERRCODE='23514';
  END IF;
  INSERT INTO sec.source_publication_history
