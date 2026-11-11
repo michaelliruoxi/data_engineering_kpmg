@@ -799,11 +799,13 @@ def _following_inline_text(element: etree._Element):
     current = element
     for _ in range(8):
         parent = current.getparent()
+        # The tag's own tail is adjacent text even in a list, heading, link,
+        # or Inline XBRL wrapper. Restrict only traversal beyond that slot.
+        if current.tail:
+            return current, "tail", current.tail
         if parent is None or (not _plain_inline(parent) and etree.QName(parent).localname.lower()
                               not in {"p", "div", "td", "th"}):
             return None
-        if current.tail:
-            return current, "tail", current.tail
         sibling = current.getnext()
         if sibling is not None:
             for _ in range(8):
@@ -826,18 +828,19 @@ def _preceding_inline_text(element: etree._Element):
     current = element
     for _ in range(8):
         parent = current.getparent()
-        if parent is None or (not _plain_inline(parent) and etree.QName(parent).localname.lower()
-                              not in {"p", "div", "td", "th"}):
+        if parent is None:
             return None
         sibling = current.getprevious()
         if sibling is None:
             if parent.text:
                 return parent, "text", parent.text
-        else:
-            # A sibling's tail is outside that sibling, so it can be ordinary
-            # contiguous text even when the sibling itself is a note marker.
-            if sibling.tail:
-                return sibling, "tail", sibling.tail
+        elif sibling.tail:
+            # A tail belongs to the parent text flow, not the sibling's body.
+            return sibling, "tail", sibling.tail
+        if (not _plain_inline(parent) and etree.QName(parent).localname.lower()
+                not in {"p", "div", "td", "th"}):
+            return None
+        if sibling is not None:
             for _ in range(8):
                 if not _plain_inline(sibling):
                     return None
@@ -862,7 +865,8 @@ def _numeric_tag_boundary(element: etree._Element, displayed: str) -> dict[str, 
     if _BOUNDARY_LAYOUT_PROPERTY.search(_boundary_style(element)):
         return None  # Numeric tags can themselves insert space or a block boundary.
     for ancestor in (element, *element.iterancestors()):
-        if (etree.QName(ancestor).localname.lower() in {"a", "sup", "sub"}
+        if (etree.QName(ancestor).localname.lower() in {"sup", "sub"}
+                or ancestor.tag == f"{{{IX}}}hidden"
                 or "hidden" in ancestor.attrib or ancestor.get("aria-hidden", "").lower() == "true"
                 or re.search(r"display\s*:\s*none|visibility\s*:\s*(?:hidden|collapse)|vertical-align\s*:\s*(?:super|sub)",
                              _boundary_style(ancestor), re.I)):

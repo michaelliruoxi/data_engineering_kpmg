@@ -24,6 +24,7 @@ from .filing_parser_v4 import (
 )
 from .processing import ProcessingError
 from .parser_policy import policy_metadata, require_current_receipt
+from .processing_identity import same_processing_identity
 from .source_set_storage import (
     DocumentMemberInput, DocumentSetInput, FactSourceOccurrenceInput, ReportMembershipInput,
     V4ProcessingSetInput, store_document_set, store_source_occurrences, store_v4_processing_set,
@@ -164,7 +165,7 @@ def _status(parsed):
 def _summary(parsed, configuration, counts, *, mode):
     status = _status(parsed)
     return {'mode': mode, 'accession_number': parsed.manifest['accession_number'], 'versions': parsed.versions,
-            'document_set_manifest_sha256': parsed.manifest_sha256, 'source_hashes': configuration['source_hashes'],
+            'document_set_manifest_sha256': configuration['document_set_manifest_sha256'], 'source_hashes': configuration['source_hashes'],
             'configuration': configuration, 'coverage': dict(parsed.coverage), 'counts': counts,
             'source_validation_status': 'passed', 'validation_status': status,
             'source_checks': dict(parsed.checks), 'semantic_checks': dict(parsed.semantic_checks),
@@ -327,12 +328,12 @@ def run_ingestion(conn, *, manifest_path, data_root, processing_set_key='automat
             row = conn.execute('SELECT document_set_id,source_validation_status,validation_status,counts,configuration FROM sec.source_processing_sets WHERE id=%s AND filing_id=%s',
                                (set_id, filing_id)).fetchone()
             _require(row is not None and row[0] == document_set_id and row[1] == 'passed' and row[2] == _status(parsed)
-                     and row[3] == _expected_counts(parsed) and row[4] == configuration,
+                     and row[3] == _expected_counts(parsed) and same_processing_identity(row[4], configuration),
                      'Sealed source-set scope, status, counts or configuration differs from actual accepted records.')
             _require(verify_document_set(path, root) == manifest and _digest(path) == digest,
                      'Source documents or document-set manifest changed before commit.')
             _active(conn, phase)
-            summary = _summary(parsed, configuration, deepcopy(row[3]), mode='ingest')
+            summary = _summary(parsed, deepcopy(row[4]), deepcopy(row[3]), mode='ingest')
             summary.update(filing_id=str(filing_id), document_set_id=str(document_set_id), processing_set_id=str(set_id),
                            contract_version=2, source_document_ids={url: str(identifier) for url, identifier in sources.items()})
             json.dumps(summary)

@@ -95,3 +95,39 @@ def test_post_commit_evidence_failure_reports_actual_outcome(review, tmp_path, m
     assert json.loads(capsys.readouterr().out)["status"] == "committed_evidence_incomplete"
     assert json.loads(output.read_text())["transaction_status"] == "prepared"
     assert review.events[-1] == "commit"
+
+
+@pytest.mark.parametrize("action", ["publish", "rollback"])
+def test_commit_error_records_unknown_outcome_without_confirmed_selection(review, tmp_path, monkeypatch, action):
+    transactions = 0
+
+    @contextmanager
+    def transaction():
+        nonlocal transactions
+        transactions += 1
+        review.events.append("begin")
+        yield
+        if transactions == 2:
+            review.events.append("commit_error")
+            raise ConnectionError("private connection details must not enter evidence")
+        review.events.append("commit")
+
+    conn = review.cli.connect.return_value.enter_result
+    monkeypatch.setattr(conn, "transaction", transaction)
+    output = tmp_path / "result.json"
+    with pytest.raises(ConnectionError):
+        review.cli.main(arguments(review, output, action))
+    evidence = json.loads(output.read_text())
+    assert evidence["status"] == "outcome_unknown"
+    assert evidence["transaction_status"] == "unknown"
+    assert "served_selection_after" not in evidence
+    assert evidence["error_type"] == "ConnectionError"
+    assert "private connection details" not in output.read_text()
+
+
+def test_failure_before_evidence_does_not_leave_empty_reserved_file(review, tmp_path):
+    review.cli.connect.side_effect = ConnectionError("private connection details")
+    output = tmp_path / "result.json"
+    with pytest.raises(ConnectionError):
+        review.cli.main(arguments(review, output))
+    assert not output.exists()

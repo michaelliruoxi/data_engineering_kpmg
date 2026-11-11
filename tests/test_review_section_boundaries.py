@@ -5,6 +5,7 @@ import hashlib
 from sec_pipeline.report_cleaning import clean_report
 from sec_pipeline.report_validation import audit_report, source_heading_expectations
 from sec_pipeline.table_sections import map_table_section
+import pytest
 
 
 def source(tmp_path, content):
@@ -194,3 +195,57 @@ def test_letter_spaced_item_number_does_not_invent_a_different_missing_item(tmp_
     expected = source_heading_expectations(path, form='10-K')['expected_section_ids']
     result = audit_report(path, form='10-K', expected_section_ids=expected)
     assert 'unrepresented_original_item_heading' not in checks(result)
+
+
+@pytest.mark.parametrize('heading,body', [
+    ('Financial Statements and Schedules',
+     '<p>The financial statements are set forth under Part II, Item 8 of this Form 10-K.</p>'
+     '<table><tr><td>Income Statements</td><td>58</td></tr>'
+     '<tr><td>Balance Sheets</td><td>60</td></tr></table>'),
+    ('Report of Independent Registered Public Accounting Firm',
+     '<p>Consolidated Balance Sheets, April 30, 2021 and 2020</p>'
+     '<p>Consolidated Statements of Income, Three Years Ended April 30, 2021</p>'),
+])
+def test_item15_financial_references_do_not_relabel_exhibits_as_an_appendix(tmp_path, heading, body):
+    path = annual(tmp_path)
+    references = '<h2>' + heading + '</h2>' + body + '<h2>Exhibit Listing</h2>'
+    references += '<table id="exhibits"><tr><td>3.1</td><td>Articles of incorporation</td></tr></table>'
+    path.write_text(path.read_text().replace('<p>Body of fifteen.</p>', '<p>Body of fifteen.</p>' + references))
+    report = clean_report(path, form='10-K')
+    assert 'financial-statements-appendix' not in {s['section_id'] for s in report.sections}
+    expected = source_heading_expectations(path, form='10-K')['expected_section_ids']
+    assert audit_report(path, form='10-K', report=report, expected_section_ids=expected)['status'] == 'passed'
+    mapping = map_table_section({'structure': {'source_xpath': "//*[@id='exhibits']",
+        'html_sha256': hashlib.sha256(path.read_bytes()).hexdigest()}}, {}, report.sections,
+        path.read_bytes(), accession='test')
+    assert mapping['section_key'] == 'part-iv-item-15'
+
+
+def test_item15_actual_appended_statements_keep_financial_ownership(tmp_path):
+    path = annual(tmp_path)
+    appendix = ('<h2>FINANCIAL STATEMENTS AND SCHEDULES</h2>'
+                '<h2>CONSOLIDATED BALANCE SHEETS</h2>'
+                '<table id="balance"><tr><td>Total assets</td><td>100</td></tr></table>')
+    path.write_text(path.read_text().replace('<p>Body of fifteen.</p>', '<p>Body of fifteen.</p>' + appendix))
+    report = clean_report(path, form='10-K')
+    mapping = map_table_section({'structure': {'source_xpath': "//*[@id='balance']",
+        'html_sha256': hashlib.sha256(path.read_bytes()).hexdigest()}}, {}, report.sections,
+        path.read_bytes(), accession='test')
+    assert mapping['section_key'] == 'financial-statements-appendix'
+    expected = source_heading_expectations(path, form='10-K')['expected_section_ids']
+    assert audit_report(path, form='10-K', report=report, expected_section_ids=expected)['status'] == 'passed'
+
+
+def test_quarterly_singular_signature_is_audited_independently(tmp_path):
+    path = quarterly_without_toc(tmp_path, '')
+    path.write_text(path.read_text().replace('</body>',
+        '<h2>SIGNATURE</h2><p>Signed on behalf of the registrant.</p></body>'))
+    report = clean_report(path, form='10-Q')
+    expected = source_heading_expectations(path, form='10-Q')['expected_section_ids']
+    assert 'signatures' in {row['section_id'] for row in report.sections}
+    assert audit_report(path, form='10-Q', report=report, expected_section_ids=expected)['status'] == 'passed'
+    stale = deepcopy(report)
+    stale.sections = [row for row in stale.sections if row['section_id'] != 'signatures']
+    stale.sections[-1]['offset_end'] = len(stale.full_text)
+    assert 'unnumbered_body_boundary_missing' in checks(
+        audit_report(path, form='10-Q', report=stale, expected_section_ids=expected))

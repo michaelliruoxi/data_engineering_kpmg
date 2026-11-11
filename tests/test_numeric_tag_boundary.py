@@ -86,6 +86,13 @@ def test_hidden_and_footnote_ancestors_do_not_supply_visible_number_evidence(tmp
         assert check_inline_correspondence(source, [fact])['numeric_tag_boundary_issues'] == []
 
 
+@pytest.mark.parametrize('body', [f'<ix:hidden>{TAG}1</ix:hidden>', f'<ix:hidden>9{TAG}</ix:hidden>'])
+def test_inline_hidden_ancestor_does_not_supply_visible_adjacency(tmp_path, fact, body):
+    source = tmp_path / 'filing.htm'
+    source.write_text(document(body))
+    assert check_inline_correspondence(source, [fact])['numeric_tag_boundary_issues'] == []
+
+
 @pytest.mark.parametrize('style', [
     'display:block', 'margin-right:3em', 'padding-right:2px', 'position:absolute',
     'vertical-align:super', 'display:/**/none',

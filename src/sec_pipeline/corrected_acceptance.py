@@ -6,8 +6,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .extraction_profiles import CORRECTED_PROFILES, versions_for
+from .parser_policy import policy_metadata
 from .report_cleaning import clean_report
 from .report_validation import audit_report, source_heading_expectations
+from .primary_statement_sections import primary_statement_section_issues
 from .sections import normalize_sections
 from .table_relations import audit_snapshot, read_snapshot
 
@@ -20,6 +22,12 @@ def audit_corrected_set(conn, accession, processing_set_id, data_root):
     selected = snapshot["selected_processing_set"]
     if not any(selected["versions"] == versions_for(profile) for profile in CORRECTED_PROFILES):
         errors.append({"check": "wrong_processing_versions"})
+    expected_revisions = policy_metadata(selected["versions"]).get("parser_revisions")
+    configuration = selected.get("configuration")
+    actual_revisions = configuration.get("parser_revisions") if isinstance(configuration, dict) else None
+    if actual_revisions != expected_revisions:
+        errors.append({"check": "parser_revision_mismatch", "expected": expected_revisions,
+                       "actual": actual_revisions})
     if selected["validation_status"] != "passed" or selected["source_validation_status"] != "passed":
         errors.append({"check": "processing_set_not_passed"})
     if selected["semantic_checks"].get("primary_section_boundaries") is not True:
@@ -49,6 +57,10 @@ def audit_corrected_set(conn, accession, processing_set_id, data_root):
         descriptor = SimpleNamespace(full_text=report["full_text"], sections=report["sections"])
         normalized = [asdict(value) for value in normalize_sections(descriptor)]
         actual = [s for s in snapshot["sections"] if s["report_id"] == report["id"]]
+        errors.extend(primary_statement_section_issues(
+            [table for table in snapshot.get("tables", [])
+             if table["source_document_id"] == report["source_document_id"]],
+            report, sources[report["source_document_id"]], accession=accession, sections=actual))
         actual_descriptors = [{key: s[key] for key in normalized[0]} for s in actual] if normalized else actual
         if actual_descriptors != normalized:
             errors.append({"check": "stored_relational_sections_differ", "report_id": report["id"]})

@@ -7,7 +7,8 @@ from .extraction_profiles import CORRECTED_PROFILE, versions_for
 VERSIONS = versions_for(CORRECTED_PROFILE)
 REQUIRED_SOURCE_CHECKS = runner.REQUIRED_SOURCE_CHECKS
 MIGRATION = "011_corrected_layout_versions.sql"
-MIGRATIONS = (MIGRATION, "012_publication_readers.sql", "013_reviewed_layout_versions.sql")
+MIGRATIONS = (MIGRATION, "012_publication_readers.sql", "013_reviewed_layout_versions.sql",
+              "014_reader_contracts.sql", "015_parser_revision_contracts.sql")
 
 
 def configuration_from_manifest(manifest, manifest_sha256):

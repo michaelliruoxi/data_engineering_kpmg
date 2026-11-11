@@ -50,6 +50,8 @@ jobs:
         run: PGDATABASE=sec_ci_test uv run --locked sec-db migrate
       - name: Finance view inventory and reader permissions
         run: uv run --locked python -m pytest tests/test_finance_views.py::test_reader_can_select_all_finance_views_without_schema_or_data_write_privileges -q -ra
+      - name: Populated upgrades and reader selection regressions
+        run: uv run --locked python -m pytest tests/test_publication_review.py tests/test_publication_revision_upgrade.py -q -ra
       - name: Pure, PostgreSQL, publication and concurrency tests
         run: uv run --locked python -m pytest -q -ra --durations=10
       - name: Existing committed ingestion transaction tests

@@ -23,8 +23,8 @@ from tests.test_filing_ingestion_v4 import scenario, ingest
 def test_every_active_profile_has_report_revision_and_correct_table_policy(table_version):
     versions = {**filing_adapter.VERSIONS, 'tables': table_version}
     revisions = policy_metadata(versions)['parser_revisions']
-    assert revisions['facts'] == 'numeric-tag-boundaries-v2'
-    assert revisions['reports'] == 'legacy-visible-layout-boundaries-v3'
+    assert revisions['facts'] == 'numeric-tag-boundaries-v3'
+    assert revisions['reports'] == 'legacy-visible-layout-boundaries-v4'
     assert revisions.get('tables') == (None if table_version == 'tables-v1' else 'registrant-numeric-cell-validation-v2')
 
 
@@ -44,6 +44,20 @@ def test_new_and_matching_receipts_can_proceed():
     for stored in (None, (policy_metadata(filing_adapter.VERSIONS),)):
         conn = SimpleNamespace(execute=Mock(return_value=SimpleNamespace(fetchone=lambda: stored)))
         require_current_receipt(conn, UUID(int=1), 'existing', filing_adapter.VERSIONS)
+
+
+@pytest.mark.parametrize('profile', ['document-set-v4', 'corrected-layout-v5', 'reviewed-layout-v6'])
+def test_pre_review_receipts_are_stale_for_every_document_set_profile(profile):
+    from sec_pipeline.extraction_profiles import versions_for
+    versions = versions_for(profile)
+    old = policy_metadata(versions)
+    old['parser_revisions']['facts'] = 'numeric-tag-boundaries-v2'
+    old['parser_revisions']['reports'] = old['parser_revisions']['reports'].replace('-v4', '-v3')
+    conn = SimpleNamespace(execute=Mock(return_value=SimpleNamespace(fetchone=lambda: (old,))))
+    with pytest.raises(ParserRevisionConflict, match='explicit new storage versions'):
+        require_current_receipt(conn, UUID(int=1), 'existing', versions, document_set=True)
+    assert conn.execute.call_count == 1
+    assert conn.execute.call_args.args[0].startswith('SELECT configuration ')
 
 
 def test_stale_dry_run_queue_is_reparsed_and_current_revision_can_be_reused(queue):

@@ -7,7 +7,8 @@ from .filing_ingestion_v5 import MigrationPrerequisiteError
 
 VERSIONS = versions_for(REVIEWED_PROFILE)
 REQUIRED_SOURCE_CHECKS = runner.REQUIRED_SOURCE_CHECKS
-MIGRATIONS = ("011_corrected_layout_versions.sql", "012_publication_readers.sql", "013_reviewed_layout_versions.sql")
+MIGRATIONS = ("011_corrected_layout_versions.sql", "012_publication_readers.sql", "013_reviewed_layout_versions.sql",
+              "014_reader_contracts.sql", "015_parser_revision_contracts.sql")
 
 
 def configuration_from_manifest(manifest, manifest_sha256):

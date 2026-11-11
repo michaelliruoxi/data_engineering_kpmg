@@ -20,6 +20,31 @@ def _write_evidence(output, result):
     os.fsync(output.fileno())
 
 
+def _change_selection(conn, output, result, change):
+    prepared = False
+    try:
+        with conn.transaction():
+            result["served_selection_after"] = change()
+            result["transaction_status"] = "prepared"
+            _write_evidence(output, result)
+            prepared = True
+    except Exception as error:
+        if prepared:
+            # A lost commit acknowledgement cannot establish either commit or
+            # rollback. Retain the attempted selection without certifying it.
+            result["attempted_served_selection"] = result.pop("served_selection_after")
+            result.update(status="outcome_unknown", transaction_status="unknown",
+                          error_type=type(error).__name__)
+            try:
+                _write_evidence(output, result)
+            except OSError as evidence_error:
+                print(json.dumps({"status": "outcome_unknown", "transaction_status": "unknown",
+                                  "error_type": type(error).__name__,
+                                  "evidence_error_type": type(evidence_error).__name__}))
+        raise
+    result["transaction_status"] = "committed"
+
+
 def _review(args, output):
     with explicit_database_environment():
         settings = ingestion_settings(args.env_file, args.database)
@@ -46,18 +71,12 @@ def _review(args, output):
                     result = {"filing_id": str(filing_id), "served_selection_before": current}
             if args.action == "publish" and result["status"] == "passed":
                 expected = (None if args.expected_family == "none" else args.expected_family, args.expected_set_id)
-                with conn.transaction():
-                    result["served_selection_after"] = publish_corrected_set(conn, filing_id, args.processing_set_id, expected_current=expected)
-                    result["transaction_status"] = "prepared"
-                    _write_evidence(output, result)
-                result["transaction_status"] = "committed"
+                _change_selection(conn, output, result,
+                    lambda: publish_corrected_set(conn, filing_id, args.processing_set_id, expected_current=expected))
             elif args.action == "rollback":
-                with conn.transaction():
-                    result["served_selection_after"] = rollback_corrected_set(conn, filing_id, args.processing_set_id)
-                    result["status"] = "rolled_back"
-                    result["transaction_status"] = "prepared"
-                    _write_evidence(output, result)
-                result["transaction_status"] = "committed"
+                result["status"] = "rolled_back"
+                _change_selection(conn, output, result,
+                    lambda: rollback_corrected_set(conn, filing_id, args.processing_set_id))
     return result
 
 
@@ -81,16 +100,24 @@ def main(argv=None):
     # Reserve a fresh evidence file before touching the database. Never truncate
     # an earlier acceptance record or a source file on a failed run.
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with args.output.open("x", encoding="utf-8") as output:
-        result = _review(args, output)
-        try:
-            _write_evidence(output, result)
-        except OSError as error:
-            if result.get("transaction_status") == "committed":
-                print(json.dumps({"action": args.action, "status": "committed_evidence_incomplete",
-                                  "error_type": type(error).__name__, "output": str(args.output)}))
-                return 3
-            raise
+    output = args.output.open("x", encoding="utf-8")
+    try:
+        with output:
+            result = _review(args, output)
+            try:
+                _write_evidence(output, result)
+            except OSError as error:
+                if result.get("transaction_status") == "committed":
+                    print(json.dumps({"action": args.action, "status": "committed_evidence_incomplete",
+                                      "error_type": type(error).__name__, "output": str(args.output)}))
+                    return 3
+                raise
+    except Exception:
+        # The exclusive open succeeded, so this is this run's reservation.
+        # Close first for platforms that cannot unlink an open file.
+        if args.output.stat().st_size == 0:
+            args.output.unlink()
+        raise
     print(json.dumps({"action": args.action, "status": result.get("status", "inventoried"), "output": str(args.output)}))
     return 2 if result.get("status") == "failed" else 0
 

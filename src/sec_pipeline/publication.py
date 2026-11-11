@@ -8,10 +8,12 @@ from .database import DataConflict, DatabaseError, _packaged_migrations, migrati
 def _begin(conn, filing_id):
     if conn.autocommit or not isinstance(filing_id, UUID):
         raise DatabaseError("Publication requires a filing UUID and caller-managed transaction.")
-    migration = "012_publication_readers.sql"
-    row = conn.execute("SELECT sha256 FROM sec.schema_migrations WHERE name=%s", (migration,)).fetchone()
-    if row is None or not migration_checksum_matches(row[0], dict(_packaged_migrations())[migration]):
-        raise DatabaseError("Apply the reviewed publication/readers migration before changing selections.")
+    packaged = dict(_packaged_migrations())
+    for migration in ("012_publication_readers.sql", "013_reviewed_layout_versions.sql",
+                      "014_reader_contracts.sql", "015_parser_revision_contracts.sql"):
+        row = conn.execute("SELECT sha256 FROM sec.schema_migrations WHERE name=%s", (migration,)).fetchone()
+        if row is None or not migration_checksum_matches(row[0], packaged[migration]):
+            raise DatabaseError("Apply the reviewed publication/readers migrations before changing selections.")
     conn.execute("SELECT sec.lock_processing_filing(%s)", (filing_id,))
 
 

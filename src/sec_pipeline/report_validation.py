@@ -17,7 +17,8 @@ from uuid import UUID
 from lxml import etree, html
 
 from .chunking import chunk_report
-from .report_cleaning import clean_report
+from .report_cleaning import clean_report, _original_statement_tables, _statement_table_follows
+from .primary_statement_sections import primary_statement_section_issues
 
 
 TARGET_TICKERS = ("AAPL", "CASY", "MCK", "MDT", "MSFT", "MU", "NKE", "NTAP", "PH", "TTWO")
@@ -287,6 +288,7 @@ def _audit_source_boundaries(tree, report, evidence, issue):
     # cleaner and the independent inventory. They require explicit review.
     blocks = {'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'tr'}
     seen_special = set()
+    statement_tables = None
     section_nodes = [(order[node], next(s for s in report.sections if s['section_id'] == key))
                      for key, node in resolved.items()]
     section_nodes.sort(key=lambda pair: pair[0])
@@ -337,11 +339,25 @@ def _audit_source_boundaries(tree, report, evidence, issue):
             # A leaf label in an index row is not a standalone body heading;
             # inspect the page column and sibling links as part of that row.
             continue
-        if (owner.get('section_type') in {'exhibits', 'summary'} or owner.get('section_id') in {'signatures', 'financial-statements-appendix'}) and re.fullmatch(r'SIGNATURES[ .]*', title, re.I):
+        if (owner.get('section_type') in {'exhibits', 'summary'} or owner.get('section_id') in {'signatures', 'financial-statements-appendix'}) and re.fullmatch(r'SIGNATURES?[ .]*', title, re.I):
             special = 'signatures'
-        elif re.fullmatch(r'INDEX TO (?:THE )?(?:CONSOLIDATED )?FINANCIAL STATEMENTS[ .]*', title, re.I):
+        elif re.fullmatch(
+                r'(?:(?:INDEX TO )?(?:THE )?(?:(?:CONDENSED|CONSOLIDATED|COMBINED) )*'
+                r'FINANCIAL STATEMENTS(?: AND (?:FINANCIAL STATEMENT )?SCHEDULES?)?'
+                r'|REPORTS? OF (?:THE )?INDEPENDENT REGISTERED PUBLIC ACCOUNTING FIRMS?'
+                r'|(?:(?:CONDENSED|CONSOLIDATED|COMBINED) )*(?:BALANCE SHEETS?'
+                r'|STATEMENTS? OF (?:INCOME|EARNINGS|OPERATIONS|CASH FLOWS?|FINANCIAL POSITION)'
+                r'(?: AND COMPREHENSIVE (?:INCOME|LOSS))?)(?: \(LOSS\))?(?: \(UNAUDITED\))?)[ .]*', title, re.I):
             if owner.get('part') == 'IV' or owner.get('section_id') == 'financial-statements-appendix':
                 special = 'financial-statements-appendix'
+                if not re.fullmatch(r'INDEX TO (?:THE )?(?:CONSOLIDATED )?FINANCIAL STATEMENTS[ .]*', title, re.I):
+                    if statement_tables is None:
+                        statement_tables = _original_statement_tables(tree.getroot())
+                    limit = next((position for position, section in section_nodes
+                                  if position > order[node] and (section.get('item')
+                                      or section.get('section_type') == 'part_heading')), len(nodes))
+                    if not _statement_table_follows(node, limit, statement_tables, order):
+                        special = None
         elif re.fullmatch(r'(?:INFORMATION (?:ABOUT|REGARDING) )?(?:OUR |THE )?EXECUTIVE OFFICERS(?: OF THE REGISTRANT)?[ .]*', title, re.I):
             if owner.get('section_type') == 'mine_safety' or owner.get('section_id') == 'executive-officers':
                 special = 'executive-officers'
@@ -351,7 +367,7 @@ def _audit_source_boundaries(tree, report, evidence, issue):
                 issue('unnumbered_body_boundary_missing', expected=special, actual=owner['section_id'], title=title)
 
 
-def audit_report(html_path, *, form, expected_section_ids=None, report=None, chunks=None):
+def audit_report(html_path, *, form, expected_section_ids=None, report=None, chunks=None, selected_tables=None):
     """Audit supplied outputs, or run the cleaner/chunker when outputs are absent.
 
     Source XPath checks use a separate parse of the unchanged original bytes.
@@ -431,6 +447,9 @@ def audit_report(html_path, *, form, expected_section_ids=None, report=None, chu
 
     source_evidence = source_heading_expectations(html_path, form=form)
     _audit_source_boundaries(tree, report, source_evidence, issue)
+    if selected_tables is not None:
+        issues.extend(primary_statement_section_issues(
+            selected_tables, {'sections': report.sections}, source, accession=html_path.stem))
 
     heading_status = "unverified"
     if expected_section_ids is not None:

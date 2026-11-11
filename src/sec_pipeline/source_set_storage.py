@@ -20,6 +20,7 @@ from psycopg.types.json import Jsonb
 
 from .database import DataConflict, DatabaseError
 from .extraction_profiles import supported_versions
+from .processing_identity import same_processing_identity
 
 
 POLICY = 'inline-set-v1'
@@ -415,6 +416,14 @@ def store_v4_processing_set(conn, record: V4ProcessingSetInput, *, table_ids: Se
                       ('source_processing_reports', 'report_id', report_data),
                       ('source_processing_issues', 'issue_id', [{'issue_id': value} for value in issues])]
     with conn.transaction():
+        if existing:
+            original = conn.execute('SELECT configuration FROM sec.source_processing_sets WHERE id=%s',
+                                    (identifier,)).fetchone()[0]
+            if not same_processing_identity(original, data['configuration']):
+                raise DataConflict('Conflicting immutable source_processing_sets configuration.')
+            # Keep the first manifest digests as provenance. Membership and all
+            # remaining sealed fields are still compared exactly below.
+            data['configuration'] = original
         for table, key, entries in specifications:
             query = sql.SQL('SELECT {} FROM sec.{} WHERE processing_set_id=%s').format(sql.Identifier(key), sql.Identifier(table))
             if existing:

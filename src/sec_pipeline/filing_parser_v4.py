@@ -8,7 +8,7 @@ documents. Report coverage remains unknown beyond the existing cleaner.
 from collections import Counter
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 import hashlib
 import json
 from pathlib import Path
@@ -26,6 +26,7 @@ from .document_sets import verify_document_set
 from .fact_extraction import IX, XML_ROLE, extract_facts
 from .inline_document_sets import InlineSourceDocument, read_inline_document_set
 from .processing import DryRunContext, ParseResult, ProcessingError, SourceIds
+from .primary_statement_sections import primary_statement_section_issues
 from .registrants import index_registrants
 from .report_cleaning import clean_report
 from .source_cells_v3 import SourceBindings, transform_tables as transform_v3, validate_representations
@@ -277,6 +278,13 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
         _require(sections and locators and chunk_bounds, 'Report sections or chunk bounds fail original-document validation.')
         _require(all(section.get('validation_status') in {'detected', 'unverified'} for section in report.sections),
                  'Heuristic report section labels cannot be promoted to validated.')
+        if record['source_url'] == selected['source_url']:
+            statement_issues = primary_statement_section_issues(
+                [asdict(table) for table in tables], asdict(report), path.read_bytes(),
+                accession=manifest['accession_number'])
+            _require(not statement_issues,
+                     'Selected primary statements must map to financial_statements sections: '
+                     + json.dumps(statement_issues, sort_keys=True))
         if profile in CORRECTED_PROFILES and record['is_primary']:
             from .report_validation import audit_report, source_heading_expectations
             expected = source_heading_expectations(path, form=manifest['form'])

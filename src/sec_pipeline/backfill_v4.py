@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 
+from .processing_identity import same_processing_identity
+
 
 def stored_receipt(conn, accession, set_key, expected, required_checks):
     """Return current sealed metadata without retaining an older queue result."""
@@ -16,8 +18,8 @@ def stored_receipt(conn, accession, set_key, expected, required_checks):
         if not row:
             return None
         configuration, versions, checks, semantic, status, source_status, counts, digest, contract, filing, selection_id, document_set_id, coverage = row
-        if (configuration != expected or versions != expected['versions'] or contract != 2
-                or configuration.get('document_set_manifest_sha256') != expected['document_set_manifest_sha256'] or source_status != 'passed'
+        if (not same_processing_identity(configuration, expected) or versions != expected['versions'] or contract != 2
+                or source_status != 'passed'
                 or status not in {'passed', 'review_required'}
                 or not isinstance(checks, dict) or not isinstance(semantic, dict) or not isinstance(counts, dict)
                 or not all(checks.get(key) is True for key in required_checks)

@@ -2,9 +2,9 @@
 
 
 REPORT_REVISIONS = {
-    'report-v1': 'legacy-visible-layout-boundaries-v3',
-    'report-v2': 'corrected-visible-layout-boundaries-v3',
-    'report-v3': 'reviewed-original-source-boundaries-v3',
+    'report-v1': 'legacy-visible-layout-boundaries-v4',
+    'report-v2': 'corrected-visible-layout-boundaries-v4',
+    'report-v3': 'reviewed-original-source-boundaries-v4',
 }
 
 
@@ -16,7 +16,7 @@ def policy_metadata(versions):
     """
     revisions = {}
     if versions.get('facts') == 'facts-v1':
-        revisions['facts'] = 'numeric-tag-boundaries-v2'
+        revisions['facts'] = 'numeric-tag-boundaries-v3'
     if versions.get('reports') in REPORT_REVISIONS:
         revisions['reports'] = REPORT_REVISIONS[versions['reports']]
     if versions.get('tables') in {'tables-v2', 'tables-v3', 'tables-v4', 'tables-v5', 'tables-v6'}:
