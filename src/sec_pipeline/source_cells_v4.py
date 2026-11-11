@@ -36,8 +36,8 @@ CASH_CONCEPTS = {
     'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents',
     'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations',
 }
-BEGINNING = re.compile(r'\b(?:(?:beginning|start) of (?:the )?(?:period|year|quarter)|(?:beginning|opening) balances?)\b')
-ENDING = re.compile(r'\b(?:end of (?:the )?(?:period|year|quarter)|(?:ending|closing) balances?)\b')
+BEGINNING = re.compile(r'\b(?:(?:beginning|start) of (?:the )?(?:fiscal )?(?:period|year|quarter)|(?:beginning|opening) balances?)\b')
+ENDING = re.compile(r'\b(?:end of (?:the )?(?:fiscal )?(?:period|year|quarter)|(?:ending|closing) balances?)\b')
 
 
 def _words(value):

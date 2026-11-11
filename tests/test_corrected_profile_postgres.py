@@ -7,10 +7,10 @@ from uuid import UUID
 import psycopg
 import pytest
 
-from sec_pipeline import database as db, filing_ingestion_v4, filing_ingestion_v5, filing_ingestion_v6
+from sec_pipeline import database as db, filing_ingestion_v4, filing_ingestion_v5, filing_ingestion_v6, filing_ingestion_v7
 from sec_pipeline.catalog import ProcessingSetInput, select_preferred_processing_set, store_processing_set
 from sec_pipeline.corrected_acceptance import audit_corrected_set
-from sec_pipeline.extraction_profiles import CORRECTED_PROFILE, REVIEWED_PROFILE, corrected_tables, versions_for
+from sec_pipeline.extraction_profiles import CORRECTED_PROFILE, AUDITED_PROFILE, REVIEWED_PROFILE, corrected_tables, versions_for
 from sec_pipeline.parser_policy import policy_metadata
 from sec_pipeline.processing import ProcessingError
 from sec_pipeline.publication import publish_corrected_set, rollback_corrected_set, served_selection
@@ -38,7 +38,7 @@ def corrected_fixture(conn, item, *, key="corrected-test", profile=CORRECTED_PRO
         source_checks=item.selection.source_checks | {"numeric_tag_boundaries_verified": True},
         semantic_checks=item.selection.semantic_checks | {"primary_section_boundaries": True},
         configuration=item.selection.configuration | {"versions": versions, **policy_metadata(versions),
-            "extraction_profile": profile, "section_validation_policy": ("source-boundaries-v2" if profile == REVIEWED_PROFILE else "original-heading-v1")})
+            "extraction_profile": profile, "section_validation_policy": ("source-boundaries-v2" if profile in {REVIEWED_PROFILE, AUDITED_PROFILE} else "original-heading-v1")})
     selection = replace(selection, **changes)
     set_id = store_v4_processing_set(conn, selection, table_ids=[table_id], reports=reports,
                                      issue_ids=list(cells.issue_ids.values()))
@@ -138,6 +138,7 @@ def test_rollback_refuses_a_different_baseline(local_connection):
 @pytest.mark.parametrize("ingestion,profile", [
     pytest.param(filing_ingestion_v5, CORRECTED_PROFILE, id="corrected-v5"),
     pytest.param(filing_ingestion_v6, REVIEWED_PROFILE, id="reviewed-v6"),
+    pytest.param(filing_ingestion_v7, AUDITED_PROFILE, id="audited-v7"),
 ])
 def test_original_filing_commits_replays_rolls_back_and_preserves_old_outputs(
         original_sample_set, monkeypatch, ingestion, profile):

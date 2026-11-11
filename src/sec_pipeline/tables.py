@@ -391,7 +391,7 @@ def _presentation_value(row, columns):
                  and re.fullmatch(r'[)%]+', re.sub(r'\s+', '', c['display_text']))))))
 
 
-def header_period(headers, *, context_period=None, advanced=False):
+def header_period(headers, *, context_period=None, advanced=False, balance_dates=None, fiscal_year_offset=None):
     # Adjacent HTML spans often join "Ended" directly to the month name.
     s = re.sub(r'([a-z])([A-Z])', r'\1 \2', ' '.join(headers)).lower()
     if advanced:
@@ -435,6 +435,13 @@ def header_period(headers, *, context_period=None, advanced=False):
                 fiscal_calendar_year = (advanced and end.day == calendar.monthrange(end.year, end.month)[1]
                     and start == date(end.year if end.month == 12 else end.year - 1, end.month % 12 + 1, 1))
                 if end.year == year and (calendar_year or fiscal_year or fiscal_calendar_year):
+                    return dict(context_period)
+                # A fiscal year can be named for the calendar year in which it
+                # begins ("2025" for the year ended January 31, 2026). Accept
+                # that label only when the filing's own DEI facts declare the
+                # same naming for the document period.
+                if (advanced and fiscal_year_offset == 1 and end.year - 1 == year
+                        and (fiscal_year or fiscal_calendar_year)):
                     return dict(context_period)
         except (TypeError, ValueError):
             return None
@@ -483,6 +490,21 @@ def header_period(headers, *, context_period=None, advanced=False):
         allowed_weeks = {3: {13, 14}, 6: {26, 27}, 9: {39, 40}, 12: {52, 53}}[count]
         if context_end == end and (end - start).days + 1 in {7 * weeks for weeks in allowed_weeks}:
             return dict(context_period)
+        # A calendar fiscal year whose quarters close on a fixed weekday (the
+        # Friday or Sunday nearest the quarter end) has periods a few days
+        # longer or shorter than whole months and not a whole number of weeks.
+        # The printed end date must still be the tagged one, and the period
+        # must begin on the day after a balance date this filing reports;
+        # a context that merely starts a day early has no such balance.
+        if (advanced and balance_dates is not None and context_end == end
+                and (start - timedelta(days=1)).isoformat() in balance_dates):
+            whole = start.year * 12 + start.month - 1 + count
+            try:
+                expected_end = date(whole // 12, whole % 12 + 1, start.day) - timedelta(days=1)
+            except ValueError:
+                expected_end = None
+            if expected_end is not None and abs((end - expected_end).days) <= 7:
+                return dict(context_period)
     # Without those contexts a non-calendar start date must remain unresolved.
     if day != calendar.monthrange(end.year, month)[1]:
         return None
@@ -495,6 +517,9 @@ def _period_text(value):
     """Normalize duration words for matching, without changing source text."""
     value = re.sub(r'[\u200b\ufeff]', '', value.lower())
     value = re.sub(r'([a-z])(?=\d)', r'\1 ', value)
+    # A cell that stacks "September 30" above "2026" joins them as "302026".
+    value = re.sub(r'\b((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2})((?:19|20)\d\d)\b',
+                   r'\1, \2', value)
     numbers = {1: 'one', 2: 'two', 3: 'three', 4: 'four', 6: 'six', 9: 'nine',
                12: 'twelve', 13: 'thirteen', 14: 'fourteen', 16: 'sixteen',
                24: 'twenty-four', 26: 'twenty-six', 27: 'twenty-seven',
@@ -563,6 +588,47 @@ def _period_source(node):
     return {'source_xpath': source_xpath(node.getroottree(), node), 'display_text': text(node)}
 
 
+def _with_split_caption(rows, first_data, revised, sources):
+    """Apply a duration caption that physically spans only the first value column.
+
+    The centered caption can be printed in two cells ("Three months ended"
+    above "March 31,") over bare-year columns, or as a duration alone over
+    fully dated columns. The header must hold exactly one duration and at most
+    one month-day cell, and otherwise only years, complete dates, units or row
+    labels. This supplies wording only: the column is accepted when its tagged
+    source facts carry exactly the resulting period.
+    """
+    printed = [value.strip() for value in revised if value.strip()]
+    if not printed or any(re.search(r'\b(?:ended|ending|months?|weeks?|quarters?)\b', _period_text(value))
+                          for value in printed):
+        return revised, sources
+    month = (r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?'
+             r'|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)')
+    header_cells = [cell for row in rows[:first_data] for cell in row if cell['display_text']]
+    normalized = {id(cell): _period_text(cell['display_text']).strip() for cell in header_cells}
+    durations = [cell for cell in header_cells if re.fullmatch(r'(?:3|6|9|12) months ended', normalized[id(cell)])]
+    month_days = [cell for cell in header_cells if re.fullmatch(month + r'\.? \d{1,2},?', normalized[id(cell)])]
+
+    def complete_date(value):
+        # One printed date and no duration wording.
+        return set(header_period([value], advanced=True) or ()) == {'instant'}
+
+    def plain(cell):
+        value = cell['display_text'].strip()
+        return (cell['column'] == 0 or bool(_heading_qualifier(value))
+                or bool(re.fullmatch(r'(?:19|20)\d\d', value)) or complete_date(value))
+
+    bare_years = all(re.fullmatch(r'(?:19|20)\d\d', value) for value in printed)
+    dated = len(printed) == 1 and complete_date(printed[0])
+    if (len(durations) == 1 and len(month_days) == (1 if bare_years else 0) and (bare_years or dated)
+            and all(cell in durations or cell in month_days or plain(cell) for cell in header_cells)):
+        revised, sources = list(revised), list(sources)
+        for cell in reversed(durations + month_days):
+            revised.insert(0, cell['display_text'])
+            sources.append(_period_source(cell['_element']))
+    return revised, sources
+
+
 def _v2_period_headers(rows, first_data, column, headers):
     """Disambiguate shared captions with physical column years and labels."""
     values, sources = list(headers), []
@@ -573,7 +639,7 @@ def _v2_period_headers(rows, first_data, column, headers):
         sources.extend(_period_source(node) for node in outside)
     years = {value.strip() for value in values if re.fullmatch(r'(?:19|20)\d\d', value.strip())}
     if len(years) != 1:
-        return values, sources
+        return _with_split_caption(rows, first_data, values, sources)
     year = int(next(iter(years)))
     # A caption can name both comparative dates and both reporting durations.
     # The year and duration in the narrower column headers must disambiguate it.
@@ -626,7 +692,8 @@ def _v2_period_headers(rows, first_data, column, headers):
                 or re.fullmatch(r'(?:19|20)\d\d', cell['display_text'].strip()) for cell in header_cells):
             revised.insert(0, captions[0]['display_text'])
             sources.append(_period_source(captions[0]['_element']))
-    return revised, sources
+            return revised, sources
+    return _with_split_caption(rows, first_data, revised, sources)
 
 
 def _v2_calendar_period(headers, period, table):
@@ -762,7 +829,37 @@ def verify_inline(element, evidence, ns):
         raise TableExtractionError('Inline/XML value mismatch')
 
 
+def _fiscal_calendar_evidence(facts):
+    """Filing-wide evidence for fiscal calendars that follow neither months nor whole weeks.
+
+    Returns the dates of the undimensioned balances the filing reports, and how
+    its DEI facts name the fiscal year: 0 when "fiscal 2025" ends in 2025, 1 when
+    it ends in 2026, None when the filing does not say.
+    """
+    balance_dates, focus, ends = set(), set(), set()
+    for record in facts.values():
+        if record.get('dimensions'):
+            continue
+        period = record.get('period') or {}
+        if set(period) == {'instant'}:
+            balance_dates.add(period['instant'])
+        concept = record.get('concept') or ''
+        if re.match(r'\{https?://xbrl\.sec\.gov/dei/', concept):
+            if concept.endswith('}DocumentFiscalYearFocus'):
+                focus.add((record.get('raw_value') or '').strip())
+            elif concept.endswith('}DocumentPeriodEndDate'):
+                ends.add((record.get('raw_value') or '').strip())
+    offset = None
+    if len(focus) == 1 and len(ends) == 1:
+        try:
+            offset = date.fromisoformat(next(iter(ends))).year - int(next(iter(focus)))
+        except ValueError:
+            offset = None
+    return balance_dates, offset if offset in (0, 1) else None
+
+
 def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False):
+    balance_dates, fiscal_year_offset = _fiscal_calendar_evidence(facts) if advanced else (None, None)
     columns = {cell['column'] for row in rows[first_data:] for cell in row if cell['column'] > 0}
     headers = {column: column_headers(rows, first_data, column, advanced=advanced) for column in columns}
     # A left-hand header such as "Year ended December 31" applies to the
@@ -798,11 +895,13 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False):
         if len(observed) != 1 or len({reference['concept'] for reference in references}) < 2:
             continue
         candidate = dict(observed.pop())
-        resolved = header_period(headers[column], context_period=candidate, advanced=advanced)
+        resolved = header_period(headers[column], context_period=candidate, advanced=advanced,
+                                 balance_dates=balance_dates, fiscal_year_offset=fiscal_year_offset)
         source_headers, calendar_sources = [], []
         if advanced and resolved != candidate:
             revised, source_headers = _v2_period_headers(rows, first_data, column, headers[column])
-            resolved = header_period(revised, context_period=candidate, advanced=True)
+            resolved = header_period(revised, context_period=candidate, advanced=True,
+                                     balance_dates=balance_dates, fiscal_year_offset=fiscal_year_offset)
             if resolved != candidate:
                 table = next(cell for row in rows for cell in row)['_element'].xpath('ancestor::table[1]')[0]
                 corroborated, calendar_sources = _v2_calendar_period(revised, candidate, table)
@@ -935,6 +1034,46 @@ _RECONCILIATION_CASH_CONCEPTS = {
     'RestrictedCashAndCashEquivalents', 'RestrictedCashAndCashEquivalentsNoncurrent',
     'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents',
 }
+_CASH_TOTAL_CONCEPTS = (
+    'CashAndCashEquivalentsAtCarryingValue', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents',
+    'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations',
+)
+_ENDPOINT_MONTHS = {name.lower(): month for month in range(1, 13)
+                    for name in (calendar.month_name[month], calendar.month_abbr[month])} | {'sept': 9}
+_NAMED_ENDPOINT = re.compile(
+    r'\bcash\b.*(?:\bat|[,\u2013\u2014-])\s*(' + '|'.join(sorted(_ENDPOINT_MONTHS, key=len, reverse=True))
+    + r')\.?\s+(\d{1,2})(?:\s*,?\s*((?:19|20)\d\d))?$')
+
+
+def _named_cash_endpoint(concept, row_label, column_period):
+    """Opening or closing cash balance labelled by its date, not by "beginning" or "end".
+
+    "Cash and cash equivalents at January 1" and "... – September 30" name the
+    balance by a day of the column's period. An opening-date label denotes the
+    start of that day, which XBRL reports as the balance at the end of the
+    preceding day. Only a total cash concept and a date that is exactly the
+    first or the last day of the period qualify; the caller still requires the
+    fact's own period to equal the result.
+    """
+    if (set(column_period) != {'startDate', 'endDate'} or not isinstance(row_label, str)
+            or not re.fullmatch(r'\{https?://fasb\.org/us-gaap/[^}]+\}(?:' + '|'.join(_CASH_TOTAL_CONCEPTS) + ')', concept)):
+        return None
+    label = re.sub(r'\s*\([1-9][0-9]?\)\s*$', '', ' '.join(row_label.lower().split()))
+    match = _NAMED_ENDPOINT.search(label)
+    if match is None:
+        return None
+    try:
+        start, end = date.fromisoformat(column_period['startDate']), date.fromisoformat(column_period['endDate'])
+    except (TypeError, ValueError):
+        return None
+    named = (_ENDPOINT_MONTHS[match[1]], int(match[2]))
+    year = int(match[3]) if match[3] else None
+    candidates = []
+    if named == (start.month, start.day) and year in (None, start.year):
+        candidates.append((start - timedelta(days=1)).isoformat())
+    if named == (end.month, end.day) and year in (None, end.year):
+        candidates.append(end.isoformat())
+    return {'instant': candidates[0]} if len(candidates) == 1 else None
 
 
 def _cash_reconciliation_candidate(tree, table, facts, html_ids):
@@ -1701,11 +1840,13 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                                     elif (in_reconciliation and set(header) == {'instant'}
                                             and re.fullmatch(r'\{https?://fasb\.org/us-gaap/[^}]+\}(?:CashAndCashEquivalentsAtCarryingValue|RestrictedCashCurrent|RestrictedCashAndCashEquivalentsNoncurrent|CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents)', ref['concept'])):
                                         wanted = header
-                                    elif re.search(r'\b(?:(?:beginning|start) of (?:the )?(?:period|year|quarter)|(?:beginning|opening) balances?)\b', label) and 'startDate' in header:
+                                    elif re.search(r'\b(?:(?:beginning|start) of (?:the )?(?:fiscal )?(?:period|year|quarter)|(?:beginning|opening) balances?)\b', label) and 'startDate' in header:
                                         wanted = {'instant': (date.fromisoformat(header['startDate'])
                                                               - timedelta(days=1)).isoformat()}
-                                    elif re.search(r'\b(?:end of (?:the )?(?:period|year|quarter)|(?:ending|closing) balances?)\b', label) and 'endDate' in header:
+                                    elif re.search(r'\b(?:end of (?:the )?(?:fiscal )?(?:period|year|quarter)|(?:ending|closing) balances?)\b', label) and 'endDate' in header:
                                         wanted = {'instant': header['endDate']}
+                                    elif _named_cash_endpoint(ref['concept'], row_label, header) is not None:
+                                        wanted = _named_cash_endpoint(ref['concept'], row_label, header)
                                     elif (supplemental_cash_disclosures and 'endDate' in header
                                           and re.fullmatch(r'dividends declared and not paid', label)
                                           and re.fullmatch(r'\{https?://fasb\.org/us-gaap/[^}]+\}DividendsPayableCurrentAndNoncurrent', ref['concept'])):

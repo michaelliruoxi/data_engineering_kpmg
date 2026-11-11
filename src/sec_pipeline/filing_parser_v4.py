@@ -20,7 +20,8 @@ from lxml import html
 from . import filing_adapter as base
 from . import filing_adapter_v3 as source_adapter
 from .chunking import chunk_report
-from .extraction_profiles import LEGACY_PROFILE, CORRECTED_PROFILE, REVIEWED_PROFILE, CORRECTED_PROFILES, versions_for, corrected_tables
+from .extraction_profiles import (
+    AUDITED_PROFILE, LEGACY_PROFILE, CORRECTED_PROFILE, REVIEWED_PROFILE, CORRECTED_PROFILES, versions_for, corrected_tables)
 from .database import ChunkInput, FactInput, FinancialTableInput, ReportInput
 from .document_sets import verify_document_set
 from .fact_extraction import IX, XML_ROLE, extract_facts
@@ -257,17 +258,21 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
         source_document_id=sources[xml_record['source_url']], extraction_version='facts-v1').require_complete().facts)
     descriptors = [InlineSourceDocument(sources[record['source_url']], _path(root, record).name, _path(root, record),
                                        record['sha256'], record['source_url']) for record in members]
-    union = read_inline_document_set(descriptors, facts, xml_sha256=xml_record['sha256'])
+    union = read_inline_document_set(descriptors, facts, xml_sha256=xml_record['sha256'],
+                                     normalized_text=profile == AUDITED_PROFILE)
     selected = _choose_member(members, root, facts)
     tables = _checked_tables(manifest, root, filing, xml_record, selected, sources, facts, union.occurrences)
     if profile in CORRECTED_PROFILES:
         tables = corrected_tables(tables, profile=profile)
+    if profile == AUDITED_PROFILE:
+        from .statement_continuations import with_omitted_continuations
+        tables = with_omitted_continuations(tables, _path(root, selected).read_bytes())
     documents = []
     for record in members:
         path = _path(root, record)
         source_id = sources[record['source_url']]
         report_id = uuid5(source_id, versions['reports'])
-        cleaned = clean_report(path, form=manifest['form'])
+        cleaned = clean_report(path, form=manifest['form'], report_version=versions['reports'])
         report = ReportInput(filing_id=filing, source_document_id=source_id, extraction_version=versions['reports'],
                              full_text=cleaned.full_text, sections=deepcopy(cleaned.sections))
         chunks = tuple(chunk_report(filing_id=filing, report_id=report_id, full_text=report.full_text,

@@ -71,7 +71,8 @@ def test_populated_revision_upgrade_blocks_new_publication_and_preserves_histori
             assert served_selection(conn, item.filing) == ("source", approved)
 
         monkeypatch.setattr(db, "_packaged_migrations", lambda: packaged)
-        assert db.migrate(conn) == ["015_parser_revision_contracts.sql"]
+        # 016 adds the audited V7 identities and leaves the V5/V6 rules of 015 as they are.
+        assert db.migrate(conn) == ["015_parser_revision_contracts.sql", "016_audited_layout_versions.sql"]
         with conn.transaction():
             assert _immutable_rows(conn, item.filing, [baseline, approved, unpublished]) == original
             assert served_selection(conn, item.filing) == ("source", approved)

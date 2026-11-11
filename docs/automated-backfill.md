@@ -140,6 +140,18 @@ Use `--discover --refresh-discovery` to begin a fresh submissions check for the
 same fixed window. This resets company discovery checkpoints without discarding
 filings or processing results. Resume an interrupted refresh with `--discover`
 without the refresh flag. New discoveries invalidate earlier completion proofs.
+Discovery records, for every issuer, when its submissions were read
+(`discovered_at_utc`), the in-window periodic forms it does not queue
+(`related_forms`: amendments, 10-KT/10-QT transition reports and NT late-filing
+notices), any 10-K or 10-Q row it cannot represent (`unsupported_filings`, for
+example a text-only primary document) and the longest gap between consecutive
+reporting periods. `--status` and every summary list the consequences under
+`coverage_warnings`: `discovery_window_still_open` while `--until` has not
+passed for an issuer (a later run skips issuers already discovered, so rerun
+with `--refresh-discovery` after the window closes), `related_periodic_forms_not_queued`,
+`unsupported_filings_not_queued` and `reporting_period_gap` (more than 120
+days). The warnings change no status and no exit code; an unsupported row no
+longer fails discovery of the issuer's other filings.
 Completed dry runs are reused only after source hashes, versions, and validation
 checks still match. Pending work is attempted before earlier failures, so a
 bounded resumed run makes progress past an unsupported filing. Status remains
@@ -277,6 +289,16 @@ source-verified entries requiring review and repeats every import check.
 `last_run.review_required_successes` reports these separately. A completed
 import phase means all source imports were verified, not that every semantic
 issue was resolved. V4 dry runs always reconstruct the source payloads.
+
+A dry run never rewrites an import. For an entry whose status starts with
+`ingested`, the status, receipt (`result`), destination, versions and manifest
+stay as recorded, and the dry-run outcome is stored separately under `dry_run`
+(`status`, `result` or the failure detail, `processing_versions`,
+`checked_at_utc`). `--retry-failed-only --dry-run` also selects entries whose
+`dry_run.status` is `failed`. A bounded document-set dry run reconstructs
+pending filings before the ones this profile has already reconstructed, so
+repeated `--limit` runs reach the whole queue; completion still needs one
+unbounded pass.
 
 `--tables-version tables-v3` includes the V2 segmented layout and adds explicit
 representations for untagged financial marker literals and verified hidden nil

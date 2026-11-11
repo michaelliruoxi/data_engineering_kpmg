@@ -26,6 +26,26 @@ FORMS = ("10-K", "10-Q")
 _REPEATED_PIPES = re.compile(r"\|(?:[^\S\r\n]*\|)+")
 _TOC_ITEM = re.compile(r"^ITEM\s*(\d{1,2}(?:\s*[A-Z](?=[\s.:]|$))?)(?:[\s.:\u2013\u2014-]|$)", re.I)
 _TOC_PART = re.compile(r"^PART\s+(IV|III|II|I)(?:[\s.:\u2013\u2014-]|$)", re.I)
+# A contents row can state in its page column that the Item has no body.
+_TOC_NOT_APPLICABLE = re.compile(r"(?:^|\s)(?:N/A|NOT APPLICABLE|NONE)[\s.]*$", re.I)
+_TOC_PAGE = re.compile(r"(?:^|\s)(?:\d+(?:\s*[-\u2013]\s*\d+)?|[IVX]+-\d+|N/A)[\s.]*$", re.I)
+
+
+def _contents_like_tables(tree):
+    """Compact tables listing several Items with a page column, linked or not.
+
+    Their rows are navigation. They are never evidence of body headings, even
+    when the table is not accepted as a linked contents table.
+    """
+    found = set()
+    for table in tree.iter("table"):
+        rows = [row for row in table.iter("tr") if next(row.iterancestors("table"), None) is table]
+        texts = [" ".join(" ".join(row.itertext()).split()) for row in rows]
+        if (sum(bool(_TOC_ITEM.match(text)) for text in texts) >= 3
+                and sum(bool(_TOC_PAGE.search(text)) for text in texts if text) >= 3
+                and sum(map(len, texts)) < 15000):
+            found.add(table)
+    return found
 
 
 def _original_body_outline(tree, *, form, toc_tables=()):
@@ -40,7 +60,7 @@ def _original_body_outline(tree, *, form, toc_tables=()):
         text = " ".join(" ".join(node.itertext()).split())
         if not text or len(text) > 300:
             continue
-        part = re.fullmatch(r"PART\s+(IV|III|II|I)(?:[\s.\u2013\u2014-]*(?:FINANCIAL (?:INFORMATION|STATEMENTS)|OTHER INFORMATION))?[\s.]*", text, re.I)
+        part = re.fullmatch(r"PART\s+(IV|III|II|I)(?:[\s.:\u2013\u2014-]*(?:FINANCIAL (?:INFORMATION|STATEMENTS)|OTHER INFORMATION))?[\s.]*", text, re.I)
         item = _TOC_ITEM.match(text)
         if not part and not item:
             continue
@@ -118,6 +138,11 @@ def source_heading_expectations(html_path, *, form):
             hrefs = [a.get("href")[1:] for a in row.iter("a")
                      if a.get("href", "").startswith("#") and a.get("href")[1:] in targets]
             evidence = {"text": value, "source_xpath": source_xpath(tree, row), "targets": hrefs}
+            if item and not part and not hrefs and _TOC_NOT_APPLICABLE.search(value):
+                # "Item 1B. Unresolved Staff Comments | N/A": the filer declares
+                # that the report has no such section. It is neither expected
+                # in the body nor a reason to distrust the linked rows.
+                evidence["declared_not_applicable"] = True
             if item and not hrefs and not re.search(r"\d+[\s.]*$", value):
                 # A financial-statements group label can be unlinked, with
                 # the statement names and page links in the following rows.
@@ -135,14 +160,14 @@ def source_heading_expectations(html_path, *, form):
                 rows.append({"item": None, "part": part[1].upper(), **evidence})
             if item:
                 rows.append({"item": re.sub(r"\s+", "", item[1]).upper(), "part": None, **evidence})
-        items = [row for row in rows if row["item"]]
+        items = [row for row in rows if row["item"] and not row.get("declared_not_applicable")]
         # A linked row with a page column distinguishes TOC entries from body
         # headings or prose cross-references in layout tables.
         linked = [row for row in items if row["targets"] and re.search(r"\d+[\s.]*$", row["text"])]
         if len(items) >= 2 and len(linked) >= max(2, len(items) // 2) and all(row["targets"] for row in items):
             candidates.append({"source_xpath": source_xpath(tree, table), "rows": rows})
     toc_tables = {tree.xpath(candidate["source_xpath"])[0] for candidate in candidates}
-    body_outline = _original_body_outline(tree, form=form, toc_tables=toc_tables)
+    body_outline = _original_body_outline(tree, form=form, toc_tables=toc_tables | _contents_like_tables(tree))
     body_ids = {heading["section_id"] for heading in body_outline}
     required = ({"part-i-item-1", "part-ii-item-7", "part-ii-item-8", "part-iv-item-15"}
                 if form == "10-K" else {"part-i-item-1", "part-i-item-2", "part-ii-item-6"})
@@ -153,10 +178,13 @@ def source_heading_expectations(html_path, *, form):
         return {"status": "unverified", "reason": "no_unambiguous_linked_original_toc", "expected_section_ids": None,
                 "body_headings": body_outline}
 
-    expected, evidence = [], []
+    expected, evidence, not_applicable = [], [], []
     active_part = None
     for table in candidates:
         for row in table["rows"]:
+            if row.get("declared_not_applicable"):
+                not_applicable.append({"title": row["text"], "source_xpath": row["source_xpath"]})
+                continue
             if row["part"]:
                 active_part = row["part"]
                 key = f"part-{active_part.lower()}"
@@ -186,7 +214,8 @@ def source_heading_expectations(html_path, *, form):
     return {"status": "derived_from_original_toc", "method": "Original DOM table rows with resolving navigation targets and page columns, supplemented by explicit original body headings absent from the TOC; independent of report parser",
             "expected_section_ids": expected + [heading["section_id"] for heading in additions], "rows": evidence,
             "body_headings": body_outline,
-            "body_headings_absent_from_toc": additions}
+            "body_headings_absent_from_toc": additions,
+            **({"declared_not_applicable": not_applicable} if not_applicable else {})}
 
 
 def _compact(value):
@@ -211,6 +240,29 @@ def _heading_starts_in_navigation(node):
                          for target in (element.get("id"), element.get("name")) if target}
         return unquote(link.get("href")[1:]) not in local_targets
     return False
+
+
+def _only_page_furniture_between(target, heading, nodes, order):
+    """A link target at a page top, separated from its heading by a running header.
+
+    Markup-heavy page headers put more than a few elements between the anchor
+    and the heading. What matters is the visible text: at most a short run of
+    header labels, never a paragraph of another section.
+    """
+    start, end = order[target], order[heading]
+    if not 0 < end - start <= 400:
+        return False
+    enclosing = set(heading.iterancestors())
+    visible = 0
+    for node in nodes[start:end]:
+        if not isinstance(node.tag, str):
+            continue
+        visible += len("".join((node.text or "").split()))
+        if node not in enclosing:
+            visible += len("".join((node.tail or "").split()))
+        if visible > 160:
+            return False
+    return True
 
 
 def _audit_source_boundaries(tree, report, evidence, issue):
@@ -279,7 +331,8 @@ def _audit_source_boundaries(tree, report, evidence, issue):
         limit = order[next_node] if next_node is not None else len(nodes)
         # Empty anchors can precede a heading by page furniture or occur in its
         # children. Some source TOCs point within the Item (e.g. exhibit index).
-        if linked and not any(order[node] - 30 <= order[target] < limit for target in linked):
+        if linked and not any(order[node] - 30 <= order[target] < limit
+                              or _only_page_furniture_between(target, node, nodes, order) for target in linked):
             issue('section_navigation_target_mismatch', section_id=row['section_id'],
                   xpath=row['source_xpath'], targets=row['navigation_targets'])
 
@@ -460,7 +513,13 @@ def audit_report(html_path, *, form, expected_section_ids=None, report=None, chu
             heading_status = "failed"
         else:
             actual_ids = {key for key in ids if isinstance(key, str) and key.startswith("part-")}
-            missing = sorted(set(expected_section_ids) - actual_ids)
+            # A contents table can list "Part I" although the body prints no
+            # Part heading. Only a Part heading that the independent body
+            # outline finds is required; Items are always required.
+            body_parts = {heading["section_id"] for heading in source_evidence.get("body_headings", [])}
+            contents_only_parts = {key for key in expected_section_ids
+                                   if re.fullmatch(r"part-(?:i|ii|iii|iv)", key) and key not in body_parts}
+            missing = sorted(set(expected_section_ids) - actual_ids - contents_only_parts)
             unexpected = sorted(actual_ids - set(expected_section_ids))
             heading_status = "failed" if missing or unexpected else "passed"
             if missing or unexpected:

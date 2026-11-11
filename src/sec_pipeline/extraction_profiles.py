@@ -3,7 +3,10 @@
 LEGACY_PROFILE = "document-set-v4"
 CORRECTED_PROFILE = "corrected-layout-v5"
 REVIEWED_PROFILE = "reviewed-layout-v6"
-CORRECTED_PROFILES = frozenset({CORRECTED_PROFILE, REVIEWED_PROFILE})
+# Reviewed boundaries plus audited section metadata, separated note references
+# and an inventory of statement tables the selected segments leave out.
+AUDITED_PROFILE = "audited-layout-v7"
+CORRECTED_PROFILES = frozenset({CORRECTED_PROFILE, REVIEWED_PROFILE, AUDITED_PROFILE})
 _VERSIONS = {
     LEGACY_PROFILE: {
         "facts": "facts-v1", "tables": "tables-v4",
@@ -17,7 +20,12 @@ _VERSIONS = {
         "facts": "facts-v1", "tables": "tables-v6",
         "reports": "report-v3", "chunks": "paragraph-v2",
     },
+    AUDITED_PROFILE: {
+        "facts": "facts-v1", "tables": "tables-v7",
+        "reports": "report-v4", "chunks": "paragraph-v2",
+    },
 }
+PROFILE_BY_TABLES = {versions["tables"]: profile for profile, versions in _VERSIONS.items()}
 
 
 def versions_for(profile):

@@ -134,6 +134,11 @@ def discover(config, output):
             save_json(path, state)
         state['discovery_complete'] = all(state['companies'].get(c['ticker'], {}).get('status') == 'discovered'
                                           for c in config['companies'])
+        # Every issuer was read, but filings can still arrive until the window
+        # closes. A consumer of discovery_complete must not read it as "every
+        # filing of the window" while this is true.
+        checked = [info.get('checked_at_utc', '') for info in state['companies'].values()]
+        state['discovery_window_open'] = any(value[:10] <= str(config['until']) for value in checked if value)
         save_json(path, state)
     return state
 

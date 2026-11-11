@@ -182,7 +182,9 @@ def _expanded(value, node, inline):
 
 
 def _dei_namespace(namespace):
-    return bool(namespace and re.fullmatch(r"https?://xbrl\.sec\.gov/dei/[0-9]{4}", namespace))
+    # The 2019 and 2020 DEI taxonomies are dated (dei/2020-01-31); later ones use the year.
+    return bool(namespace and re.fullmatch(
+        r"https?://xbrl\.sec\.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?", namespace))
 
 
 def _registrant_identities(document, filers, manifest, *, inline):

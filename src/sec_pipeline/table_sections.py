@@ -47,6 +47,13 @@ def _excluded(node):
             return "navigation_header_or_hidden"
     # Empty named anchors are real headings. TOC hyperlinks point elsewhere.
     links = node.xpath(".//a[starts-with(@href,'#')]")
+    if node.tag != "table":
+        # A heading block can also hold an index table of its own section
+        # ("Item 8. Financial Statements" followed by statement names and page
+        # links). Those links belong to the nested table, not to the heading.
+        links = [link for link in links
+                 if not any(ancestor.tag == "table" for ancestor in link.iterancestors()
+                            if node in ancestor.iterancestors())]
     if links and all(not text.strip() for text in node.xpath("./text()")):
         return "toc_hyperlink"
     return None
