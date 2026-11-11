@@ -301,8 +301,12 @@ _BLOCK_TAGS = {
     "p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6",
     "section", "article", "blockquote", "pre", "address", "header", "footer",
     "ul", "ol", "dl", "dt", "dd", "table",
-    # Block-level in every browser; without a boundary their text fuses with
-    # the neighbouring words and a heading inside them is never on its own line.
+}
+# report-v4 also breaks around these elements. They are block-level in every
+# browser; without a boundary their text fuses with the neighbouring words and a
+# heading inside them is never on its own line. Earlier report versions keep the
+# set above, so their stored reports and source-cell checks render as before.
+_AUDITED_BLOCK_TAGS = _BLOCK_TAGS | {
     "center", "main", "nav", "aside", "figure", "figcaption", "details", "summary",
     "form", "fieldset",
 }
@@ -377,7 +381,8 @@ def _note_reference(element, tag):
     return bool(_NOTE_REFERENCE.fullmatch("".join(element.itertext()).strip()))
 
 
-def _render(element, anchor=None, row_anchor=None, *, track_links=False, enclosing_link=None, note_marks=False):
+def _render(element, anchor=None, row_anchor=None, *, track_links=False, enclosing_link=None, note_marks=False,
+            block_tags=_BLOCK_TAGS):
     """Render annotated fragments while leaving the original DOM untouched."""
     if not isinstance(element.tag, str):  # Comments and processing instructions.
         return []
@@ -396,7 +401,8 @@ def _render(element, anchor=None, row_anchor=None, *, track_links=False, enclosi
         if cells:
             rendered = [fragments for cell in cells
                         if (fragments := _trim_fragments(_render(cell, element, element,
-                            track_links=track_links, enclosing_link=enclosing_link, note_marks=note_marks)))]
+                            track_links=track_links, enclosing_link=enclosing_link, note_marks=note_marks,
+                            block_tags=block_tags)))]
             if not rendered:
                 return []
             fragment_anchor = (element, enclosing_link) if track_links else element
@@ -409,7 +415,7 @@ def _render(element, anchor=None, row_anchor=None, *, track_links=False, enclosi
             return fragments
         return []
 
-    is_block = tag in _BLOCK_TAGS
+    is_block = tag in block_tags
     if row_anchor is not None:
         anchor = row_anchor
     elif is_block or anchor is None:
@@ -422,7 +428,8 @@ def _render(element, anchor=None, row_anchor=None, *, track_links=False, enclosi
         fragments.append((re.sub(r"\s+", " ", element.text), fragment_anchor))
     for child in element:
         fragments.extend(_render(child, anchor, row_anchor,
-                                 track_links=track_links, enclosing_link=enclosing_link, note_marks=note_marks))
+                                 track_links=track_links, enclosing_link=enclosing_link, note_marks=note_marks,
+                                 block_tags=block_tags))
         # Tail text belongs to the visible parent even when the child is hidden.
         if child.tail:
             fragments.append((re.sub(r"\s+", " ", child.tail), fragment_anchor))
@@ -735,7 +742,8 @@ def clean_report(html_path: str | Path, *, form: str | None = None,
         raise
     audited = report_version in AUDITED_REPORT_VERSIONS
     # No nodes are removed or rewritten: anchors always refer to the original DOM.
-    full_text, annotations = _normalize_fragments(_render(document, track_links=True, note_marks=audited))
+    full_text, annotations = _normalize_fragments(_render(
+        document, track_links=True, note_marks=audited, block_tags=_AUDITED_BLOCK_TAGS if audited else _BLOCK_TAGS))
     # Every parse of an original document reads its bytes as UTF-8. Bytes in
     # another encoding (Windows-1252 quotes, dashes, no-break spaces) become
     # U+FFFD, which would be stored as report text and, in a heading, hide the

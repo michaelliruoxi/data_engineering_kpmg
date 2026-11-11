@@ -124,7 +124,15 @@ def discover(config, output):
             try:
                 print('Discovering ' + ticker, flush=True)
                 rows = discover_filings(client, company['cik'], config['since'], config['until'])
-                state['companies'][ticker] = {'status':'discovered', 'checked_at_utc':now(), 'filings':rows}
+                record = {'status':'discovered', 'checked_at_utc':now(), 'filings':list(rows)}
+                # A 10-K/10-Q row discovery cannot represent (a text-only primary
+                # document, a missing report date) is recorded, never dropped, and
+                # so are the periodic forms this inventory does not include.
+                if getattr(rows, 'unsupported', None):
+                    record['unsupported_filings'] = [dict(row) for row in rows.unsupported]
+                if getattr(rows, 'related_forms', None):
+                    record['related_forms'] = dict(rows.related_forms)
+                state['companies'][ticker] = record
             except (ValueError, OSError) as exc:
                 state['companies'][ticker] = {'status':'discovery_failed', 'error_type':type(exc).__name__}
                 state['updated_at_utc'] = now()
@@ -139,6 +147,7 @@ def discover(config, output):
         # filing of the window" while this is true.
         checked = [info.get('checked_at_utc', '') for info in state['companies'].values()]
         state['discovery_window_open'] = any(value[:10] <= str(config['until']) for value in checked if value)
+        state['unsupported_filings'] = sum(len(info.get('unsupported_filings', [])) for info in state['companies'].values())
         save_json(path, state)
     return state
 
@@ -289,8 +298,14 @@ def download(config, output, limit, roots=()):
                 raise
             state['updated_at_utc'] = now()
             save_json(state_path, state)
+    # A discovered 10-K/10-Q that could not be archived keeps the stage open: the
+    # archive would otherwise read as every in-scope filing of the window.
+    unsupported = [row for c in discovery['companies'].values() if c.get('status')=='discovered'
+                   for row in c.get('unsupported_filings', [])]
+    state['unsupported_filings_not_archived'] = unsupported
     state['download_stage_complete'] = (discovery.get('discovery_complete') is True
-        and bool(rows) and all(state['filings'].get(r['accession_number'],{}).get('status')=='verified' for r in rows))
+        and bool(rows) and not unsupported
+        and all(state['filings'].get(r['accession_number'],{}).get('status')=='verified' for r in rows))
     state['scope_acceptance_status'] = config.get('scope_status', 'unconfirmed')
     state['updated_at_utc'] = now()
     save_json(state_path, state)
@@ -386,7 +401,10 @@ def main(argv=None):
     try:
         result = discover(config, output) if args.mode=='discover' else download(config, output, args.limit, args.archive_root)
         complete = result.get('discovery_complete') if args.mode=='discover' else result.get('download_stage_complete')
-        print(json.dumps({'stage':args.mode, 'stage_complete':complete, 'task_acceptance':'not_claimed'}))
+        unsupported = (result.get('unsupported_filings', 0) if args.mode=='discover'
+                       else len(result.get('unsupported_filings_not_archived', [])))
+        print(json.dumps({'stage':args.mode, 'stage_complete':complete, 'unsupported_filings':unsupported,
+                          'task_acceptance':'not_claimed'}))
         return 0 if complete else 2
     except AccessBlocked:
         print('SEC access blocked; stopped without retries. Resolve the cause before resuming.', file=sys.stderr)

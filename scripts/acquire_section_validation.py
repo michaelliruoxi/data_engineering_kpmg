@@ -105,6 +105,12 @@ def acquire(args):
                         record.update(row, ticker=ticker, requested_shortlist=True,
                                       source_url=row["filing_index_url"].rsplit("/", 1)[0] + "/" + row["primary_document"])
                     info.update(discovery_status="complete", discovered_count=len(rows), discovered_at_utc=now())
+                    # A 10-K/10-Q row discovery cannot represent is recorded, never dropped.
+                    unsupported = [dict(row) for row in getattr(rows, "unsupported", [])]
+                    if unsupported:
+                        info["unsupported_filings"] = unsupported
+                    else:
+                        info.pop("unsupported_filings", None)
                     state["filings"] = sorted(existing.values(), key=lambda row: (row["ticker"], row["filing_date"], row["accession_number"]))
                     save(path, state)
                 selected = [item for item in state["filings"] if item["ticker"] == ticker]
@@ -142,7 +148,11 @@ def acquire(args):
                 save(path, state)
                 print(f"Ready {ticker}: {len(selected)} original filings", flush=True)
             state["discovery_complete"] = all(companies.get(company["ticker"], {}).get("discovery_status") == "complete" for company in config["companies"])
-            state["coverage_status"] = "acquired" if state["discovery_complete"] and all(item.get("acquisition_status") == "available" for item in state["filings"] if item.get("requested_shortlist")) else "incomplete"
+            state["coverage_status"] = "acquired" if (
+                state["discovery_complete"]
+                and not any(info.get("unsupported_filings") for info in companies.values())
+                and all(item.get("acquisition_status") == "available" for item in state["filings"] if item.get("requested_shortlist"))
+            ) else "incomplete"
             state.pop("acquisition_blocker", None)
         except Exception as exc:
             # Error types are sufficient to diagnose transport failures without

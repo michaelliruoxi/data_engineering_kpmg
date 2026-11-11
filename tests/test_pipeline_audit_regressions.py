@@ -383,12 +383,26 @@ def test_part_heading_with_a_colon_is_recognized(tmp_path):
     assert result['status'] == 'passed', result['issues']
 
 
-def test_center_is_a_block_boundary(tmp_path):
+def test_center_is_a_block_boundary_under_report_v4(tmp_path):
     path = _source(tmp_path, '<div>First sentence ends here.<center>ITEM 1. BUSINESS</center>Second sentence starts here.</div>'
                              '<div>More text.<center>ITEM 2. PROPERTIES</center>Offices.</div>')
-    report = clean_report(path, form='10-K')
+    report = clean_report(path, form='10-K', report_version='report-v4')
     assert 'here.ITEM' not in report.full_text and 'BUSINESSSecond' not in report.full_text
     assert {'part-i-item-1', 'part-i-item-2'} <= set(_ids(report))
+
+
+@pytest.mark.parametrize('version', [None, 'report-v1', 'report-v2', 'report-v3'])
+def test_earlier_report_versions_keep_their_block_boundaries(tmp_path, version):
+    # Stored reports are immutable: replaying an earlier version must render
+    # the same text, so only report-v4 breaks around the added block elements.
+    path = _source(tmp_path, '<div>First paragraph.<center>Second paragraph.</center>Third paragraph.</div>'
+                             '<div>Intro <figure>Figure text</figure> outro.</div>')
+    earlier = clean_report(path, form='10-K', report_version=version).full_text
+    audited = clean_report(path, form='10-K', report_version='report-v4').full_text
+    assert 'First paragraph.Second paragraph.Third paragraph.' in earlier
+    assert 'Intro Figure text outro.' in earlier
+    assert 'First paragraph.\n\nSecond paragraph.\n\nThird paragraph.' in audited
+    assert 'Intro\n\nFigure text\n\noutro.' in audited
 
 
 # --------------------------------------------------------------------------

@@ -180,3 +180,14 @@ def test_saved_complete_discovery_with_missing_inventory_rows_is_rejected(harnes
     assert saved(harness)["coverage_status"] == "incomplete"
     assert saved(harness)["discovery_complete"] is False
     assert harness.requests == requests
+
+
+def test_unsupported_filing_is_recorded_and_keeps_coverage_incomplete(harness):
+    text_only = SimpleNamespace(**(vars(filing(2)) | {"primary_document": "filing2.txt"}))
+    harness.rows = [filing(1), text_only]
+    result = acquisition.acquire(harness.args)
+    assert [row["accession_number"] for row in result["filings"]] == [harness.rows[0].accession_number]
+    [unsupported] = result["companies"]["AAPL"]["unsupported_filings"]
+    assert unsupported["accession_number"] == text_only.accession_number and unsupported["form"] == "10-Q"
+    assert result["discovery_complete"] is True and result["coverage_status"] == "incomplete"
+    assert saved(harness)["companies"]["AAPL"]["unsupported_filings"] == [unsupported]
