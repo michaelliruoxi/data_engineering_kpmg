@@ -114,11 +114,19 @@ quality require Michael's review of the export and the actual archives.
 
 | Output | Meaning |
 | --- | --- |
-| `discovery.json` | SEC filing list and per-company discovery checkpoint |
+| `discovery.json` | SEC filing list and per-company discovery checkpoint, including `unsupported_filings` and `related_forms` |
 | `sec_api_evidence/` | Raw SEC JSON and retrieval/hash receipts |
-| `download_status.json` | Per-filing archive progress and Exhibit 21 review flags |
+| `download_status.json` | Per-filing archive progress, Exhibit 21 review flags and `unsupported_filings_not_archived` |
 | `data/raw/sec/<accession>/` | Original bytes, source manifest, and annual Exhibit 21 manifest |
 | `inventory.json` | Verified supplied archives and available SEC/database comparisons |
+
+A 10-K or 10-Q that discovery cannot represent, such as one with a text-only
+primary document or no report date, no longer stops discovery of the issuer's
+other filings. It is listed under that issuer's `unsupported_filings` with the
+reason, `related_forms` counts the amendments, transition reports and late-filing
+notices in the window, and both stages print the `unsupported_filings` count.
+The download stage stays incomplete (exit 2) while any such filing exists,
+because the archive would otherwise read as every in-scope filing.
 
 `not_listed_in_index_review_required` means no direct Exhibit 21 row was found.
 Review the annual report's exhibit references manually: it may incorporate an

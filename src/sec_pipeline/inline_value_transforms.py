@@ -77,6 +77,13 @@ MODERN_DATES = frozenset({
     'date-monthname-year-en', 'date-day-monthname-en', 'date-day-monthname-year-en',
     'date-year-month', 'date-year-month-day',
 })
+# Transformation Registry 3 names for the same grammars (2021-2022 filings still use them).
+LEGACY_DATES = {
+    'datemonthdayyearen': 'date-monthname-day-year-en', 'datemonthdayen': 'date-monthname-day-en',
+    'datemonthday': 'date-month-day', 'datemonthdayyear': 'date-month-day-year',
+    'datemonthyearen': 'date-monthname-year-en', 'datedaymonthen': 'date-day-monthname-en',
+    'datedaymonthyearen': 'date-day-monthname-year-en',
+}
 # Hyphen-like characters that filers render in place of an ASCII hyphen.
 HYPHENS = str.maketrans(dict.fromkeys((0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2212), '-'))
 # EDGAR converts fractional months to days with the mean month (365.25 / 12 days).
@@ -102,7 +109,7 @@ def validate_transform(format_name, kind):
                or (namespace == ORIGINAL and name == 'numdash')
                or (namespace in SEC and name == 'numwordsen'))
     nonnumeric = ((namespace in MODERN and name in {'fixed-true', 'fixed-false', 'fixed-empty', *MODERN_DATES})
-                  or (namespace in OLDER and name in {'booleantrue', 'booleanfalse', 'datemonthdayyearen', 'datemonthday', 'datemonthdayen'})
+                  or (namespace in OLDER and name in {'booleantrue', 'booleanfalse', *LEGACY_DATES})
                   or (namespace in SEC and name in {'duryear', 'durmonth', 'durweek', 'durday', 'durwordsen',
                       'entityfilercategoryen', 'stateprovnameen', 'exchnameen', 'boolballotbox', 'yesnoballotbox',
                       'datequarterend', 'countrynameen', 'edgarprovcountryen'}))
@@ -270,10 +277,8 @@ def nonnumeric_value(text, format_name=None):
         # Registry 2/3 booleans are fixed values, whatever text the filer shows.
         if name in {'booleantrue', 'booleanfalse'}:
             return 'true' if name == 'booleantrue' else 'false'
-        legacy_dates = {'datemonthdayyearen': 'date-monthname-day-year-en',
-                        'datemonthdayen': 'date-monthname-day-en', 'datemonthday': 'date-month-day'}
-        if name in legacy_dates:
-            return _date_value(value, legacy_dates[name])
+        if name in LEGACY_DATES:
+            return _date_value(value, LEGACY_DATES[name])
     if namespace in SEC:
         lowered = value.lower().translate(HYPHENS)
         if name in {'duryear', 'durmonth', 'durweek', 'durday'}:

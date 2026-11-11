@@ -320,6 +320,112 @@ and cannot be published.
 These counts come from dry runs on archived sources and from a local PostgreSQL
 rehearsal. They are not a statement about the shared database.
 
+## Layouts accepted after the November 11 audit
+
+The reviewed profile was then run on 73 filings from 26 issuers outside the
+shortlist (banks, insurers, REITs, utilities, energy, retail, pharmaceuticals,
+technology, telecom, transport; 10-K and 10-Q, filed 2021 and 2025-2026). Half
+of the issuers were used to find rejected layouts; the other half were parsed
+only once, after the changes were final. Two more combined-filer annual reports
+(Duke Energy and NextEra, 2021) could be archived only after the DEI namespace
+change below; both stop at statement selection and are not in the table. One
+Wells Fargo 10-K still cannot be archived.
+
+| Set | Filings parsed | Accepted before | Accepted after |
+| --- | ---: | ---: | ---: |
+| Issuers used to find layouts (13) | 37 | 9 | 25 |
+| Issuers held out (13) | 36 | 12 | 20 |
+| Further issuers, parsed once after every change in this document (12) | 24 | 12 | 14 |
+
+None of the rejections removed below was a source defect. Each rule turns a
+former rejection into an acceptance and leaves the stored payload of every
+filing accepted before unchanged: all 227 accepted shortlist filings, the 233
+passing archived primaries and the 33 previously accepted outside filings were
+fingerprinted with both versions (facts, occurrences, reports, sections,
+chunks, tables, issues, checks and table-section mapping evidence). The parser
+revisions are therefore unchanged.
+
+| Rejected because | Now accepted when | Still rejected |
+| --- | --- | --- |
+| A contents row gives "N/A" as the page of an Item | The row has no link and ends in N/A, Not applicable or None; the Item is then not expected in the body (`declared_not_applicable`) | Any other unlinked Item row in a linked contents table |
+| An unlinked contents table with page numbers was read as body headings | A compact table with three or more Item rows and three or more page cells is navigation; expectations come from emphasized body headings | A report whose body headings do not cover the core Items |
+| The contents list "Part I" and the body prints no Part heading | The independent body outline also finds no such Part heading | A Part heading the body outline finds and the sections lack; any missing Item |
+| A contents link points to a page-top anchor above a running header | At most 160 visible characters, and no more than 400 elements, separate the anchor from its heading | A target separated from the heading by other text |
+| "PART I" is followed by an introductory note before Item 1 | Every contents entry precedes that Part line and no Part or Item line lies between it and its first Item | A Part line inside the contents |
+| The Item 8 heading shares its block with a linked index of statements | The links are inside a table nested in the heading block | A section located in a linked contents row |
+| Item titles: "Intentionally Omitted", "[Removed and Reserved]", "Selected Consolidated Financial Data", "Consolidated Financial Statements...", "Disclosure" (singular), "Market Price of and Dividends on...", "Description of Business", "Controls & Procedures", "Interim ... Financial Statements", "PART I:" | The title follows its own Item number | "Issuer Purchases of Equity Securities" as a Part II Item 2 title, and every other wording |
+| A period a few days longer or shorter than whole months (quarters closing on the Friday or Sunday nearest the quarter end) | The printed end date is the tagged one, the length is within seven days of the printed months, and the period starts the day after a date for which the filing reports an undimensioned balance | A context that starts a day early (the NetApp defect); any other length |
+| A fiscal year named for the calendar year in which it starts ("2025" for the year ended January 31, 2026) | `dei:DocumentFiscalYearFocus` and `dei:DocumentPeriodEndDate` declare that naming, and the tagged year is a 52/53-week or month-end fiscal year | The same columns without that declaration |
+| A duration caption marked up over the first value column only, printed in two cells or without its date | The header holds exactly one duration and at most one month-day cell, and the tagged facts carry exactly the resulting period | A second caption; a column tagged with another period |
+| Opening and closing cash labelled by date ("at January 1", "– September 30") or by fiscal year | A total cash concept, and the named day is exactly the first or last day of the column period; the fact's own date must still equal the result | A day inside the period; an opening balance dated the first day of the period |
+| A date stacked above its year in one cell ("September 30" over "2026") | The month, day and year parse as one date and the tagged facts carry it | Any other run of digits |
+| Transformation Registry 3 date names (`datemonthdayyear`, `datemonthyearen`, `datedaymonthen`, `datedaymonthyearen`) | The transformed value equals the XML value | Unknown names and impossible dates |
+| Combined filings under the dated 2019 and 2020 DEI namespaces could not be archived | The namespace is `dei/YYYY` or `dei/YYYY-MM-DD` | Any other namespace |
+
+Two changes reject what was accepted before, and neither affects a local
+filing. A contents row whose title cell, not its Item label, links elsewhere is
+no longer a section start; the legacy profiles labelled 98% of the archived
+JPMorgan 10-Q as financial statements from such a row, and now report that
+text as an unclassified prefix. For that reason the JPMorgan row of
+`validation/reviewed-section-audit-2026-11-10.json` no longer reproduces (12
+sections instead of 13, still failed); the other 233 rows replay exactly with
+`scripts/audit_review_regressions.py`. A primary document that is not UTF-8 is
+rejected (`ReportEncodingError`) instead of being stored with U+FFFD
+replacement characters.
+
+The remaining outside rejections were left as they are: issuer-specific
+statement titles, statements split between a 10-K and its annual-report
+exhibit, combined-filer statement selection, bank cross-reference layouts and
+untagged numeric cells. These counts come from dry runs on archived sources and
+say nothing about the shared database.
+
+## Audited profile (V7)
+
+Some defects are in the stored content of filings the reviewed profile already
+accepts. Stored reports and tables are immutable, and migration 015 pins the
+reviewed parser revisions, so they are corrected under a separate opt-in
+profile. V4, V5 and V6 keep producing exactly what they produced before.
+
+| Artifact | Reviewed profile | Audited profile |
+| --- | --- | --- |
+| Profile | `reviewed-layout-v6` | `audited-layout-v7` |
+| Reports and section identities | `report-v3` | `report-v4` |
+| Tables, cells and review issue keys | `tables-v6` | `tables-v7` |
+| Chunk algorithm | `paragraph-v2` | `paragraph-v2` |
+| Default processing-set key | `automated-v6` | `automated-v7` |
+| Parser revisions | reports `reviewed-original-source-boundaries-v4`, tables `registrant-numeric-cell-validation-v2` | reports `audited-section-metadata-v1`, tables `statement-continuation-inventory-v1` |
+| Migrations | 011-015 | 011-016 |
+
+Select it with `--tables-version tables-v7` wherever `tables-v6` is accepted
+(`backfill_sec.py`, `check_backfill_ready.py`, `publish_reviewed_queue.py`).
+Migration 016 re-creates the triggers and the citation view of 012-015 with the
+new version added to their lists and seeds five section types; it changes no
+existing row. Facts, source occurrences, statement cells, section boundaries and
+section keys are the same as under V6. What differs:
+
+| Stored under V6 | Under V7 | Shortlist (227 accepted filings) |
+| --- | --- | --- |
+| A heading that runs into its first sentence is stored whole as the title ("Item 1. Business. Parker-Hannifin Corporation is a leading...") | The title and `original_title` end at the heading; the sentence stays in the body at the same offsets | 38 sections in 4 filings; no title over 200 characters remains |
+| `incorporation_status: unresolved` on any section that mentions the proxy statement, such as the cover page or the exhibit list | Only Part III sections, which defer their own content | 98 flags removed in 68 filings; the Part III flags remain |
+| `signatures` typed `other_information`; Items 1B, 6 and 9C typed `unknown` and `unverified` | `signatures`, `unresolved_staff_comments`, `reserved` or `selected_financial_data`, `foreign_inspection_disclosure`, all `detected` | every filing |
+| Text inside `center`, `main`, `nav`, `aside`, `figure`, `figcaption`, `details`, `summary`, `form` or `fieldset` runs into the neighbouring words, and a heading inside one is never on its own line | Each of these elements is a paragraph boundary, like `div`; earlier report versions keep their boundaries so stored reports replay unchanged | no text change in any accepted filing |
+| A raised note reference joined to the preceding text: "revenues1", "adjustments(1)", "Level 1(2)" | One space before a reference that is `<sup>`, superscript-aligned or raised by relative positioning, when it follows a digit, `%`, `)` or a word of three or more letters; ordinals (17th) and unit exponents (m2) stay joined | 2,335 spaces in 137 filings; no other character of any report changes |
+| A tagged table printed as part of a selected statement is not extracted and not mentioned | `structure.omitted_continuations` on the statement's last segment lists each such table: its XPath, title, reason and tagged-fact count (policy `statement-continuation-inventory-v1`). Nothing is extracted from it | 19 tables with 182 tagged facts in 17 Casey's filings |
+| An untransformed text value that differs from the XML only by XML Schema whitespace normalization is rejected unless it is a single token | Accepted when the XML value is the inline text with line breaks and tabs replaced by spaces, or with runs collapsed and the ends trimmed; `inline_whitespace` records the policy `xml-schema-whitespace-normalization-v1`, the facet and the original text | none locally |
+
+The same comparison on the outside filings: every filing V6 accepts is accepted
+by V7 with identical facts and cells (25 of the first set, 20 of the held-out
+set and 14 of the third set, which was downloaded after the profile was
+finished); V7 also accepts one Prologis 10-Q that V6 rejects for a postal code
+printed after a line break. In all 61 primary documents of the second and third
+sets the report text differs from V6 only by the inserted spaces, every one in
+front of a note reference ("December 31, 2023 3" instead of "20233"). The inventory found one more omitted table, a
+Pfizer supplemental cash-flow table with 12 tagged facts.
+
+A V7 set is unpublished until it is selected, like a V6 set. The inventory makes
+an incomplete statement visible; it does not complete it, and table coverage
+stays `partial`.
+
 ## Operational status and evidence outcomes
 
 `fully_imported` is deliberately an ingestion-completion label. This PR relaxes

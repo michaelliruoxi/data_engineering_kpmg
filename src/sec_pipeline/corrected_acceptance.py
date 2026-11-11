@@ -51,7 +51,7 @@ def audit_corrected_set(conn, accession, processing_set_id, data_root):
         path = paths.get(report["source_document_id"])
         if path is None:
             continue
-        original = clean_report(path, form=snapshot["filing"]["form"])
+        original = clean_report(path, form=snapshot["filing"]["form"], report_version=report.get("extraction_version"))
         if original.full_text != report["full_text"] or original.sections != report["sections"]:
             errors.append({"check": "stored_report_differs_from_original_reconstruction", "report_id": report["id"]})
         descriptor = SimpleNamespace(full_text=report["full_text"], sections=report["sections"])

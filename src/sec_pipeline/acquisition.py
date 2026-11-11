@@ -244,7 +244,29 @@ class FilingIdentity:
         return asdict(self) | {"filing_index_url": self.filing_index_url}
 
 
-def _filing_rows(columns: Any, cik: str, company: str, since: date, until: date) -> list[FilingIdentity]:
+# Periodic reports of the same issuer that this pipeline does not queue. A
+# transition report is the only filing for its period, and an amendment or a
+# late-filing notice says the original may be incomplete or missing.
+RELATED_PERIODIC_FORMS = frozenset({"10-K/A", "10-Q/A", "10-KT", "10-QT", "10-KT/A", "10-QT/A", "NT 10-K", "NT 10-Q"})
+
+
+class DiscoveredFilings(list):
+    """The supported filings of one issuer, with what the same submissions left out.
+
+    It is the plain list callers always received. `related_forms` counts the
+    in-window periodic forms that are not queued; `unsupported` lists in-window
+    10-K/10-Q rows whose identity this pipeline cannot represent.
+    """
+
+    def __init__(self, items=(), *, related_forms=None, unsupported=None):
+        super().__init__(items)
+        self.related_forms = dict(related_forms or {})
+        self.unsupported = list(unsupported or [])
+
+
+def _filing_rows(columns: Any, cik: str, company: str, since: date, until: date, *,
+                 related: dict[str, int] | None = None,
+                 unsupported: list[dict[str, Any]] | None = None) -> list[FilingIdentity]:
     _require(isinstance(columns, dict), "Invalid SEC submissions filing table.")
     fields = ("accessionNumber", "form", "filingDate", "reportDate", "primaryDocument")
     _require(all(isinstance(columns.get(field), list) for field in fields),
@@ -253,11 +275,27 @@ def _filing_rows(columns: Any, cik: str, company: str, since: date, until: date)
              "SEC submissions filing columns have inconsistent lengths.")
     result = []
     for accession, form, filed, period, document in zip(*(columns[field] for field in fields)):
+        if form in RELATED_PERIODIC_FORMS and related is not None:
+            try:
+                if since <= _date(filed, "filing date") <= until:
+                    related[form] = related.get(form, 0) + 1
+            except AcquisitionError:
+                pass
+            continue
         if form not in {"10-K", "10-Q"}:
             continue
         filed_date = _date(filed, "filing date")
         if since <= filed_date <= until:
-            result.append(FilingIdentity(cik, company, accession, form, filed, period, document))
+            try:
+                result.append(FilingIdentity(cik, company, accession, form, filed, period, document))
+            except AcquisitionError as exc:
+                # One row this pipeline cannot represent (a text-only primary
+                # document, a missing report date) must not hide the issuer's
+                # other filings. It is recorded, never dropped.
+                if unsupported is None:
+                    raise
+                unsupported.append({"accession_number": accession if isinstance(accession, str) else None,
+                                    "form": form, "filing_date": filed, "reason": str(exc)})
     return result
 
 
@@ -272,7 +310,9 @@ def discover_filings(client: SecClient, cik: str, since: date | str,
     _require(isinstance(company, str) and company.strip(), "SEC submissions have no company name.")
     filings = document.get("filings")
     _require(isinstance(filings, dict), "SEC submissions have no filing history.")
-    records = _filing_rows(filings.get("recent"), cik, company, since, until)
+    related: dict[str, int] = {}
+    unsupported: list[dict[str, Any]] = []
+    records = _filing_rows(filings.get("recent"), cik, company, since, until, related=related, unsupported=unsupported)
     history = filings.get("files", [])
     _require(isinstance(history, list), "Invalid historical submissions list.")
     seen_names: set[str] = set()
@@ -290,13 +330,21 @@ def discover_filings(client: SecClient, cik: str, since: date | str,
             continue
         seen_names.add(name)
         columns = client.get_json(f"https://data.sec.gov/submissions/{name}")
-        records.extend(_filing_rows(columns, cik, company, since, until))
+        records.extend(_filing_rows(columns, cik, company, since, until, related=related, unsupported=unsupported))
     by_accession: dict[str, FilingIdentity] = {}
     for record in records:
         old = by_accession.setdefault(record.accession_number, record)
         _require(old == record, "SEC submissions contain conflicting metadata for one accession.")
-    return [record.to_dict() for record in sorted(by_accession.values(),
-                                                key=lambda record: (record.filing_date, record.accession_number))]
+    seen_unsupported, distinct = set(), []
+    for row in unsupported:
+        key = (row["accession_number"], row["form"], row["filing_date"])
+        if key not in seen_unsupported:
+            seen_unsupported.add(key)
+            distinct.append(row)
+    return DiscoveredFilings(
+        (record.to_dict() for record in sorted(by_accession.values(),
+                                               key=lambda record: (record.filing_date, record.accession_number))),
+        related_forms=dict(sorted(related.items())), unsupported=distinct)
 
 
 def _archive_link(href: str, filing: FilingIdentity) -> str:

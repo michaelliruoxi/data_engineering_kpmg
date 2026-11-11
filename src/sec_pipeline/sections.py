@@ -21,6 +21,9 @@ SECTION_TYPES = {
     "financial_statements", "mda", "market_risk", "controls", "accounting_changes",
     "directors_governance", "executive_compensation", "ownership",
     "related_party_transactions", "audit_fees", "summary",
+    # Added with report-v4; earlier report versions never produce them.
+    "signatures", "unresolved_staff_comments", "reserved", "selected_financial_data",
+    "foreign_inspection_disclosure",
 }
 
 

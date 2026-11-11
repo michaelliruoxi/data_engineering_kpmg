@@ -8,6 +8,7 @@ XHTML supplies contexts, units, transformations and continuation semantics.
 from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
+import re
 import hashlib
 from html import escape
 import json
@@ -35,6 +36,7 @@ MARKUP_POLICY = 'escaped-markup-infoset-v1'
 # strings, so a year, date or other single-token value printed as "2024 " is
 # extracted as "2024". Text containing whitespace keeps exact comparison.
 TOKEN_WHITESPACE_POLICY = 'xml-schema-collapse-single-token-v1'
+NORMALIZED_WHITESPACE_POLICY = 'xml-schema-whitespace-normalization-v1'
 XML_WHITESPACE = ' \t\r\n'
 INLINE_NAMES = {'header', 'hidden', 'references', 'resources', 'nonFraction', 'nonNumeric', 'continuation',
                 'exclude', 'footnote', 'relationship', 'tuple', 'fraction'}
@@ -228,12 +230,18 @@ class _Document:
                 'html_sha256': self.hash}
 
 
-def read_inline_document_set(documents, facts, *, xml_sha256):
+def read_inline_document_set(documents, facts, *, xml_sha256, normalized_text=False):
     """Prove an ID-bijective default-target set without changing XML facts.
 
     Input documents must already be selected by the index-verified document-set
     manifest. Independent exhibits are not silently excluded here: unexpected
     targets or unmatched occurrences fail the complete set.
+
+    With ``normalized_text`` an untransformed text value may differ from the
+    XML value by XML Schema whitespace normalization of the whole value
+    (line breaks and tabs replaced by spaces, or runs collapsed and the ends
+    trimmed), as the SEC instance does for normalizedString and token items.
+    The original text and the facet are recorded; the XML value is unchanged.
     """
     _require(documents and facts, 'A document set requires source members and existing XML facts.')
     _require(isinstance(xml_sha256, str) and len(xml_sha256) == 64 and all(char in '0123456789abcdef' for char in xml_sha256),
@@ -429,6 +437,15 @@ def read_inline_document_set(documents, facts, *, xml_sha256):
                     canonical['inline_whitespace'] = {'policy': TOKEN_WHITESPACE_POLICY, 'original_text': mapped}
                     mapped = fact.raw_value
                     counts['nonnumeric_surrounding_whitespace_collapsed'] += 1
+                elif (normalized_text and mapped != fact.raw_value and not escaped and formatted is None
+                        and isinstance(fact.raw_value, str) and fact.raw_value):
+                    facet = ('replace' if re.sub(r'[\t\r\n]', ' ', mapped) == fact.raw_value else
+                             'collapse' if re.sub(r'[ \t\r\n]+', ' ', mapped).strip(' ') == fact.raw_value else None)
+                    if facet is not None:
+                        canonical['inline_whitespace'] = {'policy': NORMALIZED_WHITESPACE_POLICY, 'facet': facet,
+                                                          'original_text': mapped}
+                        mapped = fact.raw_value
+                        counts['nonnumeric_whitespace_normalized'] += 1
                 if mapped != fact.raw_value:
                     _require(escaped and formatted is None, 'Transformed nonnumeric value differs from target XML.')
                     original_canonical, target_canonical = _markup_canonical(mapped), _markup_canonical(fact.raw_value)

@@ -205,6 +205,58 @@ def remember_discovery(state, filing):
         invalidate_completion(state, "new_registrant_binding")
 
 
+def _discovery_record(filings):
+    """What one issuer's discovery found and what it could not queue."""
+    record = {"filing_count": len(filings), "discovered_at_utc": datetime.now(timezone.utc).isoformat()}
+    related, unsupported = getattr(filings, "related_forms", None), getattr(filings, "unsupported", None)
+    if related:
+        record["related_forms"] = dict(related)
+    if unsupported:
+        record["unsupported_filings"] = [dict(row) for row in unsupported]
+    ends = sorted({filing["reporting_period_end"] for filing in filings})
+    if len(ends) > 1:
+        record["max_period_gap_days"] = max((date.fromisoformat(later) - date.fromisoformat(earlier)).days
+                                            for earlier, later in zip(ends, ends[1:]))
+    return record
+
+
+def coverage_warnings(state):
+    """Reasons the discovered queue may not hold every periodic report of its window.
+
+    These never change a status or an exit code: they make an incomplete
+    discovery visible instead of letting it read as complete.
+    """
+    warnings = []
+    until = state.get("configuration", {}).get("until")
+    records = [*state.get("companies", {}).items(), *state.get("historical_issuers", {}).items()]
+    discovered = {key: record for key, record in records if record.get("status") == "discovered"}
+    open_window = sorted(key for key, record in discovered.items()
+                         if until and record.get("discovered_at_utc", "")[:10] and record["discovered_at_utc"][:10] <= until)
+    if open_window:
+        # Filings can still arrive until the window closes; a later run skips
+        # issuers already marked discovered unless discovery is refreshed.
+        warnings.append({"warning": "discovery_window_still_open", "until": until, "issuers": len(open_window),
+                         "earliest_discovery_utc": min(discovered[key]["discovered_at_utc"] for key in open_window),
+                         "action": "run --discover --refresh-discovery after the window closes"})
+    forms = Counter()
+    for record in discovered.values():
+        forms.update(record.get("related_forms", {}))
+    if forms:
+        warnings.append({"warning": "related_periodic_forms_not_queued", "forms": dict(sorted(forms.items())),
+                         "issuers": sum(bool(record.get("related_forms")) for record in discovered.values())})
+    unsupported = sum(len(record.get("unsupported_filings", [])) for record in discovered.values())
+    if unsupported:
+        warnings.append({"warning": "unsupported_filings_not_queued", "filings": unsupported,
+                         "issuers": sorted(key for key, record in discovered.items() if record.get("unsupported_filings"))})
+    # Quarterly periods end at most about 98 days apart; a longer gap means a
+    # report of that issuer is missing from the queue.
+    gaps = {key: record["max_period_gap_days"] for key, record in discovered.items()
+            if record.get("max_period_gap_days", 0) > 120}
+    if gaps:
+        warnings.append({"warning": "reporting_period_gap", "issuers": dict(sorted(gaps.items()))})
+    return warnings
+
+
 def discover_queue(path, state, universe, client, *, company_limit=None, emit=print):
     from .acquisition import AccessBlocked, discover_filings
 
@@ -222,7 +274,7 @@ def discover_queue(path, state, universe, client, *, company_limit=None, emit=pr
             filings = discover_filings(client, cik, state["configuration"]["since"], state["configuration"]["until"])
             for filing in filings:
                 remember_discovery(state, filing)
-            state["companies"][cik] = {"status": "discovered", "filing_count": len(filings), "tickers": company["tickers"]}
+            state["companies"][cik] = {"status": "discovered", **_discovery_record(filings), "tickers": company["tickers"]}
             emit(json.dumps({"event": "discovered", "cik": cik, "filings": len(filings)}))
         except AccessBlocked:
             state["companies"][cik] = {"status": "access_blocked"}
@@ -247,7 +299,7 @@ def discover_queue(path, state, universe, client, *, company_limit=None, emit=pr
                 filings = discover_filings(client, job["cik"], job["since"], job["until"])
                 for filing in filings:
                     remember_discovery(state, filing)
-                histories[key] = {"status": "discovered", "filing_count": len(filings),
+                histories[key] = {"status": "discovered", **_discovery_record(filings),
                                   "cik": job["cik"], "current_ciks": job["current_ciks"],
                                   "since": job["since"], "until": job["until"]}
                 emit(json.dumps({"event": "predecessor_discovered", "cik": job["cik"], "filings": len(filings)}))
@@ -270,7 +322,8 @@ def summarize(state, universe):
             "predecessor_jobs": dict(Counter(job["status"] for job in state.get("historical_issuers", {}).values())),
             "filings_discovered": len(state["filings"]),
             "filings": dict(Counter(f["status"] for f in state["filings"].values())),
-            "last_run": state.get("last_run")}
+            "last_run": state.get("last_run"),
+            **({"coverage_warnings": warnings} if (warnings := coverage_warnings(state)) else {})}
 
 
 def adapter_profile(tables_version):
@@ -283,6 +336,9 @@ def adapter_profile(tables_version):
     if tables_version == "tables-v3":
         from . import filing_adapter_v3
         return filing_adapter_v3, "filing-import-v3"
+    if tables_version == "tables-v7":
+        from . import filing_ingestion_v7
+        return filing_ingestion_v7, "automated-v7"
     if tables_version == "tables-v6":
         from . import filing_ingestion_v6
         return filing_ingestion_v6, "automated-v6"
@@ -386,7 +442,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             raise ValueError("Queue accession keys must be canonical and match their filing records.")
     profile, set_key = adapter_profile(tables_version)
     text_profile = text_fallback_profile(tables_version) if mode != "download" else None
-    is_document_set = tables_version in {"tables-v4", "tables-v5", "tables-v6"}
+    is_document_set = tables_version in {"tables-v4", "tables-v5", "tables-v6", "tables-v7"}
     versions = profile.VERSIONS
     required_checks = profile.REQUIRED_SOURCE_CHECKS if is_document_set else profile.REQUIRED_CHECKS
     verified_successes = set()
@@ -407,21 +463,42 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             save_state(path, state)
             raise
 
-    def record_success(accession):
+    review_successes = set()
+
+    def record_success(accession, outcome=None):
         if accession in verified_successes:
             return
         verified_successes.add(accession)
+        if (outcome or state['filings'][accession].get('status')) in {'validated_review_required', 'ingested_review_required'}:
+            review_successes.add(accession)
         state['last_run']['verified_successes'] = len(verified_successes)
-        state['last_run']['review_required_successes'] = state['last_run'].get('review_required_successes', 0) + int(
-            state['filings'][accession].get('status') in {'validated_review_required', 'ingested_review_required'})
+        state['last_run']['review_required_successes'] = len(review_successes)
+
+    def needs_retry(entry):
+        # A dry run over an imported filing records its own failure without
+        # replacing the import status; it is still work for a dry-run retry.
+        return (entry.get("status") in {"failed", "access_blocked"}
+                or (mode == "dry-run" and entry.get("dry_run", {}).get("status") in {"failed", "access_blocked"}))
+
+    def already_reconstructed(entry):
+        # Document-set dry runs always reconstruct. An entry this profile has
+        # already reconstructed must not use up a bounded run before pending work.
+        if mode != "dry-run" or not is_document_set:
+            return False
+        status = entry.get("status", "")
+        record = entry.get("dry_run", {}) if status.startswith("ingested") else entry
+        return (status.startswith(("validated", "ingested"))
+                and record.get("status") not in {"failed", "access_blocked"}
+                and record.get("processing_versions") == dict(versions))
 
     attempted = 0
     ordered_filings = sorted(state["filings"].items(), key=lambda item: (
-        item[1].get("status") not in {"failed", "access_blocked"}, item[1]["filing"]["filing_date"], item[0]), reverse=True)
+        not needs_retry(item[1]), not already_reconstructed(item[1]),
+        item[1]["filing"]["filing_date"], item[0]), reverse=True)
     for accession, entry in ordered_filings:
         if validated_only and entry.get("status") not in {"validated", "validated_review_required"}:
             continue
-        if retry_failed_only and entry.get("status") not in {"failed", "access_blocked"}:
+        if retry_failed_only and not needs_retry(entry):
             continue
         if limit is not None and attempted >= limit:
             break
@@ -429,6 +506,9 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             raise ValueError("Queue accession keys must be canonical and match their filing records.")
         manifest_path = data_root / "data" / "raw" / "sec" / accession / "source_manifest.json"
         original_entry = deepcopy(entry)
+        # A dry run reads sources only. The database import of an ingested
+        # entry, its receipt and its destination stay exactly as recorded.
+        stored_import = mode == "dry-run" and original_entry.get("status", "").startswith("ingested")
         counted = False
         tables_unavailable = None
         phase = "source acquisition"
@@ -564,7 +644,9 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                             versions=versions, stages=plan.stages, required_checks=plan.required_checks, verify_inputs=verify_filing)
                         result.update(set_key=text_profile.SET_KEY, tables_unavailable=tables_unavailable)
                 review = result.get("validation_status") == "review_required" or "tables_unavailable" in result
-                entry["status"] = "validated_review_required" if review else "validated"
+                outcome = "validated_review_required" if review else "validated"
+                if not stored_import:
+                    entry["status"] = outcome
             else:
                 if is_document_set:
                     result = profile.run_ingestion(connection, manifest_path=manifest_path, data_root=data_root,
@@ -591,15 +673,27 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                         result.update(set_key=text_profile.SET_KEY, tables_unavailable=tables_unavailable)
                 review = result.get("validation_status") == "review_required" or "tables_unavailable" in result
                 entry.update(status="ingested_review_required" if review else "ingested", destination=destination)
-            entry["result"] = result
-            if mode != "download":
-                entry["processing_versions"] = dict(versions)
-            record_success(accession)
-            entry.pop("receipt_status", None)
-            entry.pop("error_type", None)
-            entry.pop("error_stage", None)
-            entry.pop("error_detail", None)
-            event = {"event": entry["status"], "accession": accession, "counts": result.get("counts")}
+            if stored_import:
+                attempts = entry["attempts"]
+                entry.clear()
+                entry.update(original_entry)
+                entry["attempts"] = attempts
+                entry["dry_run"] = {"status": outcome, "result": result, "processing_versions": dict(versions),
+                                    "checked_at_utc": datetime.now(timezone.utc).isoformat()}
+                record_success(accession, outcome)
+                event = {"event": outcome, "accession": accession, "counts": result.get("counts"),
+                         "stored_status": entry["status"]}
+            else:
+                entry["result"] = result
+                if mode != "download":
+                    entry["processing_versions"] = dict(versions)
+                    entry.pop("dry_run", None)
+                record_success(accession)
+                entry.pop("receipt_status", None)
+                entry.pop("error_type", None)
+                entry.pop("error_stage", None)
+                entry.pop("error_detail", None)
+                event = {"event": entry["status"], "accession": accession, "counts": result.get("counts")}
             if "tables_unavailable" in result:
                 event["tables"] = "absent"
             emit(json.dumps(event))
@@ -607,7 +701,11 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             if not counted:
                 attempted += 1
                 entry["attempts"] += 1
-            entry.update(status="access_blocked")
+            if stored_import:
+                entry["dry_run"] = {"status": "access_blocked", "processing_versions": dict(versions),
+                                    "checked_at_utc": datetime.now(timezone.utc).isoformat()}
+            else:
+                entry.update(status="access_blocked")
             save_state(path, state)
             raise
         except Exception as exc:
@@ -641,14 +739,24 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             if not counted:
                 attempted += 1
                 entry["attempts"] += 1
-            entry.update(status="failed", error_type=type(exc).__name__,
-                         error_stage=f"Backfill failed during {phase}.",
-                         error_detail=_failure_detail(exc, phase))
+            failure = dict(status="failed", error_type=type(exc).__name__,
+                           error_stage=f"Backfill failed during {phase}.",
+                           error_detail=_failure_detail(exc, phase))
             if tables_unavailable is not None:
-                entry["error_detail"]["full_import"] = tables_unavailable
+                failure["error_detail"]["full_import"] = tables_unavailable
             from .processing import ParserRevisionConflict, ProcessingError
             if isinstance(exc, ProcessingError):
-                entry["error_stage"] = str(exc)[:250]
+                failure["error_stage"] = str(exc)[:250]
+            if stored_import:
+                # The import exists in its database whatever this dry run found.
+                attempts = entry["attempts"]
+                entry.clear()
+                entry.update(original_entry)
+                entry["attempts"] = attempts
+                entry["dry_run"] = failure | {"processing_versions": dict(versions),
+                                              "checked_at_utc": datetime.now(timezone.utc).isoformat()}
+            else:
+                entry.update(failure)
             emit(json.dumps({"event": "failed", "accession": accession, "error_type": type(exc).__name__}))
             if rollback_failed or _fatal_runtime_error(exc):
                 state['last_run'].update(stopped_reason='infrastructure_error', complete=False,
@@ -657,8 +765,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
                 raise ProcessingError('Backfill stopped after an infrastructure error; the checkpoint was preserved.') from exc
         save_state(path, state)
     state["last_run"].update(verified_successes=len(verified_successes),
-        review_required_successes=sum(state['filings'][key].get('status') in {'validated_review_required', 'ingested_review_required'}
-                                      for key in verified_successes),
+        review_required_successes=len(review_successes),
         complete=bool(state["filings"]) and len(verified_successes) == len(state["filings"]),
         finished_at_utc=datetime.now(timezone.utc).isoformat())
     save_state(path, state)

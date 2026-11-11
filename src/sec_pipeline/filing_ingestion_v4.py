@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import UUID
 
 from .bulk_storage import store_many
-from .extraction_profiles import LEGACY_PROFILE, CORRECTED_PROFILE, REVIEWED_PROFILE, CORRECTED_PROFILES, versions_for
+from .extraction_profiles import AUDITED_PROFILE, LEGACY_PROFILE, CORRECTED_PROFILE, REVIEWED_PROFILE, CORRECTED_PROFILES, versions_for
 from .chunking import store_chunks
 from .database import (
     ChunkInput, CompanyInput, FactInput, FinancialTableInput, ReportInput, SourceDocumentInput,
@@ -58,7 +58,7 @@ def configuration_from_manifest(manifest, manifest_sha256, *, profile=LEGACY_PRO
              and all(character in '0123456789abcdef' for character in manifest_sha256), 'Invalid document-set manifest hash.')
     _require(len({record['local_path'] for record in records}) == len(records), 'Source paths are repeated.')
     return {'versions': versions, **policy_metadata(versions),
-            **({'extraction_profile': profile, 'section_validation_policy': ('source-boundaries-v2' if profile == REVIEWED_PROFILE else 'original-heading-v1')} if profile in CORRECTED_PROFILES else {}),
+            **({'extraction_profile': profile, 'section_validation_policy': ('source-boundaries-v2' if profile in {REVIEWED_PROFILE, AUDITED_PROFILE} else 'original-heading-v1')} if profile in CORRECTED_PROFILES else {}),
             'source_hashes': {record['local_path']: record['sha256'] for record in records},
             'source_documents': {record['local_path']: {key: record[key] for key in ('role', 'source_url', 'sha256', 'size_bytes')}
                                  for record in records},

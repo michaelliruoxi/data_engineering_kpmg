@@ -5,6 +5,7 @@ REPORT_REVISIONS = {
     'report-v1': 'legacy-visible-layout-boundaries-v4',
     'report-v2': 'corrected-visible-layout-boundaries-v4',
     'report-v3': 'reviewed-original-source-boundaries-v4',
+    'report-v4': 'audited-section-metadata-v1',
 }
 
 
@@ -21,6 +22,8 @@ def policy_metadata(versions):
         revisions['reports'] = REPORT_REVISIONS[versions['reports']]
     if versions.get('tables') in {'tables-v2', 'tables-v3', 'tables-v4', 'tables-v5', 'tables-v6'}:
         revisions['tables'] = 'registrant-numeric-cell-validation-v2'
+    elif versions.get('tables') == 'tables-v7':
+        revisions['tables'] = 'statement-continuation-inventory-v1'
     if versions.get('chunks') == 'paragraph-v2':
         revisions['chunks'] = 'token-boundary-overlap-v2'
     return {'parser_revisions': revisions} if revisions else {}

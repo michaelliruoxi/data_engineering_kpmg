@@ -15,36 +15,63 @@ class CleanedReport:
     sections: list[dict]
 
 
+class ReportEncodingError(ValueError):
+    """The original bytes are not UTF-8, so visible characters would be lost."""
+
+
+# Report versions that carry the audited section metadata and note-marker
+# spacing. Earlier versions keep their exact output; stored reports are immutable.
+AUDITED_REPORT_VERSIONS = frozenset({"report-v4"})
+# Annual Items that the earlier versions left without a canonical type.
+_AUDITED_ITEM_TYPES = {("I", "1B"): "unresolved_staff_comments", ("II", "9C"): "foreign_inspection_disclosure"}
+# A superscript that is a note reference: 1, (2), (a), 1,2 or (a)(b). An ordinal
+# suffix (st, th), a service mark (SM) and other raised text are not.
+_NOTE_REFERENCE = re.compile(
+    r"\d{1,3}(?:\s*,\s*\d{1,3})*"                                 # 1 or 1,2
+    r"|(?:\(\s*(?:\d{1,3}|[a-z])\s*\)\s*,?\s*)+"                  # (2), (a) or (a)(b)
+    r"|[*\u2020\u2021\u00a7\u00b6]+", re.I)
+# The end of a heading that runs into its first sentence: "Business. Parker-Hannifin ...".
+_RUN_IN_BOUNDARY = re.compile(r"(?<=[a-z\)\]])\.\s+(?=[A-Z(\u201c\"])")
+
+
+class _NoteMark(str):
+    """A zero-width marker in front of a superscript note reference."""
+
+
+_NOTE_MARK = _NoteMark("")
+
+
 # Canonical meaning is distinct from the item number, which changes by form.
 # Patterns describe headings, not arbitrary mentions of the topic in body text.
 _QUARTERLY_ITEMS = {
-    ("I", "1"): ("financial_statements", r"(?:UNAUDITED |CONDENSED |CONSOLIDATED )*FINANCIAL STATEMENTS"),
+    ("I", "1"): ("financial_statements", r"(?:INTERIM |UNAUDITED |CONDENSED |CONSOLIDATED )*FINANCIAL STATEMENTS"),
     ("I", "2"): ("mda", r"MANAGEMENT[’']?S? DISCUSSION"),
-    ("I", "3"): ("market_risk", r"QUANTITATIVE AND QUALITATIVE DISCLOSURES"),
-    ("I", "4"): ("controls", r"CONTROLS AND PROCEDURES"),
+    ("I", "3"): ("market_risk", r"QUANTITATIVE AND QUALITATIVE DISCLOSURES?"),
+    ("I", "4"): ("controls", r"CONTROLS (?:AND|&) PROCEDURES"),
     ("II", "1"): ("legal_proceedings", r"LEGAL PROCEEDINGS"),
     ("II", "1A"): ("risk_factors", r"RISK FACTORS"),
     ("II", "2"): ("equity_sales", r"UNREGISTERED SALES OF EQUITY SECURITIES"),
     ("II", "3"): ("defaults", r"DEFAULTS UPON SENIOR SECURITIES"),
-    ("II", "4"): ("mine_safety", r"MINE SAFETY DISCLOSURES"),
+    ("II", "4"): ("mine_safety", r"MINE SAFETY DISCLOSURES?"),
     ("II", "5"): ("other_information", r"OTHER INFORMATION"),
     ("II", "6"): ("exhibits", r"EXHIBITS"),
 }
 _ANNUAL_ITEMS = {
-    ("I", "1"): ("business", r"BUSINESS"),
+    ("I", "1"): ("business", r"(?:DESCRIPTION OF (?:THE )?)?BUSINESS"),
     ("I", "1A"): ("risk_factors", r"RISK FACTORS"),
     ("I", "1B"): ("unknown", r"UNRESOLVED STAFF COMMENTS"),
     ("I", "1C"): ("cybersecurity", r"CYBERSECURITY"),
     ("I", "2"): ("properties", r"PROPERTIES"),
     ("I", "3"): ("legal_proceedings", r"LEGAL PROCEEDINGS"),
-    ("I", "4"): ("mine_safety", r"MINE SAFETY DISCLOSURES"),
-    ("II", "5"): ("market_equity", r"MARKET FOR (?:(?:THE )?REGISTRANT|.{1,100}? COMMON (?:EQUITY|STOCK))"),
-    ("II", "6"): ("unknown", r"(?:[\[(]?RESERVED[\])]?|SELECTED FINANCIAL DATA)"),
+    ("I", "4"): ("mine_safety", r"MINE SAFETY DISCLOSURES?"),
+    ("II", "5"): ("market_equity", r"MARKET (?:PRICE OF AND DIVIDENDS ON|FOR) (?:(?:THE )?REGISTRANT|COMMON EQUITY"
+                                   r"|.{1,100}? (?:COMMON (?:EQUITY|STOCK)|ORDINARY SHARES))"),
+    ("II", "6"): ("unknown", r"(?:[\[(]?(?:REMOVED AND )?RESERVED[\])]?|INTENTIONALLY OMITTED|SELECTED (?:CONSOLIDATED )?FINANCIAL DATA)"),
     ("II", "7"): ("mda", r"MANAGEMENT[’']?S? DISCUSSION"),
-    ("II", "7A"): ("market_risk", r"QUANTITATIVE AND QUALITATIVE DISCLOSURES"),
-    ("II", "8"): ("financial_statements", r"FINANCIAL STATEMENTS"),
+    ("II", "7A"): ("market_risk", r"QUANTITATIVE AND QUALITATIVE DISCLOSURES?"),
+    ("II", "8"): ("financial_statements", r"(?:CONSOLIDATED )?FINANCIAL STATEMENTS"),
     ("II", "9"): ("accounting_changes", r"CHANGES IN AND DISAGREEMENTS"),
-    ("II", "9A"): ("controls", r"CONTROLS AND PROCEDURES"),
+    ("II", "9A"): ("controls", r"CONTROLS (?:AND|&) PROCEDURES"),
     ("II", "9B"): ("other_information", r"OTHER INFORMATION"),
     ("II", "9C"): ("unknown", r"DISCLOSURE REGARDING FOREIGN JURISDICTIONS"),
     ("III", "10"): ("directors_governance", r"DIRECTORS"),
@@ -52,7 +79,8 @@ _ANNUAL_ITEMS = {
     ("III", "12"): ("ownership", r"SECURITY OWNERSHIP"),
     ("III", "13"): ("related_party_transactions", r"CERTAIN RELATIONSHIPS"),
     ("III", "14"): ("audit_fees", r"PRINCIPAL ACCOUNT(?:ANT|ING) FEES"),
-    ("IV", "15"): ("exhibits", r"EXHIBITS?(?: AND FINANCIAL STATEMENT SCHEDULES)?"),
+    ("IV", "15"): ("exhibits", r"(?:EXHIBITS?(?: AND FINANCIAL STATEMENT SCHEDULES)?"
+                                r"|FINANCIAL STATEMENT SCHEDULES?(?: AND|,) EXHIBITS)"),
     ("IV", "16"): ("summary", r"FORM 10-K SUMMARY"),
 }
 # Before the cybersecurity Item was introduced, some issuers used Item 1C
@@ -61,8 +89,10 @@ _ANNUAL_ITEM_VARIANTS = [
     (("I", "1C"), ("directors_governance", r"INFORMATION (?:ABOUT|REGARDING) (?:OUR |THE )?EXECUTIVE OFFICERS")),
 ]
 _ITEM_HEADING = re.compile(r"^ITEM[ \t]+(\d+[A-Z]?)[ \t]*[.:–—-]?[ \t]*(.*)$", re.I)
+# The same label on an unnormalized line, up to the first character of its title.
+_ITEM_LABEL = re.compile(r"[ \t|]*ITEM[ \t]+\d+[A-Z]?[ \t]*[.:–—-]?[ \t|]*", re.I)
 _PART_HEADING = re.compile(
-    r"^PART[ \t]+(IV|III|II|I)(?:[ \t]*[.–—-]?[ \t]*(?:FINANCIAL|OTHER) INFORMATION)?[ \t.]*$", re.I)
+    r"^PART[ \t]+(IV|III|II|I)(?:[ \t]*[.:–—-]?[ \t]*(?:FINANCIAL|OTHER) INFORMATION)?[ \t.]*$", re.I)
 
 
 def _heading_text(line: str) -> str:
@@ -81,7 +111,7 @@ def _report_form(full_text, form):
 
 def detect_sections(full_text: str, form: str | None = None, *,
                     excluded_heading_offsets: frozenset[int] | None = None,
-                    linked_headings: dict[int, dict] | None = None) -> list[dict]:
+                    linked_headings: dict[int, dict] | None = None, audited: bool = False) -> list[dict]:
     """Find conservative form-aware body headings with exact Unicode offsets.
 
     Detected labels are heuristic, never marked validated. Unsupported layouts
@@ -146,13 +176,32 @@ def detect_sections(full_text: str, form: str | None = None, *,
         if (re.search(r"\.{2,}|[ \t]\d+[ \t]*$", title)
                 or (excluded_heading_offsets is None and re.fullmatch(r"\d+(?:[-–]\d+)?", next_line))):
             continue
-        choices = [(part, kind) for (part, number), (kind, pattern) in heading_rules
-                   if number == item and re.match(pattern + r"(?:\b|$)", title, re.I)]
+        choices = [(part, kind, re.match(pattern + r"(?:\b|$)", title, re.I))
+                   for (part, number), (kind, pattern) in heading_rules if number == item]
+        choices = [choice for choice in choices if choice[2]]
         if len(choices) != 1:
             continue
-        part, kind = choices[0]
+        part, kind, recognized = choices[0]
+        original_title = "".join(lines[index:last_line + 1]).strip()
+        if audited:
+            # A heading can run into its first sentence on the same line. The
+            # title is the heading; the sentence stays in the section body.
+            boundary = _RUN_IN_BOUNDARY.search(title, recognized.end())
+            if boundary and len(title) - boundary.end() >= 20:
+                title = title[:boundary.start()]
+                wanted = len(re.sub(r"[\W_]+", "", f"Item {item} {title}"))
+                seen = 0
+                for position, character in enumerate(original_title):
+                    seen += character.isalnum()
+                    if seen == wanted:
+                        original_title = original_title[:position + 1]
+                        break
+            if (part, item) in _AUDITED_ITEM_TYPES:
+                kind = _AUDITED_ITEM_TYPES[part, item]
+            elif (part, item) == ("II", "6") and form == "10-K":
+                kind = "selected_financial_data" if re.match(r"SELECTED\b", title, re.I) else "reserved"
         items.append({"offset_start": offsets[index], "section_id": f"part-{part.lower()}-item-{item.lower()}",
-                      "title": f"Item {item}. {title}", "original_title": "".join(lines[index:last_line + 1]).strip(),
+                      "title": f"Item {item}. {title}", "original_title": original_title,
                       "part": part, "item": item, "section_type": kind,
                       "line": index, "last_line": last_line})
         if linked:
@@ -186,13 +235,23 @@ def detect_sections(full_text: str, form: str | None = None, *,
             candidate = preceding[-1]
             part_end = offsets[candidate["last_line"]] + len(lines[candidate["last_line"]])
             intervening = full_text[part_end:first_item]
-            if (re.search(r"[^\s\d|.]", intervening)
-                    and not (excluded_heading_offsets is not None and anchors
-                             and candidate['offset_start'] >= body_start)):
+            if re.search(r"[^\s\d|.]", intervening):
                 # The only available Part label may be in a distant TOC.
                 # A source-backed body Part may have introductory prose before
                 # its first Item (for example a Part III proxy notice).
-                continue
+                source_backed = excluded_heading_offsets is not None and bool(anchors)
+                # The first Part precedes the first Item, so it can never follow
+                # the body start. It is a body heading when every contents entry
+                # lies before it and no other Part or Item line separates it
+                # from its first Item (for example a forward-looking-statements
+                # note between "PART I" and "Item 1. Business").
+                leading = (source_backed and first_item == body_start
+                           and all(offset < candidate['offset_start']
+                                   for offset in excluded_heading_offsets if offset < first_item)
+                           and not any(_ITEM_HEADING.match(heading) or _PART_HEADING.fullmatch(heading)
+                                       for heading in map(_heading_text, intervening.splitlines())))
+                if not leading and not (source_backed and candidate['offset_start'] >= body_start):
+                    continue
             # A part heading between body items is handled once; repeated page
             # headings are not made into additional section boundaries.
             boundaries.append(candidate | {"section_id": f"part-{part.lower()}",
@@ -226,7 +285,11 @@ def detect_sections(full_text: str, form: str | None = None, *,
         section.update(offset_end=end, validation_status="unverified" if boundary["section_type"] == "unknown" else "detected")
         # Retain an unresolved notice rather than implying the proxy was loaded.
         body = full_text[start:end]
-        if re.search(r"incorporat(?:ed|es|ion).*?by reference", body, re.I | re.S) and re.search(r"proxy statement", body, re.I):
+        # Only Part III defers its own content to the proxy statement. A cover
+        # page or an exhibit list that mentions the proxy is fully present.
+        if ((not audited or boundary.get("part") == "III")
+                and re.search(r"incorporat(?:ed|es|ion).*?by reference", body, re.I | re.S)
+                and re.search(r"proxy statement", body, re.I)):
             section["source_locator"] = section.get("source_locator", {}) | {
                 "incorporation_status": "unresolved", "referenced_form": "DEF 14A"}
         sections.append(section)
@@ -238,6 +301,14 @@ _BLOCK_TAGS = {
     "p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6",
     "section", "article", "blockquote", "pre", "address", "header", "footer",
     "ul", "ol", "dl", "dt", "dd", "table",
+}
+# report-v4 also breaks around these elements. They are block-level in every
+# browser; without a boundary their text fuses with the neighbouring words and a
+# heading inside them is never on its own line. Earlier report versions keep the
+# set above, so their stored reports and source-cell checks render as before.
+_AUDITED_BLOCK_TAGS = _BLOCK_TAGS | {
+    "center", "main", "nav", "aside", "figure", "figcaption", "details", "summary",
+    "form", "fieldset",
 }
 _OMITTED_TAGS = {"head", "script", "style"}
 _INLINE_NAMESPACES = {
@@ -297,7 +368,21 @@ def _trim_fragments(fragments):
     return fragments
 
 
-def _render(element, anchor=None, row_anchor=None, *, track_links=False, enclosing_link=None):
+def _note_reference(element, tag):
+    """A superscript whose whole content is a note reference such as 1, (2) or (a)."""
+    style = element.get("style", "")
+    # Filing software raises note references with <sup>, with a superscript
+    # alignment, or with relatively positioned text moved up by a few points.
+    raised = (tag == "sup" or re.search(r"vertical-align\s*:\s*super", style, re.I)
+              or (re.search(r"position\s*:\s*relative", style, re.I)
+                  and re.search(r"(?:^|;)\s*top\s*:\s*-\s*[0-9.]*[1-9]", style, re.I)))
+    if not raised:
+        return False
+    return bool(_NOTE_REFERENCE.fullmatch("".join(element.itertext()).strip()))
+
+
+def _render(element, anchor=None, row_anchor=None, *, track_links=False, enclosing_link=None, note_marks=False,
+            block_tags=_BLOCK_TAGS):
     """Render annotated fragments while leaving the original DOM untouched."""
     if not isinstance(element.tag, str):  # Comments and processing instructions.
         return []
@@ -316,7 +401,8 @@ def _render(element, anchor=None, row_anchor=None, *, track_links=False, enclosi
         if cells:
             rendered = [fragments for cell in cells
                         if (fragments := _trim_fragments(_render(cell, element, element,
-                            track_links=track_links, enclosing_link=enclosing_link)))]
+                            track_links=track_links, enclosing_link=enclosing_link, note_marks=note_marks,
+                            block_tags=block_tags)))]
             if not rendered:
                 return []
             fragment_anchor = (element, enclosing_link) if track_links else element
@@ -329,18 +415,21 @@ def _render(element, anchor=None, row_anchor=None, *, track_links=False, enclosi
             return fragments
         return []
 
-    is_block = tag in _BLOCK_TAGS
+    is_block = tag in block_tags
     if row_anchor is not None:
         anchor = row_anchor
     elif is_block or anchor is None:
         anchor = element
     fragment_anchor = (anchor, enclosing_link) if track_links else anchor
     fragments = [("\n\n", fragment_anchor)] if is_block else []
+    if note_marks and _note_reference(element, tag):
+        fragments.append((_NOTE_MARK, fragment_anchor))
     if element.text:
         fragments.append((re.sub(r"\s+", " ", element.text), fragment_anchor))
     for child in element:
         fragments.extend(_render(child, anchor, row_anchor,
-                                 track_links=track_links, enclosing_link=enclosing_link))
+                                 track_links=track_links, enclosing_link=enclosing_link, note_marks=note_marks,
+                                 block_tags=block_tags))
         # Tail text belongs to the visible parent even when the child is hidden.
         if child.tail:
             fragments.append((re.sub(r"\s+", " ", child.tail), fragment_anchor))
@@ -355,6 +444,16 @@ def _normalize_fragments(fragments):
     newlines = 0
     space = False
     for fragment, anchor in fragments:
+        if isinstance(fragment, _NoteMark):
+            # "1,234" followed by note 2 must not read "1,2342", nor "revenues"
+            # followed by note 1 "revenues1". A unit exponent (m2) stays joined.
+            if text and not newlines and not space:
+                run = 0
+                while run < 3 and run < len(text) and text[-1 - run].isalpha():
+                    run += 1
+                if text[-1].isdigit() or text[-1] in "%)" or run >= 3:
+                    space = True
+            continue
         for character in fragment:
             if character.isspace():
                 if character == "\n":
@@ -427,14 +526,23 @@ def _navigation_heading_offsets(full_text, anchors, heading_links):
         if anchor is None:
             offset += len(line)
             continue
-        link = heading_links[offset]
-        if link is not None and link.get('href', '').startswith('#'):
-            # Track the link covering the heading itself. A shared table-row
-            # anchor may also contain prose links with the exact same label.
-            local_targets = {value for node in anchor.iter()
-                             for value in (node.get('id'), node.get('name')) if value}
-            local_targets.update(value for node in anchor.iterancestors()
-                                 for value in (node.get('id'), node.get('name')) if value)
+        # Track the links covering the heading itself. A shared table-row
+        # anchor may also contain prose links with the exact same label.
+        covering = [heading_links[offset]]
+        # A contents row can link only its title cell ("Item 1. | <a>Financial
+        # Statements</a>"), leaving the Item label itself unlinked.
+        label = _ITEM_LABEL.match(line)
+        if label and line[label.end():].strip():
+            covering.append(heading_links[offset + label.end()])
+        local_targets = None
+        for link in covering:
+            if link is None or not link.get('href', '').startswith('#'):
+                continue
+            if local_targets is None:
+                local_targets = {value for node in anchor.iter()
+                                 for value in (node.get('id'), node.get('name')) if value}
+                local_targets.update(value for node in anchor.iterancestors()
+                                     for value in (node.get('id'), node.get('name')) if value)
             # A heading's own permalink points within its source block and
             # is not a table-of-contents link to a separate body section.
             if unquote(link.get('href')[1:]) not in local_targets:
@@ -539,7 +647,7 @@ def _statement_table_follows(anchor, limit, tables, order):
                (order[table] < start < limit and anchor in table.iterdescendants()) for table in tables)
 
 
-def _separate_unnumbered_blocks(full_text, sections, anchors, heading_links, document):
+def _separate_unnumbered_blocks(full_text, sections, anchors, heading_links, document, *, audited=False):
     """Keep explicit body appendices from inheriting the previous Item's topic.
 
     These are standalone source headings, never prose mentions. In particular,
@@ -558,7 +666,7 @@ def _separate_unnumbered_blocks(full_text, sections, anchors, heading_links, doc
         if owner and owner.get('section_id') not in {'front-matter', 'full-report', 'unclassified-prefix'}:
             if (owner.get('section_type') in {'exhibits', 'summary'}
                     and re.fullmatch(r'SIGNATURES?[ .]*', title, re.I)):
-                key, kind = 'signatures', 'other_information'
+                key, kind = 'signatures', 'signatures' if audited else 'other_information'
             elif (owner.get('part') == 'IV' and re.fullmatch(
                     r'(?:(?:INDEX TO )?(?:THE )?(?:(?:CONDENSED|CONSOLIDATED|COMBINED) )*'
                     r'FINANCIAL STATEMENTS(?: AND (?:FINANCIAL STATEMENT )?SCHEDULES?)?'
@@ -609,7 +717,8 @@ def _separate_unnumbered_blocks(full_text, sections, anchors, heading_links, doc
     return boundaries
 
 
-def clean_report(html_path: str | Path, *, form: str | None = None) -> CleanedReport:
+def clean_report(html_path: str | Path, *, form: str | None = None,
+                 report_version: str | None = None) -> CleanedReport:
     """Render visible SEC HTML with original-node locators and final text offsets.
 
     Locators resolve against the unchanged bytes parsed with
@@ -631,15 +740,26 @@ def clean_report(html_path: str | Path, *, form: str | None = None) -> CleanedRe
         if re.fullmatch(rb"\s*(?:(?:<!--.*?-->|<!DOCTYPE[^>]*>)\s*)*", source, re.I | re.S):
             return CleanedReport(full_text="", sections=[])
         raise
+    audited = report_version in AUDITED_REPORT_VERSIONS
     # No nodes are removed or rewritten: anchors always refer to the original DOM.
-    full_text, annotations = _normalize_fragments(_render(document, track_links=True))
+    full_text, annotations = _normalize_fragments(_render(
+        document, track_links=True, note_marks=audited, block_tags=_AUDITED_BLOCK_TAGS if audited else _BLOCK_TAGS))
+    # Every parse of an original document reads its bytes as UTF-8. Bytes in
+    # another encoding (Windows-1252 quotes, dashes, no-break spaces) become
+    # U+FFFD, which would be stored as report text and, in a heading, hide the
+    # section. A replacement character the source does not itself contain is a
+    # decoding loss, never report content.
+    if "\ufffd" in full_text and not (b"\xef\xbf\xbd" in source
+                                      or re.search(rb"&#(?:0*65533|x0*fffd);", source, re.I)):
+        raise ReportEncodingError(
+            "The document is not UTF-8: its visible text cannot be read without replacement characters.")
     anchors = [annotation[0] if annotation is not None else None for annotation in annotations]
     heading_links = [annotation[1] if annotation is not None else None for annotation in annotations]
     form = _report_form(full_text, form)
     sections = detect_sections(full_text, form=form,
                                excluded_heading_offsets=_navigation_heading_offsets(full_text, anchors, heading_links),
-                               linked_headings=_linked_exhibit_headings(document, full_text, anchors, form))
-    sections = _separate_unnumbered_blocks(full_text, sections, anchors, heading_links, document)
+                               linked_headings=_linked_exhibit_headings(document, full_text, anchors, form), audited=audited)
+    sections = _separate_unnumbered_blocks(full_text, sections, anchors, heading_links, document, audited=audited)
     tree = document.getroottree()
     for section in sections:
         anchor = anchors[section["offset_start"]]

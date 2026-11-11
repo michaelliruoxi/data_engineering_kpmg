@@ -229,3 +229,45 @@ def test_interrupted_source_publication_can_resume(tmp_path, monkeypatch):
     monkeypatch.undo()
     m.immutable_write(target, b'complete source bytes')
     assert target.read_bytes() == b'complete source bytes'
+
+
+class _OfflineClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def get_json(self, url):
+        return {}
+
+
+@pytest.mark.parametrize('unsupported', [[], [{'accession_number': '0000320193-25-000099', 'form': '10-K',
+                                               'filing_date': '2025-10-31', 'reason': 'The primary filing must be a plain HTML file name.'}]])
+def test_unsupported_discovery_rows_are_saved_and_keep_download_open(config, tmp_path, monkeypatch, unsupported):
+    from sec_pipeline.acquisition import DiscoveredFilings
+    config['companies'] = config['companies'][:1]
+    row = {'cik': '0000320193', 'company': 'Apple Inc.', 'accession_number': '0000320193-25-000073', 'form': '10-Q',
+           'filing_date': '2025-08-01', 'reporting_period_end': '2025-06-28', 'primary_document': 'aapl-20250628.htm'}
+    monkeypatch.setattr(m, 'RecordedClient', _OfflineClient)
+    monkeypatch.setattr(m, 'verify_tickers', lambda *args: None)
+    monkeypatch.setattr(m, 'discover_filings', lambda *args: DiscoveredFilings(
+        [row], related_forms={'10-K/A': 1}, unsupported=unsupported))
+    discovery = m.discover(config, tmp_path)
+    saved = json.loads((tmp_path / 'discovery.json').read_text())
+    for state in (discovery, saved):
+        record = state['companies']['AAPL']
+        assert record['filings'] == [row] and record['related_forms'] == {'10-K/A': 1}
+        assert record.get('unsupported_filings', []) == unsupported
+        assert state['unsupported_filings'] == len(unsupported) and state['discovery_complete'] is True
+    # The one supported filing is already archived and verified.
+    m.save_json(tmp_path / 'download_status.json', {'scope_key': m.scope_key(config), 'download_stage_complete': False,
+                'filings': {row['accession_number']: {'status': 'verified', 'manifest': 'manifest.json'}}})
+    monkeypatch.setattr(m, 'seed_archives', lambda *args: None)
+    monkeypatch.setattr(m, 'verify_filing', lambda *args: dict(row))
+    result = m.download(config, tmp_path, 0)
+    assert result['unsupported_filings_not_archived'] == unsupported
+    assert result['download_stage_complete'] is (not unsupported)

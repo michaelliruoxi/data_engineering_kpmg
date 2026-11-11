@@ -32,7 +32,7 @@ def main(argv=None):
     parser.add_argument("--retry-failed-only", action="store_true", help="Retry failed/blocked filings after fixing their cause; leave pending and successful entries alone.")
     parser.add_argument("--validated-only", action="store_true", help="Ingest only entries with a successful dry run; reverify their sources and every import check before commit.")
     parser.add_argument("--max-database-gib", type=int, help="Stop before the next filing import once this database reaches the size limit; retain the queue for resumption.")
-    parser.add_argument("--tables-version", choices=("tables-v1", "tables-v2", "tables-v3", "tables-v4", "tables-v5", "tables-v6"), default="tables-v1", help="Select the table extraction profile and its separate processing-set version; v4 includes complete inline document sets and explicit source-quality issues.")
+    parser.add_argument("--tables-version", choices=("tables-v1", "tables-v2", "tables-v3", "tables-v4", "tables-v5", "tables-v6", "tables-v7"), default="tables-v1", help="Select the table extraction profile and its separate processing-set version; v4 includes complete inline document sets and explicit source-quality issues.")
     parser.add_argument("--env-file", type=Path)
     parser.add_argument("--database")
     parser.add_argument("--issuer-history", type=Path, help="Verified predecessor mapping; add it with --discover, then the queue remembers its path and hash.")
