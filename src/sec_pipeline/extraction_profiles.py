@@ -6,7 +6,14 @@ REVIEWED_PROFILE = "reviewed-layout-v6"
 # Reviewed boundaries plus audited section metadata, separated note references
 # and an inventory of statement tables the selected segments leave out.
 AUDITED_PROFILE = "audited-layout-v7"
-CORRECTED_PROFILES = frozenset({CORRECTED_PROFILE, REVIEWED_PROFILE, AUDITED_PROFILE})
+# Audited V7 plus the tables printed after a cash flow statement (a cash
+# reconciliation, supplemental disclosures) as further segments, and recorded
+# company tagging errors: a filer's tag that contradicts its printed number or
+# column is kept out of the statements and stored as an explicit defect.
+FLAGGED_PROFILE = "flagged-layout-v8"
+CORRECTED_PROFILES = frozenset({CORRECTED_PROFILE, REVIEWED_PROFILE, AUDITED_PROFILE, FLAGGED_PROFILE})
+# Profiles with the audited report metadata (report-v4) and text policies.
+AUDITED_PROFILES = frozenset({AUDITED_PROFILE, FLAGGED_PROFILE})
 _VERSIONS = {
     LEGACY_PROFILE: {
         "facts": "facts-v1", "tables": "tables-v4",
@@ -22,6 +29,10 @@ _VERSIONS = {
     },
     AUDITED_PROFILE: {
         "facts": "facts-v1", "tables": "tables-v7",
+        "reports": "report-v4", "chunks": "paragraph-v2",
+    },
+    FLAGGED_PROFILE: {
+        "facts": "facts-v1", "tables": "tables-v8",
         "reports": "report-v4", "chunks": "paragraph-v2",
     },
 }

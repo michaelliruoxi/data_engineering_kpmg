@@ -252,7 +252,7 @@ def bind_cash_reconciliations(rows, periods, facts, ns, html_ids, xml_path):
     return bindings, groups
 
 
-def validate_cash_reconciliations(tables, tree, xml_path):
+def validate_cash_reconciliations(tables, tree, xml_path, *, tagging_defects=False):
     """Recompute original source groups and compare stored bindings and facts."""
     from .tables import _column_periods, column_headers, layout_grid, xml_evidence
 
@@ -274,12 +274,12 @@ def validate_cash_reconciliations(tables, tree, xml_path):
         rows, _ = layout_grid(nodes[0], tree)
         first = next(index for index, row in enumerate(rows) if any(local(node) == 'nonfraction'
                      for cell in row for node in cell['_element'].iter()))
-        periods, _ = _column_periods(rows, first, facts, ns, html_ids, advanced=True)
+        periods, _ = _column_periods(rows, first, facts, ns, html_ids, advanced=True, tagging_defects=tagging_defects)
         group = table.structure.get('statement_group') or {}
         periods.update({int(column): value for column, value in group.get('joint_statement', {}).get('column_periods', {}).items()})
         inherited = group.get('header_inheritance') or {}
         periods.update({int(column): value['period'] for column, value in inherited.get('columns', {}).items()})
-        if group.get('segment_role') == 'cash_reconciliation':
+        if group.get('segment_role') in {'cash_reconciliation', 'closing_cash_reconciliation'}:
             expected, evidence = {}, []
         else:
             expected, evidence = bind_cash_reconciliations(rows, periods, facts, ns, html_ids, xml_path)

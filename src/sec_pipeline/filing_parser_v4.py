@@ -21,7 +21,8 @@ from . import filing_adapter as base
 from . import filing_adapter_v3 as source_adapter
 from .chunking import chunk_report
 from .extraction_profiles import (
-    AUDITED_PROFILE, LEGACY_PROFILE, CORRECTED_PROFILE, REVIEWED_PROFILE, CORRECTED_PROFILES, versions_for, corrected_tables)
+    AUDITED_PROFILE, AUDITED_PROFILES, FLAGGED_PROFILE, LEGACY_PROFILE, CORRECTED_PROFILE, REVIEWED_PROFILE,
+    CORRECTED_PROFILES, versions_for, corrected_tables)
 from .database import ChunkInput, FactInput, FinancialTableInput, ReportInput
 from .document_sets import verify_document_set
 from .fact_extraction import IX, XML_ROLE, extract_facts
@@ -85,6 +86,8 @@ class ParsedFilingSet:
     source_inventory: dict
     registrants: tuple[dict, ...]
     profile: str = LEGACY_PROFILE
+    # V8 only: recorded company tagging errors (see tagging_defects.py).
+    tagging_defects: tuple[dict, ...] = ()
 
     @property
     def manifest(self):
@@ -202,27 +205,38 @@ def _choose_member(member_records, root, facts):
     return selected[0]
 
 
-def _checked_tables(manifest, root, filing, xml_record, member, sources, facts, occurrences):
+def _checked_tables(manifest, root, filing, xml_record, member, sources, facts, occurrences, *, cash_followers=False,
+                    tagging_defects=False, boundary_records=(), tables_version=None):
     path, xml_path = _path(root, member), _path(root, xml_record)
     context = _context(manifest, root, filing, xml_record, member, sources)
     v2 = extract_tables(path, xml_path, filing_id=filing, html_document_id=context.source_ids.html_document_id,
-                        xml_document_id=context.source_ids.xml_document_id, facts_version='facts-v1', tables_version='tables-v2')
+                        xml_document_id=context.source_ids.xml_document_id, facts_version='facts-v1', tables_version='tables-v2',
+                        cash_followers=cash_followers, tagging_defects=tagging_defects)
     source = path.read_bytes()
     bindings = SourceBindings(source, facts)
-    _require(validate_statement_segments(v2, bindings.tree, facts, xml_path=xml_path) is True,
+    _require(validate_statement_segments(v2, bindings.tree, facts, xml_path=xml_path, cash_followers=cash_followers,
+                                         tagging_defects=tagging_defects) is True,
              'Primary statement grouping differs from original source evidence.')
     v3 = transform_v3(v2, source, facts)
     validate_representations(v3, source, facts)
     references, cells = source_adapter._table_checks(context, v3, {fact.occurrence_key: fact for fact in facts}, bindings)
     _require(references and cells, 'Table references, cells or original locators are inconsistent.')
-    v4 = tuple(transform_v4(v3, source, facts))
-    _require(validate_transformation(v4, v3, source, facts) is True, 'V4 review transformation is not source-exact.')
+    v4 = tuple(transform_v4(v3, source, facts, tagging_defects=tagging_defects))
+    _require(validate_transformation(v4, v3, source, facts, tagging_defects=tagging_defects) is True,
+             'V4 review transformation is not source-exact.')
+    defects = ()
+    if tagging_defects:
+        from .tagging_defects import flag_table_cells
+        v4, defects = flag_table_cells(v4, source, facts, version=tables_version, boundary_records=boundary_records)
     by_occurrence = {item['inline_id']: item for item in occurrences}
     for table in v4:
         for cell, accepted, descriptor in v4_relational_cells(UUID(int=0), table):
             _require(cell.resolution_status != 'unresolved',
                      f'Unaccounted financial cell {table.table_key}/{cell.cell_key}: {descriptor.get("unresolved_reason")}')
             refs = [*accepted, *descriptor.get('source_fact_references', [])]
+            if descriptor.get('tagging_defect'):
+                refs.extend({'xml_id': tag['inline_id'], 'inline_xpath': tag['inline_xpath']}
+                            for tag in descriptor['tagging_defect']['cell_tags'])
             if (descriptor['column'] > 0 and descriptor.get('column_period')
                     and descriptor['classification'] in {'formatting', 'label'}
                     and re.fullmatch(r'\(?\s*[$€£¥]?\s*[+-]?\d[\d,\s]*(?:\.\d+)?\s*%?\s*\)?', descriptor['display_text'])
@@ -240,7 +254,7 @@ def _checked_tables(manifest, root, filing, xml_record, member, sources, facts, 
                 _require(occurrence is not None and occurrence['inline_document_id'] == str(table.source_document_id)
                          and occurrence['evidence']['inline_xpath'] == ref['inline_xpath'],
                          'A cell reference does not belong to its original document-set occurrence.')
-    return v4
+    return v4, defects
 
 
 def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None, profile=LEGACY_PROFILE):
@@ -258,13 +272,20 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
         source_document_id=sources[xml_record['source_url']], extraction_version='facts-v1').require_complete().facts)
     descriptors = [InlineSourceDocument(sources[record['source_url']], _path(root, record).name, _path(root, record),
                                        record['sha256'], record['source_url']) for record in members]
+    flagged = profile == FLAGGED_PROFILE
     union = read_inline_document_set(descriptors, facts, xml_sha256=xml_record['sha256'],
-                                     normalized_text=profile == AUDITED_PROFILE)
+                                     normalized_text=profile in AUDITED_PROFILES, tagging_defects=flagged)
+    boundary_records = ()
+    if flagged:
+        from .tagging_defects import fact_boundary_records
+        boundary_records = fact_boundary_records(union.tagging_defects, facts, version=versions['tables'])
     selected = _choose_member(members, root, facts)
-    tables = _checked_tables(manifest, root, filing, xml_record, selected, sources, facts, union.occurrences)
+    tables, cell_defects = _checked_tables(manifest, root, filing, xml_record, selected, sources, facts, union.occurrences,
+                                           cash_followers=flagged, tagging_defects=flagged,
+                                           boundary_records=boundary_records, tables_version=versions['tables'])
     if profile in CORRECTED_PROFILES:
         tables = corrected_tables(tables, profile=profile)
-    if profile == AUDITED_PROFILE:
+    if profile in AUDITED_PROFILES:
         from .statement_continuations import with_omitted_continuations
         tables = with_omitted_continuations(tables, _path(root, selected).read_bytes())
     documents = []
@@ -311,11 +332,17 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
               'tables': len(tables), 'reports': len(documents), 'chunks': sum(len(doc.chunks) for doc in documents),
               'cells': sum(inventory.values()), 'source_only_cells': inventory['source_only_marker'],
               'review_cells': inventory['source_conflict'], 'issues': len(issues), 'unresolved_cells': inventory['unresolved']}
+    defects = ()
+    if flagged:
+        from .tagging_defects import validate_records
+        defects = tuple(sorted((*cell_defects, *boundary_records), key=lambda record: record['defect_key']))
+        _require(validate_records(defects, tables) is True, 'Tagging defects differ from their flagged cells.')
+        counts.update(source_defect_cells=inventory['source_defect'], tagging_defects=len(defects))
     checks = {key: True for key in REQUIRED_CHECKS if key != 'fresh_source_reconstruction'}
     return ParsedFilingSet(filing, sources[xml_record['source_url']], json.dumps(manifest, sort_keys=True, separators=(',', ':')),
         hashlib.sha256(manifest_bytes).hexdigest(), facts, union.occurrences, tuple(documents), checks,
         {'period_header_consistency': not issues, **({'primary_section_boundaries': True} if profile in CORRECTED_PROFILES else {})},
-        issues, dict(COVERAGE), counts, union.inventory, registrants, profile)
+        issues, dict(COVERAGE), counts, union.inventory, registrants, profile, defects)
 
 
 def validate_filing_set(parsed, manifest_path, data_root, *, filing_id=None, source_document_ids=None, profile=LEGACY_PROFILE):
@@ -324,7 +351,7 @@ def validate_filing_set(parsed, manifest_path, data_root, *, filing_id=None, sou
     _require(parsed.profile == profile, 'Parsed profile differs from the requested artifact identities.')
     expected = _build(manifest_path, data_root, filing_id=filing_id, source_document_ids=source_document_ids, profile=profile)
     for name in ('filing_id', 'xml_document_id', 'manifest_json', 'manifest_sha256', 'facts', 'occurrences', 'documents',
-                 'semantic_checks', 'issues', 'coverage', 'counts', 'source_inventory', 'registrants'):
+                 'semantic_checks', 'issues', 'coverage', 'counts', 'source_inventory', 'registrants', 'tagging_defects'):
         _require(getattr(parsed, name) == getattr(expected, name), f'V4 {name} differs from fresh original-source reconstruction.')
     supplied = {name: value for name, value in parsed.checks.items() if name != 'fresh_source_reconstruction'}
     _require(supplied == expected.checks and parsed.checks.get('fresh_source_reconstruction', True) is True,

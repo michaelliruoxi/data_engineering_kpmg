@@ -17,13 +17,18 @@ def policy_metadata(versions):
     """
     revisions = {}
     if versions.get('facts') == 'facts-v1':
-        revisions['facts'] = 'numeric-tag-boundaries-v3'
+        # V8 records a numeric tag that encloses only part of its printed
+        # number as a company tagging error instead of rejecting the filing.
+        revisions['facts'] = ('numeric-tag-boundary-defects-v1' if versions.get('tables') == 'tables-v8'
+                              else 'numeric-tag-boundaries-v3')
     if versions.get('reports') in REPORT_REVISIONS:
         revisions['reports'] = REPORT_REVISIONS[versions['reports']]
     if versions.get('tables') in {'tables-v2', 'tables-v3', 'tables-v4', 'tables-v5', 'tables-v6'}:
         revisions['tables'] = 'registrant-numeric-cell-validation-v2'
     elif versions.get('tables') == 'tables-v7':
         revisions['tables'] = 'statement-continuation-inventory-v1'
+    elif versions.get('tables') == 'tables-v8':
+        revisions['tables'] = 'cash-statement-followers-tagging-defects-v1'
     if versions.get('chunks') == 'paragraph-v2':
         revisions['chunks'] = 'token-boundary-overlap-v2'
     return {'parser_revisions': revisions} if revisions else {}

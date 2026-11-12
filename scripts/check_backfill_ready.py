@@ -23,8 +23,8 @@ UNIVERSE = ROOT / 'data/backfill/2026-10-13/universe.json'
 SINCE, UNTIL = '2021-10-13', '2026-10-13'
 ENV_FILE = ROOT / '.env.aws'
 DATABASE = 'sec_filings'
-TABLES_VERSIONS = ('tables-v1', 'tables-v2', 'tables-v3', 'tables-v4', 'tables-v5', 'tables-v6', 'tables-v7')
-DOCUMENT_SET_VERSIONS = frozenset({'tables-v4', 'tables-v5', 'tables-v6', 'tables-v7'})
+TABLES_VERSIONS = ('tables-v1', 'tables-v2', 'tables-v3', 'tables-v4', 'tables-v5', 'tables-v6', 'tables-v7', 'tables-v8')
+DOCUMENT_SET_VERSIONS = frozenset({'tables-v4', 'tables-v5', 'tables-v6', 'tables-v7', 'tables-v8'})
 LEGACY_SCHEMA = 9
 TABLES = ('companies', 'filings', 'source_documents', 'financial_facts', 'financial_tables',
           'financial_table_facts', 'table_cells', 'cell_fact_links', 'reports', 'report_sections',

@@ -6,6 +6,7 @@ values are separate: a displayed cash outflow may have a positive XBRL value.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import Counter
 from collections.abc import Mapping
 import calendar
 from datetime import date, timedelta
@@ -858,7 +859,45 @@ def _fiscal_calendar_evidence(facts):
     return balance_dates, offset if offset in (0, 1) else None
 
 
-def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False):
+def _tagging_defect_candidate(references, balance_dates, headers, *, advanced, fiscal_year_offset):
+    """V8 only: the printed period of a column whose tags contradict it.
+
+    Two company tagging errors are recognized, never anything looser:
+    - one or two tags in the column carry another period than all the others
+      (for example a prior-year dash tagged with the current quarter); the
+      shared period must have at least two concepts and be confirmed by the
+      printed header, and the outliers are then flagged against it;
+    - every duration tag starts on a balance-sheet date, the last day of the
+      prior period, and the period starting one day later is confirmed by the
+      printed header and fiscal calendar; every tag is then flagged.
+    Returns (printed period, method, tagged periods) or None.
+    """
+    counts = Counter(tuple(sorted(reference['period'].items())) for reference in references)
+    if len(counts) > 1:
+        (shared, count), (_, runner_up) = counts.most_common(2)
+        outliers = len(references) - count
+        majority = [reference for reference in references if tuple(sorted(reference['period'].items())) == shared]
+        if (runner_up == count or outliers > 2 or outliers * 4 >= count
+                or len({reference['concept'] for reference in majority}) < 2):
+            return None
+        printed = dict(shared)
+        if header_period(headers, context_period=printed, advanced=advanced, balance_dates=balance_dates,
+                         fiscal_year_offset=fiscal_year_offset) != printed:
+            return None
+        return printed, 'majority_column_contexts_tagging_defects', sorted(
+            {json.dumps(dict(period), sort_keys=True) for period in counts if period != shared})
+    tagged = dict(next(iter(counts)))
+    if set(tagged) != {'startDate', 'endDate'} or not balance_dates or tagged['startDate'] not in balance_dates:
+        return None
+    printed = {'startDate': (date.fromisoformat(tagged['startDate']) + timedelta(days=1)).isoformat(),
+               'endDate': tagged['endDate']}
+    if header_period(headers, context_period=printed, advanced=advanced, balance_dates=balance_dates,
+                     fiscal_year_offset=fiscal_year_offset) != printed:
+        return None
+    return printed, 'fiscal_calendar_start_tagging_defects', [json.dumps(tagged, sort_keys=True)]
+
+
+def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, tagging_defects=False):
     balance_dates, fiscal_year_offset = _fiscal_calendar_evidence(facts) if advanced else (None, None)
     columns = {cell['column'] for row in rows[first_data:] for cell in row if cell['column'] > 0}
     headers = {column: column_headers(rows, first_data, column, advanced=advanced) for column in columns}
@@ -893,6 +932,13 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False):
         references = durations or references
         observed = {tuple(sorted(reference['period'].items())) for reference in references}
         if len(observed) != 1 or len({reference['concept'] for reference in references}) < 2:
+            if tagging_defects and advanced and len(references) >= 2:
+                flagged = _tagging_defect_candidate(references, balance_dates, headers[column], advanced=advanced,
+                                                    fiscal_year_offset=fiscal_year_offset)
+                if flagged is not None and flagged[0] != periods[column]:
+                    periods[column] = flagged[0]
+                    provenance[str(column)] = {'method': flagged[1], 'period': flagged[0], 'tagged_periods': flagged[2],
+                                               'xml_ids': sorted({reference['xml_id'] for reference in references})}
             continue
         candidate = dict(observed.pop())
         resolved = header_period(headers[column], context_period=candidate, advanced=advanced,
@@ -907,6 +953,14 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False):
                 corroborated, calendar_sources = _v2_calendar_period(revised, candidate, table)
                 if corroborated is not None:
                     resolved = corroborated
+        if resolved is None and tagging_defects and advanced:
+            flagged = _tagging_defect_candidate(references, balance_dates, headers[column], advanced=advanced,
+                                                fiscal_year_offset=fiscal_year_offset)
+            if flagged is not None and flagged[0] != periods[column]:
+                periods[column] = flagged[0]
+                provenance[str(column)] = {'method': flagged[1], 'period': flagged[0], 'tagged_periods': flagged[2],
+                                           'xml_ids': sorted({reference['xml_id'] for reference in references})}
+            continue
         if resolved is not None and resolved != periods[column]:
             periods[column] = resolved
             provenance[str(column)] = {
@@ -1630,8 +1684,161 @@ def _validate_primary_scope(segments, facts):
     return segments
 
 
-def select_statement_segments(tree, facts):
-    """Resolve combined-filer identity before attempting ordinary selection."""
+# Tables printed directly after a selected cash flow statement that belong to
+# it: a reconciliation of the closing cash balance and the supplemental cash
+# flow disclosures. Only the V8 profile extracts them as further segments; a
+# table that does not match the statement exactly stays outside, where V7's
+# omitted-continuation inventory reports it.
+_FOLLOWER_RECONCILIATION_CONCEPTS = _RECONCILIATION_CASH_CONCEPTS | {'RestrictedCashNoncurrent'}
+_FOLLOWER_CASH_TOTAL = 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents'
+_US_GAAP_CONCEPT = re.compile(r'\{https?://(?:fasb\.org|xbrl\.us)/us-gaap/[^}]+\}[^}]+')
+
+
+def _closing_cash_reconciliation_title(table):
+    """The nearest exact title names a reconciliation of cash and restricted cash."""
+    for value in _statement_heading_values(table):
+        normalized = ' '.join(value.lower().split()).strip(':')
+        if re.fullmatch(r'reconciliation of cash(?:,? cash equivalents)?,? and restricted cash(?: and cash equivalents)?',
+                        normalized):
+            return True
+        title = re.sub(r'[\s:–—-]*(?:\(\s*)?continued(?:\s*\))?\s*$', '', value, flags=re.I)
+        if _statement_heading(title) is not None:
+            return False
+    return False
+
+
+def _statement_closing_cash(cash_segments, facts):
+    """Closing total cash facts printed in the statement, by concept and date."""
+    closing = {}
+    for segment in cash_segments:
+        for node in segment.element.iter():
+            if local(node) != 'nonfraction' or _hidden(node):
+                continue
+            ref = facts.get(node.get('id'))
+            if (ref is None or ref['is_nil'] or set(ref['period']) != {'instant'}
+                    or not _US_GAAP_CONCEPT.fullmatch(ref['concept'])):
+                continue
+            concept = ref['concept'].split('}', 1)[-1]
+            if concept in _CASH_TOTAL_CONCEPTS:
+                closing.setdefault((concept, ref['period']['instant']), set()).add(Decimal(ref['raw_value']))
+    return closing
+
+
+def _cash_follower(tree, table, role, axes, scopes, closing, facts, html_ids):
+    """Validate one follower table against the statement; raise if it does not fit exactly."""
+    candidate = _segment_candidate(tree, table, 'cash_flow', facts, html_ids)
+    if candidate is None or candidate['axes'] != axes or candidate['scopes'] != scopes:
+        raise TableExtractionError('Cash flow follower periods or scope differ from the statement')
+    for axis in axes:
+        period, refs = json.loads(axis), candidate['references'][axis]
+        if role == 'supplemental_disclosures':
+            if candidate['coverage'][axis] or any(ref['period'] != period for ref in refs):
+                raise TableExtractionError('Supplemental disclosures repeat statement totals or other periods')
+            continue
+        # A closing cash reconciliation: every fact is a cash balance at the
+        # column's end date, the components add up to the total, and the total
+        # equals the closing balance printed in the statement itself.
+        if set(period) != {'startDate', 'endDate'} or candidate['coverage'][axis] != {3}:
+            raise TableExtractionError('Cash reconciliation follower lacks a closing cash total')
+        end, values = {'instant': period['endDate']}, {}
+        for ref in refs:
+            concept = ref['concept'].split('}', 1)[-1]
+            if (ref['period'] != end or not _US_GAAP_CONCEPT.fullmatch(ref['concept'])
+                    or concept not in _FOLLOWER_RECONCILIATION_CONCEPTS or concept in values):
+                raise TableExtractionError('Cash reconciliation follower facts are not closing cash balances')
+            values[concept] = None if ref['is_nil'] else Decimal(ref['raw_value'])
+        total = values.pop(_FOLLOWER_CASH_TOTAL, None)
+        if (total is None or values.get('CashAndCashEquivalentsAtCarryingValue') is None or len(values) < 2
+                or sum(value or 0 for value in values.values()) != total
+                or closing.get((_FOLLOWER_CASH_TOTAL, period['endDate'])) != {total}):
+            raise TableExtractionError('Cash reconciliation follower does not reconcile to the closing balance')
+    return candidate
+
+
+def _with_cash_followers(tree, segments, facts):
+    cash = [segment for segment in segments if segment.statement_type == 'cash_flow']
+    if not cash or any((segment.group or {}).get(key) for segment in cash
+                       for key in ('joint_statement', 'standard_cash_alias', 'joint_cash_continuation')):
+        return segments
+    tables = [table for table in tree.xpath('//table') if not _hidden(table) and not table.xpath('.//table')]
+    if any(segment.element not in tables for segment in cash):
+        return segments
+    html_ids = {}
+    for node in tree.iter():
+        if local(node) == 'nonfraction' and node.get('id'):
+            html_ids[node.get('id')] = html_ids.get(node.get('id'), 0) + 1
+    group = cash[0].group
+    if group is None:
+        try:
+            first = _segment_candidate(tree, cash[0].element, 'cash_flow', facts, html_ids)
+        except TableExtractionError:
+            return segments
+        if first is None or len(first['scopes']) != 1 or not first['headings']:
+            return segments
+        axes, scopes, heading = first['axes'], first['scopes'], sorted(first['headings'])[0]
+    else:
+        axes = [json.dumps(period, sort_keys=True) for period in group['column_periods']]
+        scopes, heading = {json.dumps(group['scope'], sort_keys=True)}, group['heading']
+    closing = _statement_closing_cash(cash, facts)
+    previous = max((segment.element for segment in cash), key=tables.index)
+    followers = []
+    for table in tables[tables.index(previous) + 1:]:
+        if not any(local(node) == 'nonfraction' and not _hidden(node) for node in table.iter()):
+            continue
+        roles = [role for _, role in followers]
+        if not followers and _closing_cash_reconciliation_title(table):
+            role = 'closing_cash_reconciliation'
+        elif 'supplemental_disclosures' not in roles and _standalone_cash_supplement(table):
+            role = 'supplemental_disclosures'
+        else:
+            break
+        try:
+            if not _segments_adjacent(tree, previous, table, 'cash_flow'):
+                break
+            candidate = _cash_follower(tree, table, role, axes, scopes, closing, facts, html_ids)
+        except TableExtractionError:
+            break
+        followers.append((candidate, role))
+        previous = table
+        if role == 'supplemental_disclosures':
+            break
+    if not followers:
+        return segments
+    if group is None:
+        common = {'group_key': 'cash_flow', 'heading': heading, 'column_periods': [json.loads(axis) for axis in axes],
+                  'scope': json.loads(next(iter(scopes)))}
+        old = [StatementSegment('cash_flow', 'cash_flow.segment_1', cash[0].element, {'segment_index': 1})]
+        roles = ['statement']
+    else:
+        common = {key: value for key, value in group.items()
+                  if key not in {'segment_index', 'segment_role', 'header_inheritance'}}
+        old = cash
+        roles = list(common.get('segment_roles', ['statement'] * len(cash)))
+    keys = [segment.table_key for segment in old] + [f'cash_flow.segment_{len(old) + index}'
+                                                    for index in range(1, len(followers) + 1)]
+    common.update(segment_count=len(keys), segment_keys=keys,
+                  source_xpaths=[source_xpath(tree, segment.element) for segment in old]
+                  + [source_xpath(tree, candidate['table']) for candidate, _ in followers],
+                  segment_roles=roles + [role for _, role in followers])
+    if 'segment_column_periods' in common:
+        common['segment_column_periods'] = [*common['segment_column_periods'],
+                                            *([json.loads(axis) for axis in axes] for _ in followers)]
+    rebuilt = [StatementSegment('cash_flow', segment.table_key, segment.element,
+                                common | {key: value for key, value in (segment.group or {}).items()
+                                          if key in {'segment_index', 'header_inheritance'}} | {'segment_role': role})
+               for segment, role in zip(old, roles)]
+    for index, (candidate, role) in enumerate(followers, len(old) + 1):
+        rebuilt.append(StatementSegment('cash_flow', keys[index - 1], candidate['table'],
+                                        common | {'segment_index': index, 'segment_role': role}))
+    return tuple(segment for segment in segments if segment.statement_type != 'cash_flow') + tuple(rebuilt)
+
+
+def select_statement_segments(tree, facts, *, cash_followers=False):
+    """Resolve combined-filer identity before attempting ordinary selection.
+
+    ``cash_followers`` (V8 only) adds the closing cash reconciliation and the
+    supplemental disclosures printed directly after the cash flow statement.
+    """
     from .joint_statements import select_joint_statement_segments
     source_facts = _segment_facts(facts)
     selected = select_joint_statement_segments(tree, source_facts)
@@ -1644,12 +1851,13 @@ def select_statement_segments(tree, facts):
         selected = select_alias_statement_segments(tree, facts)
         if selected is None:
             raise
-    return _validate_primary_scope(selected, source_facts)
+    selected = _validate_primary_scope(selected, source_facts)
+    return _with_cash_followers(tree, selected, source_facts) if cash_followers else selected
 
 
-def validate_statement_segments(tables, tree, facts, *, xml_path=None):
+def validate_statement_segments(tables, tree, facts, *, xml_path=None, cash_followers=False, tagging_defects=False):
     """Independently reselect physical groups from unchanged source evidence."""
-    expected = select_statement_segments(tree, facts)
+    expected = select_statement_segments(tree, facts, cash_followers=cash_followers)
     if len(tables) != len(expected):
         raise TableExtractionError('Stored statement segment count differs from the original sources')
     for table, segment in zip(tables, expected):
@@ -1678,7 +1886,7 @@ def validate_statement_segments(tables, tree, facts, *, xml_path=None):
             validate_alias_cells(table, segment, tree, _segment_facts(facts))
     if xml_path is not None:
         from .cash_reconciliation import validate_cash_reconciliations
-        validate_cash_reconciliations(tables, tree, xml_path)
+        validate_cash_reconciliations(tables, tree, xml_path, tagging_defects=tagging_defects)
     elif any(table.structure.get('cash_reconciliation_evidence') or any(
             cell.get('period_binding') for row in table.structure['rows'] for cell in row) for table in tables):
         raise TableExtractionError('Cash reconciliation validation requires its archived source XML')
@@ -1709,7 +1917,8 @@ def same_row_repeat_reference(cell, refs):
 
 
 def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UUID,
-                   xml_document_id: UUID, facts_version='facts-v1', tables_version=VERSION):
+                   xml_document_id: UUID, facts_version='facts-v1', tables_version=VERSION, cash_followers=False,
+                   tagging_defects=False):
     if html_document_id == xml_document_id:
         raise TableExtractionError('HTML and XML must have distinct source IDs')
     tree = html.parse(str(html_path), parser=html.HTMLParser(encoding='utf-8', no_network=True))
@@ -1719,8 +1928,10 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
     advanced = tables_version == 'tables-v2'
     facts = xml_evidence(xml_path, include_entity=advanced)
     source_facts = facts
+    if cash_followers and not advanced:
+        raise TableExtractionError('Cash flow followers require the advanced statement selector')
     if advanced:
-        selected = select_statement_segments(tree, facts)
+        selected = select_statement_segments(tree, facts, cash_followers=cash_followers)
         facts = {key: {name: value for name, value in record.items() if name != 'entity'} for key, record in facts.items()}
     else:
         selected = tuple(StatementSegment(kind, kind, table) for kind, table in select_statements(tree).items())
@@ -1732,10 +1943,14 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
     for segment in selected:
         kind, table = segment.statement_type, segment.element
         reconciliation_segment = segment.group is not None and segment.group.get('segment_role') == 'cash_reconciliation'
+        # V8 only: a reconciliation of the closing cash balance printed after
+        # the statement, under the statement's own "... ended" headers.
+        closing_reconciliation = (segment.group or {}).get('segment_role') == 'closing_cash_reconciliation'
         rows, grid = layout_grid(table, tree)
         first_data = next(i for i, row in enumerate(rows) if any(
             local(e) == 'nonfraction' for c in row for e in c['_element'].iter()))
-        column_periods, period_provenance = _column_periods(rows, first_data, facts, ns, html_ids, advanced=advanced)
+        column_periods, period_provenance = _column_periods(rows, first_data, facts, ns, html_ids, advanced=advanced,
+                                                            tagging_defects=tagging_defects)
         inherited_headers = (segment.group or {}).get('header_inheritance')
         if inherited_headers:
             column_periods.update({int(column): value['period'] for column, value in inherited_headers['columns'].items()})
@@ -1744,7 +1959,7 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
         if joint_statement:
             column_periods.update({int(column): period for column, period in joint_statement['column_periods'].items()})
         cash_bindings, cash_reconciliations = {}, []
-        if advanced and kind == 'cash_flow' and not reconciliation_segment:
+        if advanced and kind == 'cash_flow' and not reconciliation_segment and not closing_reconciliation:
             from .cash_reconciliation import bind_cash_reconciliations
             cash_bindings, cash_reconciliations = bind_cash_reconciliations(
                 rows, column_periods, source_facts, ns, html_ids, xml_path)
@@ -1821,7 +2036,12 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                                     if joint_statement:
                                         from .joint_statement_periods import cash_alias_endpoint_period
                                         joint_endpoint = cash_alias_endpoint_period(ref['concept'], row_label, header)
-                                    if cell['cell_id'] in cash_bindings:
+                                    if closing_reconciliation:
+                                        if ('endDate' not in header or ref['concept'].split('}', 1)[-1]
+                                                not in _FOLLOWER_RECONCILIATION_CONCEPTS):
+                                            raise TableExtractionError('Unexpected instant in cash-flow row')
+                                        wanted = {'instant': header['endDate']}
+                                    elif cell['cell_id'] in cash_bindings:
                                         wanted = cash_bindings[cell['cell_id']]['period']
                                     elif standard_cash_alias and ref['xml_id'] in standard_cash_alias['endpoint_periods']:
                                         wanted = standard_cash_alias['endpoint_periods'][ref['xml_id']]

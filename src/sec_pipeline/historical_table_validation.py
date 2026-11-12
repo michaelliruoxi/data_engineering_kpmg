@@ -209,7 +209,11 @@ def coverage_check(snapshot, sources):
         facts = [_fact_input(f) for f in snapshot["facts"] if f["filing_id"] == scope.get("filing_id")
                  and f["source_document_id"] == scope.get("xml_document_id") and f["extraction_version"] == scope.get("facts_version")]
         try:
-            selected = select_statement_segments(tree, facts)
+            # Only V8 tables carry the cash flow followers; other versions reselect as before.
+            if any(t.get("extraction_version") == "tables-v8" for t in tables):
+                selected = select_statement_segments(tree, facts, cash_followers=True)
+            else:
+                selected = select_statement_segments(tree, facts)
             expected = Counter((s.statement_type, source_xpath(tree, s.element)) for s in selected)
             actual = Counter((t["statement_type"], t["structure"].get("source_xpath")) for t in tables)
             evidence.append({"status": "passed" if actual == expected else "failed", "source_document_id": html_id,

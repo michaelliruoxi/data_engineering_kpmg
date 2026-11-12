@@ -1,6 +1,6 @@
 # Reviewed-profile load of the 233 shortlist filings — Windows ingest machine
 
-Written November 11, 2026 for `main` with migration 016 (the audited V7 profile). Run in
+Written November 11, 2026 for `main` with migration 017 (the flagged V8 profile). Run in
 Windows PowerShell opened from the Start menu. None of these commands has been run on
 Windows yet; steps 3, 7, 8 and 10 write to the shared database, so confirm each with the
 database owner before running it.
@@ -16,7 +16,7 @@ registered. Never let this run download filings again: every filing command belo
 ```powershell
 Set-Location -LiteralPath 'C:\dev\data_engineering_kpmg'
 $py = '.\.venv\Scripts\python.exe'
-$tables = 'tables-v6'   # or 'tables-v7' for the audited profile; decide before step 5
+$tables = 'tables-v8'   # flagged profile: all 233 filings; tables-v6 or tables-v7 accept 227
 $scope = @('--universe','data\shortlist-v6\universe.json','--state','data\shortlist-v6\queue.json','--since','2021-01-01','--until','2026-10-29')
 $db = @('--env-file','.env.aws','--database','sec_filings')
 Get-ChildItem Env:PG*
@@ -24,12 +24,13 @@ Get-ChildItem Env:PG*
 
 The last line must print nothing. Re-run this block in every new terminal.
 
-`tables-v6` (reviewed profile) and `tables-v7` (audited profile) accept the same 227
-shortlist filings with identical facts, cells and section boundaries. V7 also corrects
-section titles, proxy-incorporation flags, section types and footnote-marker spacing, and
-inventories omitted statement tables; see
-[reviewed-layout-upgrade.md](reviewed-layout-upgrade.md#audited-profile-v7). Use one
-profile for the whole queue.
+`tables-v8` (flagged profile) is the audited V7 profile plus the tables printed
+after a cash flow statement (Casey's supplemental disclosures) and recorded company
+tagging errors: the eight filings whose own XBRL tags contradict their printed page
+are loaded with those tags flagged instead of being rejected or held for review, so
+all 233 filings can be published. `tables-v6` and `tables-v7` accept 227 and publish
+225. See [reviewed-layout-upgrade.md](reviewed-layout-upgrade.md#flagged-profile-v8).
+Use one profile for the whole queue.
 
 ## 1. Update the code
 
@@ -39,7 +40,7 @@ git fetch origin
 git switch main
 git pull --ff-only
 git log -1 --format="%h %s"
-Test-Path src\sec_pipeline\migrations\016_audited_layout_versions.sql
+Test-Path src\sec_pipeline\migrations\017_flagged_layout_versions.sql
 ```
 
 `git status --short` must print nothing before you continue; if it lists files, stop.
@@ -51,9 +52,9 @@ The last line must print `True`. No dependencies changed, so the existing `.venv
 & $py scripts\check_upgrade_ready.py @db --output data\shortlist-v6\evidence\before-migration.json
 ```
 
-Expect `"status": "ready_to_migrate"` with pending migrations 011 through 016.
+Expect `"status": "ready_to_migrate"` with pending migrations 011 through 017.
 
-## 3. Apply migrations 011-016 (first write to the shared database)
+## 3. Apply migrations 011-017 (first write to the shared database)
 
 A backup taken at 18:01 UTC on November 11 is on the Mac:
 `backups/sec_filings-rds-before-011-20261111T180128Z.dump`. Take a new one if anything
@@ -64,11 +65,14 @@ has been loaded since.
 & $py scripts\check_upgrade_ready.py @db --output data\shortlist-v6\evidence\after-migration.json
 ```
 
-Expect `"applied"` to list the six migrations, then `"status": "current"`. Known reader
+Expect `"applied"` to list the seven migrations, then `"status": "current"`. Known reader
 effects, all from 011-015: 127 chunks of the unvalidated NetApp filing
 `0000950170-24-023115` leave `sec.chunk_citations` (still in
 `sec.chunk_citations_history`), and three `finance.income_statement` cells print 11.80 as
-11.8. Migration 016 adds five rows to `sec.section_types` and changes no other row or view.
+11.8. Migration 016 adds five rows to `sec.section_types`. Migration 017 adds two empty
+tables for company tagging errors and two columns (`tagging_defect_count`,
+`tagging_defect_codes`, all 0 or empty) to `sec.source_fact_catalog` and
+`sec.analysis_ready_facts`; no other row or view changes.
 
 ## 4. Create the shortlist universe and queue (once)
 
@@ -98,8 +102,8 @@ status.
 & $py scripts\check_backfill_ready.py --tables-version $tables @scope --max-database-gib 14
 ```
 
-Expect `Read-only preflight passed: tables-v6; schema 001-015; 233 queued filings`
-(`tables-v7; schema 001-016` for the audited profile).
+Expect `Read-only preflight passed: tables-v8; schema 001-017; 233 queued filings`
+(`tables-v7; schema 001-016` or `tables-v6; schema 001-015` for the other profiles).
 
 ## 6. Dry run from the archived originals (about 30 minutes)
 
@@ -107,7 +111,8 @@ Expect `Read-only preflight passed: tables-v6; schema 001-015; 233 queued filing
 & $py -u scripts\backfill_sec.py --dry-run --offline --tables-version $tables @scope --data-root .
 ```
 
-Expect `validated` 225, `validated_review_required` 2, `failed` 6. Any `pending` entry
+Expect `validated` 233 with `tables-v8` (225 validated, 2 review required and 6 failed
+with `tables-v6` or `tables-v7`). Any `pending` entry
 means that filing's archive is not on this machine. Exit code 2 is normal.
 
 ## 7. One-filing canary
@@ -131,7 +136,7 @@ not the one registered in the shared database for that filing. Nothing was writt
 & $py -u scripts\backfill_sec.py --ingest --offline --validated-only --tables-version $tables @scope --data-root . @db --max-database-gib 14
 ```
 
-Expect 225 `ingested` and 2 `ingested_review_required` in total. Stop with Ctrl+C once;
+Expect 233 `ingested` in total with `tables-v8`. Stop with Ctrl+C once;
 run the same command to resume.
 
 ## 9. Audit what was loaded (read-only)
@@ -140,7 +145,7 @@ run the same command to resume.
 & $py scripts\publish_reviewed_queue.py plan --state data\shortlist-v6\queue.json --data-root . @db --output-dir data\shortlist-v6\evidence\plan-001
 ```
 
-Expect `"publish": 225` and a `plan_sha256`. Stop here until teammates who read the
+Expect `"publish": 233` (225 with `tables-v6` or `tables-v7`) and a `plan_sha256`. Stop here until teammates who read the
 database know the next step is coming.
 
 ## 10. Publish (switches what readers are served)
@@ -149,7 +154,7 @@ database know the next step is coming.
 & $py scripts\publish_reviewed_queue.py publish --plan data\shortlist-v6\evidence\plan-001\plan.json --plan-sha256 PASTE_PLAN_SHA256 --data-root . @db --output-dir data\shortlist-v6\evidence\publish-001
 ```
 
-Expect `"published": 225`. Retrieval indexes built on the old report and chunk IDs need a
+Expect `"published": 233` (or 225). Retrieval indexes built on the old report and chunk IDs need a
 refresh afterwards. To withdraw the batch:
 
 ```powershell
@@ -168,5 +173,13 @@ refresh afterwards. To withdraw the batch:
   parser, so the load will reuse them.
 - A fresh database load of all 233 gave 225 passed, 2 review required, 6 rejected for
   defects in the filer's own tagging. V7 accepts the same 227 with identical facts and cells.
+- Migration 017 was applied to a clone of the 016 copy: all tables and views identical
+  apart from the ledger, the two new empty tables and the two new columns, whose values
+  are 0 or empty; the original columns of both changed views are byte-identical.
+- V8 accepts all 233 filings from archived sources: every filing V7 accepts parses
+  identically apart from the 17 Casey's cash flow followers and the two NetApp opening
+  balances that become recorded defects; the eight filings with tagging errors carry 35
+  defects (33 flagged cells, 2 fact-level). A local load, replay, stored-acceptance audit
+  and publication of the hardest of them passed, and readers did not receive a flagged fact.
 - Not rehearsed: storing the new reports, chunks and tables next to the existing ones.
   The canary in step 7 is the first real test of that.
