@@ -392,21 +392,65 @@ def store_quality_issues(conn, records: Sequence[QualityIssueInput]) -> list[UUI
     return _store_records(conn, records, QualityIssueInput, 'source_quality_issues', ('document_set_id', 'issue_key'))
 
 
+@dataclass(frozen=True)
+class TaggingDefectInput:
+    """One V8 company tagging error: the printed text and the contradicting tagged fact."""
+    filing_id: UUID
+    document_set_id: UUID
+    defect_key: str
+    fact_id: UUID
+    occurrence_id: UUID
+    inline_id: str
+    inline_document_id: UUID
+    table_id: UUID | None
+    cell_id: UUID | None
+    code: str
+    expected: dict[str, Any]
+    observed: dict[str, Any]
+    evidence: dict[str, Any]
+    rule_version: str = 'company-tagging-defects-v1'
+
+    def __post_init__(self):
+        from .tagging_defects import CODES, FACT_CODES, RULE_VERSION
+        for name in ('filing_id', 'document_set_id', 'fact_id', 'occurrence_id', 'inline_document_id'):
+            _uuid(getattr(self, name), name)
+        for name in ('table_id', 'cell_id'):
+            if getattr(self, name) is not None:
+                _uuid(getattr(self, name), name)
+        _text(self.defect_key, 'defect_key')
+        _text(self.inline_id, 'inline_id')
+        if (self.code not in CODES or self.rule_version != RULE_VERSION or (self.table_id is None) != (self.cell_id is None)
+                or (self.cell_id is None) != (self.code in FACT_CODES)):
+            raise DatabaseError('Unsupported company tagging defect.')
+        for name in ('expected', 'observed', 'evidence'):
+            _object(getattr(self, name), name)
+        if self.expected == self.observed:
+            raise DatabaseError('A tagging defect must retain distinct printed and tagged states.')
+
+
+def store_tagging_defects(conn, records: Sequence[TaggingDefectInput]) -> list[UUID]:
+    return _store_records(conn, records, TaggingDefectInput, 'source_tagging_defects', ('document_set_id', 'defect_key'))
+
+
 def store_v4_processing_set(conn, record: V4ProcessingSetInput, *, table_ids: Sequence[UUID],
-                            reports: Sequence[ReportMembershipInput], issue_ids: Sequence[UUID] = ()) -> UUID:
+                            reports: Sequence[ReportMembershipInput], issue_ids: Sequence[UUID] = (),
+                            defect_ids: Sequence[UUID] = ()) -> UUID:
     """Atomically seal explicit members and pre-created immutable quality issues.
 
     SQL derives counts/status and checks all selected artifacts. No preferred
     selection is changed. The caller retains the outer commit/rollback decision.
     """
     data = _checked(record, V4ProcessingSetInput)
-    tables, issues = list(table_ids), list(issue_ids)
+    tables, issues, defects = list(table_ids), list(issue_ids), list(defect_ids)
     report_data = [_checked(report, ReportMembershipInput) for report in reports]
+    if defects and record.versions.get('tables') != 'tables-v8':
+        raise DatabaseError('Only tables-v8 sets may record company tagging defects.')
     if any(item['chunking_version'] != record.versions['chunks'] for item in report_data):
         raise DatabaseError('Report membership must use the selected chunking version.')
-    for identifier in [*tables, *issues]:
+    for identifier in [*tables, *issues, *defects]:
         _uuid(identifier, 'member identifier')
     if (not tables or not report_data or len(set(tables)) != len(tables) or len(set(issues)) != len(issues)
+            or len(set(defects)) != len(defects)
             or len({item['report_id'] for item in report_data}) != len(report_data)):
         raise DatabaseError('V4 processing membership must be nonempty and unique.')
     _begin(conn, record.filing_id)
@@ -415,6 +459,8 @@ def store_v4_processing_set(conn, record: V4ProcessingSetInput, *, table_ids: Se
     specifications = [('source_processing_tables', 'table_id', [{'table_id': value} for value in tables]),
                       ('source_processing_reports', 'report_id', report_data),
                       ('source_processing_issues', 'issue_id', [{'issue_id': value} for value in issues])]
+    if record.versions.get('tables') == 'tables-v8':
+        specifications.append(('source_processing_tagging_defects', 'defect_id', [{'defect_id': value} for value in defects]))
     with conn.transaction():
         if existing:
             original = conn.execute('SELECT configuration FROM sec.source_processing_sets WHERE id=%s',

@@ -38,7 +38,7 @@ def reconstruct_original_tables(snapshot, sources):
         elif (hashlib.sha256(source).hexdigest() != structure.get("html_sha256")
               or hashlib.sha256(instance).hexdigest() != structure.get("xml_sha256")):
             record["reason"] = "original_version_hash_mismatch"
-        elif version not in {"tables-v1", "tables-v2", "tables-v3", "tables-v4", "tables-v5", "tables-v6", "tables-v7"}:
+        elif version not in {"tables-v1", "tables-v2", "tables-v3", "tables-v4", "tables-v5", "tables-v6", "tables-v7", "tables-v8"}:
             record["reason"] = "unsupported_pinned_table_version"
         else:
             try:
@@ -48,19 +48,23 @@ def reconstruct_original_tables(snapshot, sources):
                     xml_path.write_bytes(instance)
                     ids = {"filing_id": UUID(stored[0]["filing_id"]), "html_document_id": UUID(html_id), "xml_document_id": UUID(xml_id)}
                     rebuilt = extract_tables(html_path, xml_path, **ids, facts_version=facts_version,
-                                             tables_version=version if version in {"tables-v1", "tables-v2"} else "tables-v2")
-                    if version in {"tables-v3", "tables-v4", "tables-v5", "tables-v6", "tables-v7"}:
+                                             tables_version=version if version in {"tables-v1", "tables-v2"} else "tables-v2",
+                                             cash_followers=version == "tables-v8", tagging_defects=version == "tables-v8")
+                    if version in {"tables-v3", "tables-v4", "tables-v5", "tables-v6", "tables-v7", "tables-v8"}:
                         facts = extract_facts(xml_path, filing_id=ids["filing_id"], source_document_id=ids["xml_document_id"],
                                               extraction_version=facts_version).require_complete().facts
                         from .source_cells_v3 import transform_tables as transform_v3
                         rebuilt = transform_v3(rebuilt, source, facts)
                         if version != "tables-v3":
                             from .source_cells_v4 import transform_tables as transform_v4
-                            rebuilt = transform_v4(rebuilt, source, facts)
-                        if version in {"tables-v5", "tables-v6", "tables-v7"}:
+                            rebuilt = transform_v4(rebuilt, source, facts, tagging_defects=version == "tables-v8")
+                        if version == "tables-v8":
+                            from .tagging_defects import flag_table_cells
+                            rebuilt, _ = flag_table_cells(rebuilt, source, facts, version=version)
+                        if version in {"tables-v5", "tables-v6", "tables-v7", "tables-v8"}:
                             from .extraction_profiles import PROFILE_BY_TABLES, corrected_tables
                             rebuilt = corrected_tables(rebuilt, profile=PROFILE_BY_TABLES[version])
-                        if version == "tables-v7":
+                        if version in {"tables-v7", "tables-v8"}:
                             from .statement_continuations import with_omitted_continuations
                             rebuilt = with_omitted_continuations(rebuilt, source)
                 expected = {t.table_key: canonical(asdict(t)) for t in rebuilt}

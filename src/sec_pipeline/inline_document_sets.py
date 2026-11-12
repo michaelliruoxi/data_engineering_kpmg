@@ -63,6 +63,8 @@ class InlineSourceDocument:
 class InlineDocumentSetResult:
     occurrences: tuple[dict, ...]
     inventory: dict
+    # V8 only: inline number tags that enclose part of the printed number.
+    tagging_defects: tuple[dict, ...] = ()
 
 
 def _require(condition, message):
@@ -230,7 +232,7 @@ class _Document:
                 'html_sha256': self.hash}
 
 
-def read_inline_document_set(documents, facts, *, xml_sha256, normalized_text=False):
+def read_inline_document_set(documents, facts, *, xml_sha256, normalized_text=False, tagging_defects=False):
     """Prove an ID-bijective default-target set without changing XML facts.
 
     Input documents must already be selected by the index-verified document-set
@@ -334,7 +336,7 @@ def read_inline_document_set(documents, facts, *, xml_sha256, normalized_text=Fa
 
     for node in [*continuations.values(), *footnotes]:
         chain(node)
-    occurrences, issues = [], []
+    occurrences, issues, boundary_defects = [], [], []
     counts = Counter({key: 0 for key in ('nil_values_verified', 'numeric_values_equal', 'nonnumeric_values_equal',
                                        'nonnumeric_markup_values_equal', 'nonnumeric_literal_values_equal')})
     for identifier, fact in by_fact.items():
@@ -421,7 +423,15 @@ def read_inline_document_set(documents, facts, *, xml_sha256, normalized_text=Fa
                 _require(value == fact.numeric_value and value == Decimal(fact.raw_value), 'Transformed inline number differs from the original XML amount.')
                 displayed = "".join(node.itertext()).strip()
                 boundary = fx._numeric_tag_boundary(node, displayed)
-                if boundary is not None:
+                if boundary is not None and tagging_defects:
+                    # The tagged value still equals the XML fact; the occurrence
+                    # stays exact and the printed remainder becomes a defect.
+                    boundary_defects.append({'inline_id': identifier, 'inline_document_id': str(doc.document_id),
+                                             'inline_xpath': locator['inline_xpath'],
+                                             'tagged_display': boundary['tagged_display'],
+                                             'visible_display': boundary['visible_display'],
+                                             'html_sha256': doc.hash, 'filename': doc.descriptor.filename})
+                elif boundary is not None:
                     raise InlineDocumentSetError(
                         'Printed number extends outside its inline numeric tag: '
                         f"{boundary['tagged_display']} is tagged; {boundary['visible_display']} is printed. "
@@ -503,4 +513,4 @@ def read_inline_document_set(documents, facts, *, xml_sha256, normalized_text=Fa
         'contexts': len(contexts), 'units': len(units), 'continuations': len(continuations),
         'footnotes': len(footnotes), 'relationships': len(relationships), 'mismatches': [], 'inline_ids_without_fact': [],
         'numeric_values_not_compared': 0, **dict(counts),
-    })
+    }, tuple(boundary_defects))

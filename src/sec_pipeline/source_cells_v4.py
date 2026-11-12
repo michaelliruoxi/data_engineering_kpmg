@@ -62,7 +62,8 @@ def _scope(fact):
 
 
 class ReviewSource:
-    def __init__(self, source, facts):
+    def __init__(self, source, facts, *, tagging_defects=False):
+        self.tagging_defects = tagging_defects
         self.bindings = SourceBindings(source, facts)
         self.facts = self.bindings.facts
         self.numeric = defaultdict(list)
@@ -93,7 +94,8 @@ class ReviewSource:
                         for identifier,fact in self.facts.items()}
             namespaces = {key[6:]:value for key,value in self.bindings.tree.getroot().attrib.items() if key.startswith('xmlns:')}
             periods,_ = _column_periods(rows,first,evidence,namespaces,
-                                       {key:len(value) for key,value in self.bindings.ids.items()},advanced=True)
+                                       {key:len(value) for key,value in self.bindings.ids.items()},advanced=True,
+                                       tagging_defects=self.tagging_defects)
             self.layouts[locator] = selected[0],rows,first,periods
         return self.layouts[locator]
 
@@ -228,9 +230,9 @@ def _issue(table, cell, source):
                  'expected': expected, 'observed': observed, 'evidence': evidence}
 
 
-def transform_tables(tables, source, facts):
+def transform_tables(tables, source, facts, *, tagging_defects=False):
     """Transform V3 layouts; unsupported source cases remain unresolved."""
-    checked = ReviewSource(source, facts)
+    checked = ReviewSource(source, facts, tagging_defects=tagging_defects)
     result = []
     for table in tables:
         if table.extraction_version != 'tables-v3' or table.structure.get('schema_version') != 2:
@@ -255,9 +257,9 @@ def transform_tables(tables, source, facts):
     return result
 
 
-def validate_transformation(tables, original_tables, source, facts):
+def validate_transformation(tables, original_tables, source, facts, *, tagging_defects=False):
     """Compare to a fresh original source parse supplied by the V4 runner."""
-    rebuilt = transform_tables(original_tables, source, facts)
+    rebuilt = transform_tables(original_tables, source, facts, tagging_defects=tagging_defects)
     if (len(tables) != len(rebuilt) or len({table.table_key for table in tables}) != len(tables)
             or {table.table_key: table for table in tables} != {table.table_key: table for table in rebuilt}):
         raise SourceCellError('V4 source bindings or review issues differ from original source reconstruction.')

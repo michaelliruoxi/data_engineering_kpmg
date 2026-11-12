@@ -426,6 +426,69 @@ A V7 set is unpublished until it is selected, like a V6 set. The inventory makes
 an incomplete statement visible; it does not complete it, and table coverage
 stays `partial`.
 
+## Flagged profile (V8)
+
+V8 is V7 plus two changes, selected with `--tables-version tables-v8` and stored
+under migration 017. V4 to V7 produce exactly what they produced before.
+
+| Artifact | Audited profile | Flagged profile |
+| --- | --- | --- |
+| Profile | `audited-layout-v7` | `flagged-layout-v8` |
+| Reports, chunks | `report-v4`, `paragraph-v2` | `report-v4`, `paragraph-v2` (unchanged) |
+| Tables, cells and review issue keys | `tables-v7` | `tables-v8` |
+| Default processing-set key | `automated-v7` | `automated-v8` |
+| Parser revisions | facts `numeric-tag-boundaries-v3`, tables `statement-continuation-inventory-v1` | facts `numeric-tag-boundary-defects-v1`, tables `cash-statement-followers-tagging-defects-v1` |
+| Migrations | 011-016 | 011-017 |
+
+**Tables printed after the cash flow statement.** A reconciliation of the
+closing cash balance and the supplemental cash flow disclosures printed directly
+after the statement become further segments of it (`segment_role`
+`closing_cash_reconciliation` and `supplemental_disclosures`). A follower must
+be adjacent, carry the statement's own periods and scope, and repeat none of its
+totals; a reconciliation's cash balances must be dated at the column end, add up
+to its total, and that total must equal the closing balance printed in the
+statement. A table that does not qualify stays outside and V7's inventory lists
+it. On the shortlist this extracts the supplemental disclosures of all 17 Casey's
+filings and, in two of them, the cash reconciliation printed before them.
+
+**Company tagging errors.** A filer's tag can contradict its own printed page.
+V8 records such a tag as a defect instead of rejecting the filing, and nothing is
+repaired or guessed. Four cases are recognized, each proved from the original
+HTML and XML:
+
+| Code | What the page prints | What the tag claims |
+| --- | --- | --- |
+| `fact_period_differs_from_column` | A number in a column whose printed period is established | A different period (the other tags of the same printed number, if any, agree with the column) |
+| `opening_balance_date_not_prior_day` | An opening cash balance | The first day of the period instead of the day before |
+| `instant_context_under_duration_header` | A flow under a duration column | A date instead of a period |
+| `printed_number_outside_tag` | A number such as `16.7` or `206,376,661` | Only part of it, such as `16` or `206,376,66` (cover page or notes, never a statement cell) |
+
+A column's period is established from its printed header and the fiscal calendar
+as before, with two additions that only V8 makes: all but one or two tags agree
+(outliers must stay under a quarter of the agreeing tags), or every tag starts
+on a balance-sheet date, the last day of the prior period, and the period
+starting one day later is confirmed by the header. Anything else still rejects
+the filing.
+
+A flagged cell keeps its printed text, is linked to no fact (status
+`source_defect`) and names its defect. The defect is stored in
+`sec.source_tagging_defects` with what the page prints, what the tag claims and
+the exact source locations; a set's defects are listed in
+`sec.source_processing_tagging_defects`. A set whose only exceptions are recorded
+defects passes and can be published. Readers never receive a flagged fact:
+`sec.analysis_ready_facts`, `sec.analysis_ready_statement_cells` and
+`finance.metric_evidence` exclude it for the served set, and
+`sec.source_fact_catalog` shows `tagging_defect_count` and `tagging_defect_codes`.
+
+On the shortlist V8 accepts all 233 filings. The eight with company tagging
+errors carry 35 defects: 33 flagged cells (Casey's 2021 goodwill, a Medtronic
+prior-year dash, three NetApp opening cash balances and the 28 cells of NetApp's
+November 2025 prior-year column, whose tags all start one day early) and two
+fact-level defects (Microsoft `16` of `16.7`, NetApp's cover-page
+share count). Every other filing, on the shortlist and in the three outside sets,
+parses exactly as under V7, apart from the Casey's segments and two Costco
+holdout filings whose opening-cash review issues become recorded defects.
+
 ## Operational status and evidence outcomes
 
 `fully_imported` is deliberately an ingestion-completion label. This PR relaxes

@@ -20,15 +20,31 @@ class V4CellWriteResult:
 
 def v4_relational_cells(table_id, table):
     """Reuse all existing grid/reference checks, then validate explicit conflicts."""
-    if table.extraction_version not in {'tables-v4', 'tables-v5', 'tables-v6', 'tables-v7'} or table.structure.get('schema_version') != 3:
+    if table.extraction_version not in {'tables-v4', 'tables-v5', 'tables-v6', 'tables-v7', 'tables-v8'} or table.structure.get('schema_version') != 3:
         raise TableCellError('Document-set cells require tables-v4/tables-v5 and structure schema3.')
     original = {cell['cell_id']: cell for row in table.structure['rows'] for cell in row}
     surrogate = deepcopy(table.structure)
     surrogate['schema_version'] = 2
-    conflicts = set()
+    conflicts, defects = set(), set()
     issue_keys = set()
     for row in surrogate['rows']:
         for cell in row:
+            if cell.get('classification') == 'source_defect' or 'tagging_defect' in cell:
+                from .tagging_defects import CELL_CODES, RULE_VERSION
+                marker = cell.get('tagging_defect')
+                if (cell.get('classification') != 'source_defect' or table.extraction_version not in {'tables-v4', 'tables-v8'}
+                        or cell.get('fact_references') != [] or cell.get('unresolved_reason') is not None
+                        or any(cell.get(name) for name in ('source_fact_references', 'quality_issue_keys', 'quality_issues'))
+                        or not isinstance(marker, dict)
+                        or set(marker) != {'defect_key', 'code', 'rule_version', 'inline_id', 'inline_xpath', 'cell_tags'}
+                        or not isinstance(marker['cell_tags'], list) or not marker['cell_tags']
+                        or {'inline_id': marker['inline_id'], 'inline_xpath': marker['inline_xpath']} not in marker['cell_tags']
+                        or marker['rule_version'] != RULE_VERSION or marker['code'] not in CELL_CODES
+                        or not marker['defect_key'].startswith('tables-v8:tagging-defect:')):
+                    raise TableCellError('A flagged cell requires one recorded company tagging defect.')
+                defects.add(cell['cell_id'])
+                cell['classification'] = 'formatting'
+                continue
             if cell.get('classification') != 'source_conflict':
                 if any(cell.get(name) for name in ('source_fact_references', 'quality_issue_keys', 'quality_issues')):
                     raise TableCellError('Only source conflicts may carry review evidence.')
@@ -62,7 +78,8 @@ def v4_relational_cells(table_id, table):
             conflicts.add(cell['cell_id'])
             cell['classification'] = 'formatting'
     cells = relational_cells(table_id, replace(table, extraction_version='tables-v3', structure=surrogate))
-    return [(replace(cell, kind='data', resolution_status='review_required') if cell.cell_key in conflicts else cell,
+    return [(replace(cell, kind='data', resolution_status='review_required') if cell.cell_key in conflicts
+             else replace(cell, kind='data', resolution_status='source_defect') if cell.cell_key in defects else cell,
              refs, original[cell.cell_key]) for cell, refs in cells]
 
 

@@ -339,6 +339,9 @@ def adapter_profile(tables_version):
     if tables_version == "tables-v7":
         from . import filing_ingestion_v7
         return filing_ingestion_v7, "automated-v7"
+    if tables_version == "tables-v8":
+        from . import filing_ingestion_v8
+        return filing_ingestion_v8, "automated-v8"
     if tables_version == "tables-v6":
         from . import filing_ingestion_v6
         return filing_ingestion_v6, "automated-v6"
@@ -442,7 +445,7 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
             raise ValueError("Queue accession keys must be canonical and match their filing records.")
     profile, set_key = adapter_profile(tables_version)
     text_profile = text_fallback_profile(tables_version) if mode != "download" else None
-    is_document_set = tables_version in {"tables-v4", "tables-v5", "tables-v6", "tables-v7"}
+    is_document_set = tables_version in {"tables-v4", "tables-v5", "tables-v6", "tables-v7", "tables-v8"}
     versions = profile.VERSIONS
     required_checks = profile.REQUIRED_SOURCE_CHECKS if is_document_set else profile.REQUIRED_CHECKS
     verified_successes = set()

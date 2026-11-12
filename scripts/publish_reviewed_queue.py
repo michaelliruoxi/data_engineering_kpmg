@@ -37,7 +37,7 @@ from sec_pipeline.backfill import _fatal_runtime_error
 from sec_pipeline.database import DataConflict
 
 
-REVIEWED_TABLES = frozenset({'tables-v5', 'tables-v6', 'tables-v7'})
+REVIEWED_TABLES = frozenset({'tables-v5', 'tables-v6', 'tables-v7', 'tables-v8'})
 ACCESSION = re.compile(r'\d{10}-\d{2}-\d{6}')
 PLAN_KIND, SUMMARY_KIND = 'reviewed_publication_plan', 'reviewed_publication_summary'
 
