@@ -1,0 +1,19 @@
+-- Read-only. Use the SQL editor in the sec_filings connection.
+-- Returns the three relevant stored chunks and whether they match the report slice.
+SELECT c.chunk_index, c.chunk_id, c.char_start, c.char_end,
+       length(c.content) AS stored_characters,
+       c.char_end - c.char_start AS expected_characters,
+       c.content = substring(r.full_text FROM c.char_start + 1
+                             FOR c.char_end - c.char_start) AS exact_slice_match,
+       left(c.content, 180) AS stored_start,
+       substring(r.full_text FROM greatest(c.char_start - 30, 0) + 1
+                 FOR 210) AS report_context
+FROM finance.filing_chunk c
+JOIN finance.filing_report r
+  ON r.report_id = c.report_id
+ AND r.processing_set_id = c.processing_set_id
+ AND r.processing_family = c.processing_family
+WHERE c.processing_set_id = '3a047a1c-f436-4623-aead-3a104cc1099b'
+  AND c.report_id = '8db23a2c-50a4-4621-8ba9-72395259dbb8'
+  AND c.chunk_index IN (12, 61, 66)
+ORDER BY c.chunk_index;
