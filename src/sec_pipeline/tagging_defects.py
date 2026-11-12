@@ -139,6 +139,8 @@ def flag_table_cells(tables, source, facts, *, version, boundary_records=()):
                         tags = _cell_tags(checked, table, cell)
                     except (SourceCellError, ValueError):
                         continue
+                    if any(ref['xml_id'] in boundary for _, ref, _ in tags):
+                        raise TaggingDefectError('A partially tagged number printed in a statement table is not supported.')
                     # Exactly one tag contradicts the printed column; any other
                     # tag of the same printed number agrees with it.
                     contradicting = []
@@ -166,11 +168,13 @@ def flag_table_cells(tables, source, facts, *, version, boundary_records=()):
                     issues, refs = cell.get('quality_issues') or [], cell.get('source_fact_references') or []
                     if len(issues) != 1 or len(refs) != 1:
                         raise TaggingDefectError('A period conflict must have one issue and one source binding.')
+                    if refs[0]['xml_id'] in boundary:
+                        raise TaggingDefectError('A partially tagged number printed in a statement table is not supported.')
                     issue = issues[0]
                     record = {'code': issue['code'], 'inline_id': refs[0]['xml_id'],
                               'expected': deepcopy(issue['expected']), 'observed': deepcopy(issue['observed']),
                               'evidence': deepcopy(issue['evidence']) | {
-                                  'review_rule_version': issue['rule_version'],
+                                  'inline_xpath': refs[0]['inline_xpath'], 'review_rule_version': issue['rule_version'],
                                   'cell_tags': [{'inline_id': refs[0]['xml_id'], 'inline_xpath': refs[0]['inline_xpath']}]}}
                 elif cell.get('classification') == 'resolved' and any(
                         ref['xml_id'] in boundary for ref in cell.get('fact_references') or []):

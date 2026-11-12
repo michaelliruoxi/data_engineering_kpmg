@@ -510,7 +510,15 @@ BEGIN
             OR EXISTS(SELECT 1 FROM sec.source_processing_tagging_defects link JOIN sec.source_tagging_defects d ON d.id=link.defect_id
                 JOIN sec.cell_fact_links accepted ON accepted.fact_id=d.fact_id
                 JOIN sec.source_processing_tables member ON member.table_id=accepted.table_id AND member.processing_set_id=NEW.id
-                WHERE link.processing_set_id=NEW.id))) THEN
+                WHERE link.processing_set_id=NEW.id)
+            -- A partially tagged number is never shown in a statement cell.
+            OR EXISTS(SELECT 1 FROM sec.source_processing_tagging_defects fact_link
+                JOIN sec.source_tagging_defects fact_defect ON fact_defect.id=fact_link.defect_id AND fact_defect.cell_id IS NULL
+                JOIN sec.source_processing_tagging_defects cell_link ON cell_link.processing_set_id=NEW.id
+                JOIN sec.source_tagging_defects cell_defect ON cell_defect.id=cell_link.defect_id AND cell_defect.cell_id IS NOT NULL
+                WHERE fact_link.processing_set_id=NEW.id
+                  AND (cell_defect.inline_id=fact_defect.inline_id
+                       OR cell_defect.evidence->'cell_tags' @> jsonb_build_array(jsonb_build_object('inline_id',fact_defect.inline_id)))))) THEN
         RAISE EXCEPTION 'V8 company tagging defects must match their flagged cells and document-set scope exactly' USING ERRCODE='23514';
     END IF;
     IF cell_count=0 OR cell_count<>accepted_count+source_only_count+review_count+defect_cell_count OR (review_count=0) IS DISTINCT FROM (issue_count=0)

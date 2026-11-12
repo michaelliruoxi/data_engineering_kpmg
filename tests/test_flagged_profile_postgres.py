@@ -153,6 +153,12 @@ def test_flagged_defects_must_match_cells_and_never_reach_readers_through_links(
                          inline_xpath=item.occurrence_inputs[[f.occurrence_key for f in item.facts].index('F3')].evidence['inline_xpath'])
     with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
         flagged_fixture(conn, item, key='linked-flag', fact_defects=[linked])
+    # A partially tagged number is never shown in a statement cell, flagged or not.
+    dividend = next(fact for fact in item.facts if fact.occurrence_key == 'F1')
+    shown = fact_defect(item, dividend, item.fact_ids['F1'], item.occurrences['F1'], printed='240', tagged='24',
+                        inline_xpath=item.occurrence_inputs[[f.occurrence_key for f in item.facts].index('F1')].evidence['inline_xpath'])
+    with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+        flagged_fixture(conn, item, key='shown-partial', fact_defects=[shown])
     # A partially tagged number must keep both texts, the tagged one inside the printed one.
     wrong = replace(linked, defect_key=linked.defect_key[:-1] + '1', expected={'printed_number': '999'})
     with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():

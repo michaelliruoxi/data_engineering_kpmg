@@ -223,3 +223,16 @@ def test_v8_parser_revisions_name_both_new_policies():
     assert revisions == {'facts': 'numeric-tag-boundary-defects-v1', 'reports': 'audited-section-metadata-v1',
                          'tables': 'cash-statement-followers-tagging-defects-v1', 'chunks': 'token-boundary-overlap-v2'}
     assert policy_metadata(versions_for(AUDITED_PROFILE))['parser_revisions']['facts'] == 'numeric-tag-boundaries-v3'
+
+
+def test_period_conflicts_convert_to_flagged_cells_unless_the_number_is_partially_tagged():
+    from sec_pipeline.tagging_defects import flag_table_cells
+    table, fact, source = conflict_fixture()
+    flagged, records = flag_table_cells([table], source, [fact], version='tables-v8')
+    cell = flagged[0].structure['rows'][0][1]
+    assert cell['classification'] == 'source_defect' and cell['fact_references'] == []
+    assert [record['code'] for record in records] == ['instant_context_under_duration_header']
+    assert records[0]['observed']['period'] == {'instant': '2026-06-30'} and records[0]['table_key'] == 'cash_flow'
+    assert not {'source_fact_references', 'quality_issues', 'quality_issue_keys'} & set(cell)
+    with pytest.raises(TaggingDefectError, match='partially tagged'):
+        flag_table_cells([table], source, [fact], version='tables-v8', boundary_records=[{'inline_id': 'F1'}])
