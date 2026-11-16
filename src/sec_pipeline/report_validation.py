@@ -17,7 +17,7 @@ from uuid import UUID
 from lxml import etree, html
 
 from .chunking import chunk_report
-from .report_cleaning import clean_report, _original_statement_tables, _statement_table_follows
+from .report_cleaning import AUDITED_REPORT_VERSIONS, clean_report, _original_statement_tables, _statement_table_follows
 from .primary_statement_sections import primary_statement_section_issues
 
 
@@ -26,9 +26,16 @@ FORMS = ("10-K", "10-Q")
 _REPEATED_PIPES = re.compile(r"\|(?:[^\S\r\n]*\|)+")
 _TOC_ITEM = re.compile(r"^ITEM\s*(\d{1,2}(?:\s*[A-Z](?=[\s.:]|$))?)(?:[\s.:\u2013\u2014-]|$)", re.I)
 _TOC_PART = re.compile(r"^PART\s+(IV|III|II|I)(?:[\s.:\u2013\u2014-]|$)", re.I)
+# report-v4 also reads "Item 1.A." as Item 1A, as its section detector does.
+_DOTTED_TOC_ITEM = re.compile(r"^(ITEM\s*\d{1,2})\.([A-Z])(?=[\s.:\u2013\u2014-]|$)", re.I)
 # A contents row can state in its page column that the Item has no body.
 _TOC_NOT_APPLICABLE = re.compile(r"(?:^|\s)(?:N/A|NOT APPLICABLE|NONE)[\s.]*$", re.I)
 _TOC_PAGE = re.compile(r"(?:^|\s)(?:\d+(?:\s*[-\u2013]\s*\d+)?|[IVX]+-\d+|N/A)[\s.]*$", re.I)
+
+
+def _item_label(value, dotted):
+    """The text an Item label is read from; the original text stays the evidence."""
+    return _DOTTED_TOC_ITEM.sub(r"\1\2", value) if dotted else value
 
 
 def _contents_like_tables(tree):
@@ -48,7 +55,7 @@ def _contents_like_tables(tree):
     return found
 
 
-def _original_body_outline(tree, *, form, toc_tables=()):
+def _original_body_outline(tree, *, form, toc_tables=(), dotted=False):
     """Independent original DOM outline for omitted TOC entries/no-TOC forms."""
     from .source_locators import source_xpath
 
@@ -61,7 +68,8 @@ def _original_body_outline(tree, *, form, toc_tables=()):
         if not text or len(text) > 300:
             continue
         part = re.fullmatch(r"PART\s+(IV|III|II|I)(?:[\s.:\u2013\u2014-]*(?:FINANCIAL (?:INFORMATION|STATEMENTS)|OTHER INFORMATION))?[\s.]*", text, re.I)
-        item = _TOC_ITEM.match(text)
+        label = _item_label(text, dotted)
+        item = _TOC_ITEM.match(label)
         if not part and not item:
             continue
         if any(ancestor in toc_tables for ancestor in (node, *node.iterancestors())):
@@ -84,7 +92,7 @@ def _original_body_outline(tree, *, form, toc_tables=()):
             key = f"part-{active_part.lower()}"
         else:
             number = re.sub(r"\s+", "", item[1]).upper()
-            title = text[item.end():].strip()
+            title = label[item.end():].strip()
             if not title or re.match(r"(?:of|and|is|was|above|below|herein)\b", title, re.I):
                 continue
             if form == "10-K":
@@ -103,14 +111,17 @@ def _original_body_outline(tree, *, form, toc_tables=()):
     return result
 
 
-def source_heading_expectations(html_path, *, form):
+def source_heading_expectations(html_path, *, form, report_version=None):
     """Read heading identities from original linked TOC rows, independently.
 
     No cleaned text, detector vocabulary, or detected sections are consulted.
     Links must resolve to original IDs/name anchors. Unlinked/ambiguous TOCs
     remain explicitly unverified and require original-source review.
+    The report version selects the label spellings its detector reads.
     """
     from .source_locators import source_xpath
+
+    dotted = report_version in AUDITED_REPORT_VERSIONS
 
     tree = html.document_fromstring(Path(html_path).read_bytes(),
         parser=html.HTMLParser(encoding="utf-8", no_network=True)).getroottree()
@@ -123,11 +134,11 @@ def source_heading_expectations(html_path, *, form):
                           for row in original_rows[:4])
         for row_index, row in enumerate(original_rows):
             value = " ".join(" ".join(row.itertext()).split())
-            item, part = _TOC_ITEM.match(value), _TOC_PART.match(value)
+            item, part = _TOC_ITEM.match(_item_label(value, dotted)), _TOC_PART.match(value)
             if part:
                 # Some TOCs put the Part and its first Item in the same row.
                 remainder = value[part.end():].strip()
-                item = _TOC_ITEM.match(remainder)
+                item = _TOC_ITEM.match(_item_label(remainder, dotted))
             if not item and item_column:
                 cells = [" ".join(" ".join(cell.itertext()).split()) for cell in row if cell.tag in {"td", "th"}]
                 nonempty = [cell for cell in cells if cell]
@@ -167,7 +178,8 @@ def source_heading_expectations(html_path, *, form):
         if len(items) >= 2 and len(linked) >= max(2, len(items) // 2) and all(row["targets"] for row in items):
             candidates.append({"source_xpath": source_xpath(tree, table), "rows": rows})
     toc_tables = {tree.xpath(candidate["source_xpath"])[0] for candidate in candidates}
-    body_outline = _original_body_outline(tree, form=form, toc_tables=toc_tables | _contents_like_tables(tree))
+    body_outline = _original_body_outline(tree, form=form, toc_tables=toc_tables | _contents_like_tables(tree),
+                                          dotted=dotted)
     body_ids = {heading["section_id"] for heading in body_outline}
     required = ({"part-i-item-1", "part-ii-item-7", "part-ii-item-8", "part-iv-item-15"}
                 if form == "10-K" else {"part-i-item-1", "part-i-item-2", "part-ii-item-6"})
@@ -265,7 +277,7 @@ def _only_page_furniture_between(target, heading, nodes, order):
     return True
 
 
-def _audit_source_boundaries(tree, report, evidence, issue):
+def _audit_source_boundaries(tree, report, evidence, issue, *, dotted=False):
     """Check original DOM positions independently of cleaned range coverage."""
     nodes = list(tree.getroot().iter())
     order = {node: index for index, node in enumerate(nodes)}
@@ -322,9 +334,19 @@ def _audit_source_boundaries(tree, report, evidence, issue):
                 targets.setdefault(identifier, []).append(node)
     for row in evidence.get('rows', []):
         node = resolved.get(row['section_id'])
-        if node is None or not row.get('navigation_targets') or row.get('navigation_on_child_rows'):
+        if node is None or not row.get('navigation_targets'):
             continue
         linked = [target for name in set(row['navigation_targets']) for target in targets.get(unquote(name), [])]
+        if row.get('navigation_on_child_rows'):
+            # A group label's own heading is not at any child target. A section
+            # that exists only through that label has no heading: it must start
+            # at the first visible text of the earliest linked page.
+            locator = next(value for value in report.sections if value['section_id'] == row['section_id']).get('source_locator', {})
+            if locator.get('heading_method') == 'original_toc_target' and not (
+                    linked and 0 <= order[node] - min(order[target] for target in linked) <= 30):
+                issue('section_navigation_target_mismatch', section_id=row['section_id'],
+                      xpath=row['source_xpath'], targets=row['navigation_targets'])
+            continue
         section_index = next(index for index, value in enumerate(report.sections) if value['section_id'] == row['section_id'])
         next_node = next((resolved[value['section_id']] for value in report.sections[section_index + 1:]
                           if value['section_id'] in resolved), None)
@@ -367,7 +389,7 @@ def _audit_source_boundaries(tree, report, evidence, issue):
         # and issuer titles styled by a CSS class, without guessing their bounds.
         candidate = re.match(
             r'^ITEM\s*(\d(?:\s*\d)?(?:\s*[A-Z])?)(\([A-Z]+\))?(?=[\s.:\u2013\u2014-]|$)'
-            r'[\s.:\u2013\u2014-]*(.*)$', title, re.I)
+            r'[\s.:\u2013\u2014-]*(.*)$', _item_label(title, dotted), re.I)
         if candidate:
             number, modifier, remainder = candidate.groups()
             number = re.sub(r'\s+', '', number)
@@ -420,17 +442,19 @@ def _audit_source_boundaries(tree, report, evidence, issue):
                 issue('unnumbered_body_boundary_missing', expected=special, actual=owner['section_id'], title=title)
 
 
-def audit_report(html_path, *, form, expected_section_ids=None, report=None, chunks=None, selected_tables=None):
+def audit_report(html_path, *, form, expected_section_ids=None, report=None, chunks=None, selected_tables=None,
+                 report_version=None):
     """Audit supplied outputs, or run the cleaner/chunker when outputs are absent.
 
     Source XPath checks use a separate parse of the unchanged original bytes.
     Expected identifiers include Part headings if those occur in the source.
     A passing structural audit without expected headings remains unverified.
+    The report version is that of the supplied report.
     """
     html_path = Path(html_path)
     source = html_path.read_bytes()
     tree = html.document_fromstring(source, parser=html.HTMLParser(encoding="utf-8", no_network=True)).getroottree()
-    report = clean_report(html_path, form=form) if report is None else report
+    report = clean_report(html_path, form=form, report_version=report_version) if report is None else report
     text = report.full_text
     issues = []
 
@@ -498,8 +522,8 @@ def audit_report(html_path, *, form, expected_section_ids=None, report=None, chu
     if text[previous_end:].strip():
         issue("uncovered_report_text", start=previous_end, end=len(text))
 
-    source_evidence = source_heading_expectations(html_path, form=form)
-    _audit_source_boundaries(tree, report, source_evidence, issue)
+    source_evidence = source_heading_expectations(html_path, form=form, report_version=report_version)
+    _audit_source_boundaries(tree, report, source_evidence, issue, dotted=report_version in AUDITED_REPORT_VERSIONS)
     if selected_tables is not None:
         issues.extend(primary_statement_section_issues(
             selected_tables, {'sections': report.sections}, source, accession=html_path.stem))
