@@ -226,6 +226,24 @@ under an earlier parser are revisited without downloading them again:
 .\scripts\start_backfill.ps1 -Offline -ValidatedOnly
 ```
 
+A full run re-checks every filing already stored before it reaches new work,
+newest first, which costs a few seconds per stored filing. `-PendingOnly` passes
+`--pending-only`: the run processes only filings not attempted yet (`pending`
+or `downloaded`), re-checks no stored import and retries no earlier failure. Use
+it to resume after a stop; it cannot be combined with `-RetryFailedOnly` or
+`-ValidatedOnly`, and such a run never reports the whole backfill complete:
+
+```powershell
+.\scripts\start_backfill.ps1 -PendingOnly -MaxDatabaseGiB 40
+```
+
+The SEC client retries a request up to twice, with a short backoff, after a
+transient HTTP 500/502/503/504 response or a transient transport failure
+(timeout, dropped or refused connection). A failure that outlasts the retries
+stops the run with `last_run.stopped_reason = 'infrastructure_error'`; the
+checkpoint is preserved, and the filing it stopped on stays `failed` until a
+run without `-PendingOnly` retries it.
+
 Exit status is **0** only when the requested phase is complete, **2** for a
 partial phase, **3** for blocked SEC access, and **1** for a setup/runtime error.
 `--status` itself exits 0 after successfully reporting an incomplete queue.

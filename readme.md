@@ -8,17 +8,17 @@ can browse the same data in DBeaver or query it directly from Python.
 
 ## Current status
 
-Checked against the shared database on November 17, 2026, in a read-only
-session. A run that downloads and loads the remaining filings started the same
-day, so the database has advanced since.
+Checked against the shared database on the evening of November 17, 2026, in a
+read-only session. The run that downloads and loads the remaining filings was
+in progress at the time, so the database has advanced since.
 
 | Area | Where it stands |
 | --- | --- |
-| Five-year S&P 500 backfill | In progress, not complete. Of the 9,833 in-scope filings, 1,135 are loaded and 8,698 are not: 8,685 had not been downloaded and 13 failed. The shared database holds 1,168 filings in total, including 33 shortlist filings dated before the window. |
-| Coverage by filing year | 2026 is 64% loaded (965 of 1,498 filings). Each of 2021–2025 is about 2% loaded, which is the shortlist companies only. |
+| Five-year S&P 500 backfill | In progress, not complete. Of the 9,833 in-scope filings, 1,338 are loaded and 8,495 are not: 8,471 had not been processed yet and 24 failed. The shared database holds 1,371 filings in total, including 33 shortlist filings dated before the window. |
+| Coverage by filing year | 2026 is 78% loaded (1,168 of 1,498 filings). Each of 2021–2025 is about 2% loaded, which is the shortlist companies only. The run works from the newest filings back. |
 | [Ten-company shortlist](#ten-company-shortlist) | Loaded and published on November 12, 2026. All 233 filings from 2021–2026 are served under the newest processing profile, `flagged-layout-v8`. Eight of them carry recorded company tagging errors. |
 | Shared database schema | Migrations 001–017 are applied. None is pending. |
-| What readers are served | The 233 shortlist filings under `automated-v8`. The other 935 filings are on the earlier import profiles: 496 on `filing-import-v3`, 431 on `filing-import-v3-text` (facts and report text only, because the statement tables could not be extracted reliably) and 8 on `filing-import-v4`. |
+| What readers are served | The 233 shortlist filings under `automated-v8`. The other 1,138 filings are on the earlier import profiles: 612 on `filing-import-v3`, 518 on `filing-import-v3-text` (facts and report text only, because the statement tables could not be extracted reliably) and 8 on `filing-import-v4`. |
 
 The scope below describes the intended dataset, not what is loaded today; query
 `filing_overview` or use the [run-status commands](docs/automated-backfill.md)

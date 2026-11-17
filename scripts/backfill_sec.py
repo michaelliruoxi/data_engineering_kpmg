@@ -31,6 +31,7 @@ def main(argv=None):
     parser.add_argument("--replay", action="store_true", help="Revalidate and replay even existing sealed database imports.")
     parser.add_argument("--retry-failed-only", action="store_true", help="Retry failed/blocked filings after fixing their cause; leave pending and successful entries alone.")
     parser.add_argument("--validated-only", action="store_true", help="Ingest only entries with a successful dry run; reverify their sources and every import check before commit.")
+    parser.add_argument("--pending-only", action="store_true", help="Process only filings not attempted yet (pending or downloaded); do not re-check stored imports or retry failures.")
     parser.add_argument("--max-database-gib", type=int, help="Stop before the next filing import once this database reaches the size limit; retain the queue for resumption.")
     parser.add_argument("--tables-version", choices=("tables-v1", "tables-v2", "tables-v3", "tables-v4", "tables-v5", "tables-v6", "tables-v7", "tables-v8"), default="tables-v1", help="Select the table extraction profile and its separate processing-set version; v4 includes complete inline document sets and explicit source-quality issues.")
     parser.add_argument("--env-file", type=Path)
@@ -48,6 +49,8 @@ def main(argv=None):
         parser.error("--refresh-discovery requires --discover.")
     if args.validated_only and (not args.ingest or args.retry_failed_only):
         parser.error("--validated-only requires --ingest and cannot be combined with --retry-failed-only.")
+    if args.pending_only and (args.retry_failed_only or args.validated_only or args.discover):
+        parser.error("--pending-only cannot be combined with --retry-failed-only, --validated-only or --discover.")
     if args.max_database_gib is not None and (not args.ingest or args.max_database_gib < 1):
         parser.error("--max-database-gib requires --ingest and a positive integer.")
     try:
@@ -91,6 +94,7 @@ def main(argv=None):
                 process_queue(args.state, state, client, args.data_root, mode=operation,
                     connection=connection, destination=destination, limit=args.limit, replay=args.replay,
                     retry_failed_only=args.retry_failed_only, validated_only=args.validated_only,
+                    pending_only=args.pending_only,
                     max_database_bytes=(database_limit_bytes(args.max_database_gib) if args.max_database_gib is not None else None),
                     tables_version=args.tables_version)
             summary = summarize(state, universe)

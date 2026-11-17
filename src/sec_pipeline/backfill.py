@@ -426,7 +426,8 @@ def _stored_set(conn, accession, set_key, expected):
 
 def process_queue(path, state, client, data_root, *, mode="dry-run", connection=None,
                   destination=None, limit=None, replay=False, retry_failed_only=False,
-                  validated_only=False, max_database_bytes=None, tables_version="tables-v1", emit=print):
+                  validated_only=False, pending_only=False, max_database_bytes=None,
+                  tables_version="tables-v1", emit=print):
     from .acquisition import AccessBlocked, download_filing
     from .processing import run_dry_run, run_ingestion
 
@@ -436,6 +437,8 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
         raise ValueError("Ingestion requires an explicit database connection.")
     if validated_only and (mode != "ingest" or retry_failed_only):
         raise ValueError("Validated-only selection requires ingestion and cannot be combined with failure-only retry.")
+    if pending_only and (retry_failed_only or validated_only):
+        raise ValueError("Pending-only selection cannot be combined with failure-only retry or validated-only ingestion.")
     if max_database_bytes is not None and (mode != "ingest" or type(max_database_bytes) is not int or max_database_bytes < 1):
         raise ValueError("A database size limit requires ingestion and a positive integer byte limit.")
     data_root = Path(data_root).resolve()
@@ -502,6 +505,10 @@ def process_queue(path, state, client, data_root, *, mode="dry-run", connection=
         if validated_only and entry.get("status") not in {"validated", "validated_review_required"}:
             continue
         if retry_failed_only and not needs_retry(entry):
+            continue
+        # A resumed run goes straight to unattempted work: stored imports are
+        # not re-checked and earlier failures are not retried.
+        if pending_only and entry.get("status") not in {"pending", "downloaded"}:
             continue
         if limit is not None and attempted >= limit:
             break

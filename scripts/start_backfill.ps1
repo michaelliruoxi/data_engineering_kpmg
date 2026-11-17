@@ -18,11 +18,17 @@ data\raw\sec and skips filings that are not archived yet.
 .EXAMPLE
 # Load the entries an offline dry run validated, without contacting the SEC.
 .\scripts\start_backfill.ps1 -Offline -ValidatedOnly
+
+.EXAMPLE
+# Resume after a stop: go straight to filings not attempted yet, without
+# re-checking the filings already stored or retrying earlier failures.
+.\scripts\start_backfill.ps1 -PendingOnly -MaxDatabaseGiB 40
 #>
 [CmdletBinding()]
 param(
     [switch]$RetryFailedOnly,
     [switch]$ValidatedOnly,
+    [switch]$PendingOnly,
     [switch]$Offline,
     [ValidateRange(1, 2147483647)][int]$MaxDatabaseGiB = 14
 )
@@ -34,6 +40,9 @@ $python = Join-Path $root '.venv\Scripts\python.exe'
 
 if ($RetryFailedOnly -and $ValidatedOnly) {
     throw '-ValidatedOnly loads dry-run successes; it cannot be combined with -RetryFailedOnly.'
+}
+if ($PendingOnly -and ($RetryFailedOnly -or $ValidatedOnly)) {
+    throw '-PendingOnly skips failures and dry-run results; it cannot be combined with -RetryFailedOnly or -ValidatedOnly.'
 }
 if (-not $Offline -and -not $env:EDGAR_IDENTITY) {
     throw 'Set $env:EDGAR_IDENTITY to your name and contact email before starting, or pass -Offline.'
@@ -69,6 +78,7 @@ try {
     )
     if ($RetryFailedOnly) { $arguments += '--retry-failed-only' }
     if ($ValidatedOnly) { $arguments += '--validated-only' }
+    if ($PendingOnly) { $arguments += '--pending-only' }
     if ($Offline) { $arguments += '--offline' }
     $process = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $root `
         -WindowStyle Hidden -PassThru `
