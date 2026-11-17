@@ -208,6 +208,24 @@ and runs the read-only `scripts\check_backfill_ready.py` preflight first. Use
 queue. Keep the machine awake; closing the session that started a foreground
 run stops it and leaves a stale lock.
 
+`-Offline` passes `--offline`: the run makes no SEC request, needs no
+`EDGAR_IDENTITY`, reads only the sources already archived under `data\raw\sec`
+and skips every filing that is not archived yet. `-ValidatedOnly` passes
+`--validated-only` and cannot be combined with `-RetryFailedOnly`. Together
+they load what an offline dry run accepted, which is how filings that failed
+under an earlier parser are revisited without downloading them again:
+
+```powershell
+# 1. Re-check the earlier failures against the archived sources. No database, no SEC.
+.\.venv\Scripts\python.exe -u scripts\backfill_sec.py --dry-run --offline --retry-failed-only `
+  --tables-version tables-v3 `
+  --universe data\backfill\2026-10-13\universe.json `
+  --state data\backfill\2026-10-13\queue.json `
+  --since 2021-10-13 --until 2026-10-13 --data-root .
+# 2. Load the entries that validated, in the background.
+.\scripts\start_backfill.ps1 -Offline -ValidatedOnly
+```
+
 Exit status is **0** only when the requested phase is complete, **2** for a
 partial phase, **3** for blocked SEC access, and **1** for a setup/runtime error.
 `--status` itself exits 0 after successfully reporting an incomplete queue.
@@ -463,6 +481,26 @@ Queue and database counts are separate. Multiple versions never become multiple
 filings. A DB receipt absent from the queue and an imported queue entry absent
 from the DB are explicit discrepancies. Requires migrations through 010 for
 `finance.filing`; missing schema/permissions fail closed as unverified.
+
+Add `--summary PATH` to also write the gap between the queue and the database,
+and print its totals:
+
+```sh
+uv run --locked python scripts/report_backfill_status.py \
+  --queue /private/queue.json --output /private/backfill-status.json \
+  --summary /private/coverage-summary.json
+```
+
+The summary counts each queued filing once. `stored` is every filing with a
+receipt in the database (`fully_imported`, `text_only` or `review_required`);
+`missing` is `pending` plus `failed`. It gives those counts for the whole queue,
+for every filing year and form, and for every issuer, with the issuers that
+miss the most filings first. `issuers` says how many have all, some or none of
+their queued filings stored. Filings the database holds outside the queue are
+counted separately as `database_filings_outside_queue` and never as coverage.
+Stored means a receipt exists, not that the filing passed every check: read the
+status columns beside it. An `--offline` summary reports every filing as
+`unverified` and neither stored nor missing.
 
 With no DB access, add `--offline`: database count is null and each queue filing
 is `unverified`, not pending or imported. Exit 2 also marks a failed DB read;

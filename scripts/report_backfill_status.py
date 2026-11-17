@@ -5,7 +5,7 @@ from pathlib import Path
 
 import psycopg
 from psycopg.rows import dict_row
-from sec_pipeline.backfill_status import read_receipts, reconcile
+from sec_pipeline.backfill_status import coverage_summary, read_receipts, reconcile
 
 
 def main(argv=None):
@@ -14,6 +14,8 @@ def main(argv=None):
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--offline', action='store_true', help='DB counts remain unverified; never trust queue imports')
     parser.add_argument('--select', action='append', default=[], metavar='ACCESSION=FAMILY:UUID')
+    parser.add_argument('--summary', type=Path,
+                        help='Also write stored and missing counts by filing year, form and issuer, and print the totals.')
     args = parser.parse_args(argv)
     queue = json.loads(args.queue.read_text())
     overrides = {}
@@ -41,6 +43,13 @@ def main(argv=None):
                                  'detail': 'Database read failed; connection details withheld'}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, default=str) + '\n')
+    if args.summary:
+        summary = coverage_summary(queue, report)
+        args.summary.parent.mkdir(parents=True, exist_ok=True)
+        args.summary.write_text(json.dumps(summary, indent=2, default=str) + '\n')
+        print(json.dumps({key: summary[key] for key in
+                          ('observed_at_utc', 'database_verified', 'scope', 'filings', 'issuers',
+                           'database_filings_outside_queue')}, indent=2))
     return 0 if report['database_verified'] else 2
 
 

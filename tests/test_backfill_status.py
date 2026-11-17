@@ -120,3 +120,71 @@ def test_stale_queue_receipt_stays_unverified_without_database_access():
     result = reconcile(queue)
     assert result['counts'] == {'unverified': 1}
     assert result['filings'][0]['issues'] == ['stale_receipt_requires_versioned_upgrade']
+
+
+def queued(cik, form, filing_date, status='pending'):
+    return {'status': status, 'filing': {'cik': cik, 'company': 'Company ' + cik, 'form': form,
+                                         'filing_date': filing_date}}
+
+
+def summary_queue():
+    return {'configuration': {'since': '2021-10-13', 'until': '2026-10-13', 'forms': ['10-K', '10-Q']},
+            'filings': {'a': queued('1', '10-K', '2022-02-01', 'ingested'),
+                        'b': queued('1', '10-Q', '2022-05-01', 'ingested'),
+                        'c': queued('2', '10-Q', '2022-05-02', 'failed'),
+                        'd': queued('2', '10-Q', '2023-05-02'),
+                        'e': queued('3', '10-K', '2023-02-01')}}
+
+
+def test_coverage_summary_counts_stored_and_missing_by_year_form_and_issuer():
+    from sec_pipeline.backfill_status import coverage_summary
+    queue = summary_queue()
+    text = receipt('b'); text['coverage']['tables'] = 'absent'; text['counts']['tables'] = 0
+    text['coverage'].update(dict.fromkeys(('facts', 'reports', 'chunks'), 'complete'))
+    outside = receipt('z')
+    receipts = [receipt('a'), text, outside]
+    report = reconcile(queue, receipts, receipts, observed_at='2026-11-17T00:00:00Z')
+    summary = coverage_summary(queue, report)
+    assert summary['observed_at_utc'] == '2026-11-17T00:00:00Z'
+    assert summary['scope'] == {'since': '2021-10-13', 'until': '2026-10-13', 'forms': ['10-K', '10-Q']}
+    assert summary['filings'] == {'queued': 5, 'stored': 2, 'missing': 3, 'failed': 1,
+                                  'fully_imported': 1, 'pending': 2, 'text_only': 1}
+    assert summary['by_filing_year_and_form'] == [
+        {'filing_year': 2022, 'form': '10-K', 'queued': 1, 'stored': 1, 'missing': 0, 'fully_imported': 1},
+        {'filing_year': 2022, 'form': '10-Q', 'queued': 2, 'stored': 1, 'missing': 1, 'failed': 1, 'text_only': 1},
+        {'filing_year': 2023, 'form': '10-K', 'queued': 1, 'stored': 0, 'missing': 1, 'pending': 1},
+        {'filing_year': 2023, 'form': '10-Q', 'queued': 1, 'stored': 0, 'missing': 1, 'pending': 1}]
+    assert summary['issuers'] == {'with_queued_filings': 3, 'all_stored': 1, 'partly_stored': 0, 'none_stored': 2}
+    assert [(row['cik'], row['missing']) for row in summary['issuer_rows']] == [('2', 2), ('3', 1), ('1', 0)]
+    assert summary['issuer_rows'][0]['company'] == 'Company 2'
+    # The receipt outside the queue is reported on its own, never as coverage.
+    assert summary['database_filings_outside_queue'] == 1
+
+
+def test_coverage_summary_counts_a_review_required_receipt_as_stored():
+    from sec_pipeline.backfill_status import coverage_summary
+    queue = {'filings': {'a': queued('1', '10-K', '2022-02-01', 'ingested')}}
+    flagged = receipt('a'); flagged['validation_status'] = 'review_required'
+    summary = coverage_summary(queue, reconcile(queue, [flagged], [flagged]))
+    assert summary['filings'] == {'queued': 1, 'stored': 1, 'missing': 0, 'review_required': 1}
+    assert summary['issuers']['all_stored'] == 1
+    assert summary['scope'] == {'since': None, 'until': None, 'forms': None}
+
+
+def test_offline_coverage_summary_claims_neither_stored_nor_missing():
+    from sec_pipeline.backfill_status import coverage_summary
+    queue = summary_queue()
+    summary = coverage_summary(queue, reconcile(queue))
+    assert summary['database_verified'] is False
+    assert summary['filings'] == {'queued': 5, 'stored': 0, 'missing': 0, 'unverified': 5}
+    assert summary['issuers'] == {'with_queued_filings': 3, 'all_stored': None, 'partly_stored': None,
+                                  'none_stored': None}
+    assert summary['database_filings_outside_queue'] is None
+
+
+def test_coverage_summary_rejects_a_report_made_for_another_queue():
+    from sec_pipeline.backfill_status import coverage_summary
+    queue = summary_queue()
+    report = reconcile({'filings': {'a': queue['filings']['a']}}, [])
+    with pytest.raises(ValueError, match='every queued accession'):
+        coverage_summary(queue, report)

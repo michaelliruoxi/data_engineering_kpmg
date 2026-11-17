@@ -114,3 +114,54 @@ def reconcile(queue, receipts=None, selections=(), *, observed_at=None, override
             'queue_filings': len(entries),
             'database_filings_with_receipts': len(by_accession) if receipts is not None else None,
             'counts': dict(sorted(Counter(row['status'] for row in rows).items())), 'filings': rows}
+
+
+STORED_STATUSES = ('fully_imported', 'text_only', 'review_required')
+MISSING_STATUSES = ('pending', 'failed')
+
+
+def coverage_summary(queue, report):
+    """Roll a reconciliation report up by filing year, form and issuer.
+
+    The scope is the queue. A filing counts as stored when the receiving
+    database holds a receipt for it, whatever its review status; `pending` and
+    `failed` filings are missing. An accession the database holds outside the
+    queue is counted on its own line and never as queue coverage. An offline
+    report has no stored or missing filings, only `unverified` ones.
+    """
+    entries = queue.get('filings', {})
+    statuses = {row['accession_number']: row['status'] for row in report['filings']}
+    if set(entries) - set(statuses):
+        raise ValueError('The report does not cover every queued accession')
+    totals, periods, issuers = Counter(), {}, {}
+    for accession, entry in entries.items():
+        filing, status = entry['filing'], statuses[accession]
+        totals[status] += 1
+        periods.setdefault((filing['filing_date'][:4], filing['form']), Counter())[status] += 1
+        issuer = issuers.setdefault(filing['cik'], {'company': filing.get('company'), 'counts': Counter()})
+        issuer['counts'][status] += 1
+
+    def line(counts):
+        return {'queued': sum(counts.values()),
+                'stored': sum(counts[status] for status in STORED_STATUSES),
+                'missing': sum(counts[status] for status in MISSING_STATUSES),
+                **{status: counts[status] for status in sorted(counts)}}
+
+    issuer_rows = sorted(({'cik': cik, 'company': issuer['company'], **line(issuer['counts'])}
+                          for cik, issuer in issuers.items()),
+                         key=lambda row: (-row['missing'], row['cik']))
+    verified = report['database_verified']
+    count = lambda matches: sum(matches(row) for row in issuer_rows) if verified else None
+    return {'observed_at_utc': report['observed_at_utc'], 'database_verified': verified,
+            'scope': {key: queue.get('configuration', {}).get(key) for key in ('since', 'until', 'forms')},
+            'count_grain': report['count_grain'],
+            'filings': line(totals),
+            'by_filing_year_and_form': [{'filing_year': int(year), 'form': form, **line(counts)}
+                                        for (year, form), counts in sorted(periods.items())],
+            'issuers': {'with_queued_filings': len(issuer_rows),
+                        'all_stored': count(lambda row: row['stored'] == row['queued']),
+                        'partly_stored': count(lambda row: 0 < row['stored'] < row['queued']),
+                        'none_stored': count(lambda row: row['stored'] == 0)},
+            'issuer_rows': issuer_rows,
+            'database_filings_outside_queue': (sum('database_receipt_not_in_queue' in row['issues']
+                                                   for row in report['filings']) if verified else None)}

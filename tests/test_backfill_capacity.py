@@ -57,3 +57,14 @@ def test_ingestion_guard_at_custom_boundary_preserves_unprocessed_queue(queue,mo
         assert processed==1
         queue.ingest.assert_called_once()
     assert queue.state['last_run']['max_database_bytes']==ceiling
+
+
+def test_launcher_offline_and_validated_only_switches_reach_the_importer():
+    text=(Path(__file__).parents[1]/'scripts/start_backfill.ps1').read_text()
+    assert '[switch]$ValidatedOnly' in text and '[switch]$Offline' in text
+    assert "if ($ValidatedOnly) { $arguments += '--validated-only' }" in text
+    assert "if ($Offline) { $arguments += '--offline' }" in text
+    # The importer rejects this combination; stop before the preflight connects.
+    assert 'if ($RetryFailedOnly -and $ValidatedOnly) {' in text
+    # Only a run that contacts the SEC needs the contact identity.
+    assert 'if (-not $Offline -and -not $env:EDGAR_IDENTITY) {' in text
