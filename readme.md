@@ -6,11 +6,21 @@ from EDGAR, extracts financial facts and statements, organizes report text into
 sections and passages, and loads the results into AWS RDS. Approved teammates
 can browse the same data in DBeaver or query it directly from Python.
 
-> **Backfill status:** The initial five-year backfill is in progress, not
-> complete. At the October 13, 2026 queue checkpoint, 430 of the 9,833 queued
-> filings were marked loaded in the queue (not independently reconciled with database receipts). The scope below describes the intended dataset, not
-> what is loaded today; query `filing_overview` or use the
-> [run-status commands](docs/automated-backfill.md) for current progress.
+## Current status
+
+Checked against the shared database on November 16, 2026, in a read-only
+session. The database can have advanced since.
+
+| Area | Where it stands |
+| --- | --- |
+| Five-year S&P 500 backfill | In progress, not complete. Discovery found 9,833 in-scope filings; the shared database holds 660 filings in total. |
+| [Ten-company shortlist](#ten-company-shortlist) | Loaded and published on November 12, 2026. All 233 filings from 2021–2026 are served under the newest processing profile, `flagged-layout-v8`. Eight of them carry recorded company tagging errors. |
+| Shared database schema | Migrations 001–017 are applied. None is pending. |
+| What readers are served | The 233 shortlist filings under `automated-v8`. The other 427 filings remain on the earlier import profiles: 419 on `filing-import-v3` and 8 on `filing-import-v4`. |
+
+The scope below describes the intended dataset, not what is loaded today; query
+`filing_overview` or use the [run-status commands](docs/automated-backfill.md)
+for current progress.
 
 ## Dataset scope
 
@@ -48,13 +58,62 @@ Source documents remain in the ingest machine's archive. The database stores
 their provenance and extracted content; connecting to RDS does not download the
 original HTML/XML files to your computer.
 
-For the ten-company acquisition task, see the
-[shortlist inventory and Exhibit 21 guide](docs/shortlist-acquisition.md).
-It checks supplied archives, discovers historical filings, and downloads sources
-locally; database integration remains a separate handoff.
-The [report section audit](docs/report-section-validation.md) verifies the
-2021–2026 shortlist against original SEC Part/Item headings, source locators,
-readable table text, and exact chunk boundaries.
+A parser change never overwrites stored output. Each
+[processing profile](#processing-profiles) writes its reports, sections, chunks,
+and tables under its own version, beside the earlier ones. Stored facts are
+reused only when the whole payload agrees. From `corrected-layout-v5` onward, a
+newly loaded version stays unpublished until someone selects it, and a
+publication can be rolled back.
+
+## Ten-company shortlist
+
+The team's shortlist is **AAPL, CASY, MCK, MDT, MSFT, MU, NKE, NTAP, PH, and
+TTWO**: original 10-K and 10-Q reports filed from January 1, 2021. The
+October 29, 2026 snapshot holds 233 filings, 59 annual and 174 quarterly. Work
+since late October has concentrated on getting every one of them through
+validation.
+
+| Check | Result | Details |
+| --- | --- | --- |
+| Report sections and chunks | All 233 filings passed. 3,704 sections and 44,057 chunks were checked against the original Part/Item headings, with no missing expected heading, source-location error, or chunk gap. | [Section audit](docs/report-section-validation.md) |
+| Financial facts | 290,632 XBRL facts were extracted and none was dropped. All 259,598 numeric values equal the inline HTML. One NetApp filing was held for review and later traced to a company tagging error. | [Fact coverage](docs/validation/fact-coverage-2021-2026.md) |
+| Statements and source acceptance | `flagged-layout-v8` accepts all 233, and the shared database stores all 233 as passed sets. `reviewed-layout-v6` and `audited-layout-v7` accept 227, of which 225 can be published. | [Profile upgrade guide](docs/reviewed-layout-upgrade.md#flagged-profile-v8) |
+| Filings outside the shortlist | The same rules were run on 97 filings from 38 other issuers. The reviewed profile accepts 59. The rest are rejected, not loaded with guesses. | [Outside audit](docs/reviewed-layout-upgrade.md#layouts-accepted-after-the-november-11-audit) |
+
+**Company tagging errors.** Eight of the 233 filings contain XBRL tags that
+contradict the company's own printed page. Examples are a prior-year column
+tagged with the current quarter, and a tag that covers `16` of a printed `16.7`.
+Earlier profiles rejected six of these filings and held two for review.
+`flagged-layout-v8` loads all eight and records each bad tag as a defect: 35 in
+total, 33 statement cells and 2 at fact level. A flagged cell keeps its printed
+text and is linked to no fact. `sec.analysis_ready_facts`,
+`sec.analysis_ready_statement_cells`, and `finance.metric_evidence` leave the
+flagged facts out. Nothing is repaired or guessed: `sec.source_tagging_defects`
+stores what the page prints beside what the tag claims. The
+[NetApp source review](docs/ntap-source-review.md) walks through two cases.
+
+**Tables after the cash flow statement.** `flagged-layout-v8` also extracts the
+closing-cash reconciliation and the supplemental cash flow disclosures printed
+directly after a cash flow statement, as further segments of that statement.
+On the shortlist these are the supplemental disclosures in 17 Casey's filings
+and the cash reconciliation in two of them.
+
+**Loaded and published on November 12, 2026.** Migrations 011–017 are applied
+to the shared database. All 233 filings were loaded as passed `automated-v8`
+sets and then published, and no publication has been rolled back. The `finance`
+views and the analysis-ready views now serve these sets. The shared database
+holds the same 35 recorded tagging errors in the same eight filings. The earlier
+versions of these filings remain stored beside the new ones and can still be
+selected explicitly.
+
+One follow-up remains for anyone who keeps a retrieval index. The report,
+section, and chunk IDs of these filings changed, so rebuild any index built
+before November 12.
+
+The [Windows load runbook](docs/shortlist-reviewed-load-windows.md) describes
+the load procedure and how to withdraw a publication. Acquisition of the source
+archives, including Exhibit 21 documents for annual reports, is covered in the
+[shortlist acquisition guide](docs/shortlist-acquisition.md).
 
 ## Database structure and financial reads
 
@@ -110,6 +169,30 @@ use the [original schema and report-section guide](docs/database-browsing.md)
 and [source browsing queries](docs/database-browsing-queries.sql). Legacy
 preferred catalogs remain available and still require an explicit selection;
 the `finance` views can be used when those catalogs are empty.
+
+### What changed for readers on November 12, 2026
+
+Migrations 011–017 and the shortlist publication changed what the ten shortlist
+companies' filings return. Other companies' filings read as before.
+
+- **Served version.** For the 233 shortlist filings, `finance.filing` shows
+  `set_key` `automated-v8` and `selection_reason`
+  `explicit_corrected_preference`. `finance.processing_revision` shows the
+  profile and parser revisions each set recorded.
+- **Source analysis views.** `sec.analysis_ready_facts` and
+  `sec.analysis_ready_statement_cells` return only the served set. To read an
+  older version, select its `processing_set_id` in `sec.source_fact_catalog` or
+  `sec.source_statement_cells`.
+- **New report and chunk IDs.** The shortlist filings have new report, section,
+  and chunk IDs, so rebuild any retrieval index built on the old ones. Earlier
+  versions remain in `sec.chunk_citations_history`.
+- **Flagged cells.** 33 statement cells have `resolution_status`
+  `source_defect`: printed text but no linked fact. Look up the reason in
+  `sec.source_tagging_defects`.
+
+The reader role, `sec_reader`, can select from every view and table named here. See
+[reader behavior after the upgrade](docs/reviewed-layout-upgrade.md#reader-behavior-and-pre-migration-inventory)
+for the full selection rules.
 
 ### Company tickers and data interpretation
 
@@ -250,6 +333,8 @@ Clicking the small arrow beside a table expands details such as its columns. To 
 | **financial_table_facts** | Links showing which financial figures belong to which statement tables |
 | **report_sections**, **section_types** | Named report sections, topic labels, source locations, and validation status |
 | **filing_processing_sets**, **preferred_processing_sets** | Exact extraction versions, coverage and checks; optional preferred choices for browsing |
+| **source_processing_sets**, **preferred_source_processing_sets** | The same for `tables-v4` and later profiles, and which of those sets is published |
+| **source_tagging_defects** | Company tagging errors: what the page prints beside what the XBRL tag claims |
 | **table_cells**, **cell_fact_links** | Statement cells and their links to source XBRL facts |
 | **cell_source_observations** | Evidence for source-only statement markers that are not invented financial facts |
 | **issuer_successions** | Verified links between current and predecessor issuers |
@@ -368,9 +453,12 @@ Save the following as **`database_workflow.py`** in the repository root. It find
 Microsoft's latest quarterly filing with a passed processing set and loads that
 set's financial facts into a pandas DataFrame. It uses the preferred set when
 available, otherwise the most recently stored passed set, and prints the choice
-so you can inspect its version and coverage. Filings loaded only by the
-experimental `tables-v4` importer are recorded in `source_processing_sets` and
-are not covered by this example.
+so you can inspect its version and coverage. Filings loaded only by `tables-v4`
+or a later profile are recorded in `sec.source_processing_sets` and are not
+covered by this example. For Microsoft's latest 10-Q the example prints the
+earlier `filing-import-v3` set, while `finance.filing` now serves `automated-v8`
+for the same filing. Both point at the same `facts-v1` rows, so the facts are
+identical.
 
 ```python
 import pandas as pd
@@ -554,19 +642,89 @@ uv run --locked sec-db --env-file .env.aws prefer-validated --set-key filing-imp
 Repeat it after import batches. Running it while the backfill is active is safe:
 each filing is selected in its own short transaction.
 
-These guides cover ingestion, maintenance, and the data contracts:
+### Processing profiles
+
+`--tables-version` selects a profile in `backfill_sec.py` and
+`check_backfill_ready.py`. `publish_reviewed_queue.py` takes no version option;
+it reads the versions each queue entry recorded at load time. Every profile
+uses `facts-v1`. Use one profile for a whole queue.
+
+| Profile | `--tables-version` | Reports / chunks | Migrations | Shortlist filings accepted |
+| --- | --- | --- | --- | ---: |
+| `filing-import-v3`, with the `filing-import-v3-text` fallback | `tables-v3` | `report-v1` / `paragraph-v1` | 001–009 | not measured here |
+| `filing-import-v4` | `tables-v4` | `report-v1` / `paragraph-v1` | 001–009 | not measured here |
+| `corrected-layout-v5` | `tables-v5` | `report-v2` / `paragraph-v1` | 001–015 | superseded by V6 |
+| `reviewed-layout-v6` | `tables-v6` | `report-v3` / `paragraph-v2` | 001–015 | 227, 225 publishable |
+| `audited-layout-v7` | `tables-v7` | `report-v4` / `paragraph-v2` | 001–016 | 227, 225 publishable |
+| `flagged-layout-v8` | `tables-v8` | `report-v4` / `paragraph-v2` | 001–017 | 233 |
+
+The S&P 500 backfill launchers (`run_backfill.ps1`, `start_backfill.ps1`) and
+the default preflight still cover only the October 13 `tables-v3` queue. For
+another profile or queue, pass `--tables-version`, `--state`, `--universe`,
+`--since`, and `--until` explicitly. The
+[profile upgrade guide](docs/reviewed-layout-upgrade.md) describes what each
+profile changes and the rollout sequence.
+
+Three rules apply to any upgrade of a populated database:
+
+- **Check before migrating.** `sec-db migrate` applies every pending packaged
+  migration in one batch. Run the read-only `scripts/check_upgrade_ready.py`
+  first; it reports the migration ledger, the pending batch, and the effect on
+  readers.
+- **Load from the original archive.** SEC adds a script tag with a random path
+  to every HTML page it serves, so a page downloaded again never matches the
+  bytes the database registered, and the load rejects it. Run filing commands
+  with `--offline` on the machine that holds the originally archived files.
+- **Publish explicitly.** `scripts/publish_reviewed_queue.py` has `plan`,
+  `publish`, and `rollback` steps. A loaded set is not served until it is
+  published.
+
+Every pull request and every push to `main` runs the **Database contracts**
+workflow. It applies all migrations to a disposable PostgreSQL 17 database, then
+runs the reader-permission, publication and rollback, ingestion, and replay
+tests along with the rest of the suite.
+
+### Guides
+
+Using the database:
+
+- [Financial browsing views, definitions, and example queries](docs/database-finance.md)
+- [Report sections, processing sets, and database browsing](docs/database-browsing.md)
+- [SQL browsing examples](docs/database-browsing-queries.sql)
+- [Reading values and tracing sources, with the retired manual example](docs/manual-example.md)
+- [Company ticker refresh and existing-record updates](docs/company-tickers.md)
+- [Python access, SQL examples, and project commands](docs/developer-usage.md)
+- [GitHub tutorial: personal branches, commits, and pull requests to main](docs/github-tutorial.md)
+
+Ingestion, upgrades, and operations:
 
 - [Automated discovery, import, resumption, and current run status](docs/automated-backfill.md)
-- [Company ticker refresh and existing-record updates](docs/company-tickers.md)
-- [Report sections, processing sets, and database browsing](docs/database-browsing.md)
-- [Financial table lineage, DOM section mapping, and draft shared table ID adapter](docs/financial-table-relations.md)
-- [Historical table relationship validation, candidate scope and source requirements](docs/historical-table-validation.md)
-- [SQL browsing examples](docs/database-browsing-queries.sql)
-- [GitHub tutorial: personal branches, commits, and pull requests to main](docs/github-tutorial.md)
-- [Python access, SQL examples, and project commands](docs/developer-usage.md)
-- [Reading values and tracing sources, with the retired manual example](docs/manual-example.md)
+- [Shortlist acquisition and Exhibit 21](docs/shortlist-acquisition.md)
+- [Profile upgrade: V6, V7, and V8, reader behavior, and rollout sequence](docs/reviewed-layout-upgrade.md)
+- [Windows runbook for the shortlist load and publication](docs/shortlist-reviewed-load-windows.md)
+- [Earlier corrected-section upgrade (V5)](docs/corrected-section-upgrade.md)
 - [Database structure and local setup](docs/database.md)
 - [AWS deployment and maintenance](docs/aws-deployment.md)
+
+Pipeline components:
+
+- [Financial fact extraction and shortlist coverage](docs/financial-facts.md)
+- [Financial table extraction](docs/financial-tables.md)
+- [Chunking and citations](docs/chunking.md)
+- [Processing workflow, dry runs, and the import transaction](docs/processing-workflow.md)
+- [Financial table lineage, DOM section mapping, and draft shared table ID adapter](docs/financial-table-relations.md)
+- [Table citation integration and its deployment gate](docs/table-citation-deployment.md)
+
+Validation evidence:
+
+- [Report section audit of the 233 shortlist filings](docs/report-section-validation.md)
+- [Fact coverage of the 233 shortlist filings](docs/validation/fact-coverage-2021-2026.md)
+- [Historical table relationship validation, candidate scope and source requirements](docs/historical-table-validation.md)
+- [NetApp source-tagging review](docs/ntap-source-review.md)
+- [Independent review findings and fixes, November 10, 2026](docs/independent-review-fixes-2026-11-10.md)
+
+Planning:
+
 - [Team implementation plan](docs/team-implementation-plan.md)
 
 This is a QMSS practicum project using public SEC filings. Source provenance,
