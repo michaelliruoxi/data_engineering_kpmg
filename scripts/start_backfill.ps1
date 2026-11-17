@@ -7,15 +7,23 @@ Refuses to start while the process named in queue.json.lock is still running;
 removes the lock only when that process has stopped. Runs the read-only
 preflight (schema, privileges, size) before importing. Output goes to
 data\backfill\2026-10-13\logs\backfill_<timestamp>.{stdout,stderr}.log.
-Set $env:EDGAR_IDENTITY to your name and contact email first.
+Set $env:EDGAR_IDENTITY to your name and contact email first. -Offline makes no
+SEC request and needs no identity: it reads only the archived sources under
+data\raw\sec and skips filings that are not archived yet.
 
 .EXAMPLE
 .\scripts\start_backfill.ps1 -RetryFailedOnly   # first load facts/text for earlier failures
 .\scripts\start_backfill.ps1                    # then continue the pending queue
+
+.EXAMPLE
+# Load the entries an offline dry run validated, without contacting the SEC.
+.\scripts\start_backfill.ps1 -Offline -ValidatedOnly
 #>
 [CmdletBinding()]
 param(
     [switch]$RetryFailedOnly,
+    [switch]$ValidatedOnly,
+    [switch]$Offline,
     [ValidateRange(1, 2147483647)][int]$MaxDatabaseGiB = 14
 )
 $ErrorActionPreference = 'Stop'
@@ -24,8 +32,11 @@ $queueDir = Join-Path $root 'data\backfill\2026-10-13'
 $lock = Join-Path $queueDir 'queue.json.lock'
 $python = Join-Path $root '.venv\Scripts\python.exe'
 
-if (-not $env:EDGAR_IDENTITY) {
-    throw 'Set $env:EDGAR_IDENTITY to your name and contact email before starting.'
+if ($RetryFailedOnly -and $ValidatedOnly) {
+    throw '-ValidatedOnly loads dry-run successes; it cannot be combined with -RetryFailedOnly.'
+}
+if (-not $Offline -and -not $env:EDGAR_IDENTITY) {
+    throw 'Set $env:EDGAR_IDENTITY to your name and contact email before starting, or pass -Offline.'
 }
 if (Test-Path $lock) {
     $holder = (Get-Content $lock -Raw).Trim()
@@ -57,6 +68,8 @@ try {
         '--env-file', '.env.aws', '--database', 'sec_filings'
     )
     if ($RetryFailedOnly) { $arguments += '--retry-failed-only' }
+    if ($ValidatedOnly) { $arguments += '--validated-only' }
+    if ($Offline) { $arguments += '--offline' }
     $process = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $root `
         -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput (Join-Path $logs "backfill_$stamp.stdout.log") `
