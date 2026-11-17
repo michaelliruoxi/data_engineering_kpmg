@@ -68,10 +68,13 @@ def audit_corrected_set(conn, accession, processing_set_id, data_root):
         chunks = [c for c in snapshot["chunks"] if c["report_id"] == report["id"]]
         if any(c["section_id"] not in by_id or by_id[c["section_id"]]["section_key"] != c["section"] for c in chunks):
             errors.append({"check": "stored_chunk_section_link_mismatch", "report_id": report["id"]})
-        expected = source_heading_expectations(path, form=snapshot["filing"]["form"]) if report["source_document_id"] in primary else None
+        expected = (source_heading_expectations(path, form=snapshot["filing"]["form"],
+                                                report_version=report.get("extraction_version"))
+                    if report["source_document_id"] in primary else None)
         audit = audit_report(path, form=snapshot["filing"]["form"], report=descriptor,
                              chunks=[SimpleNamespace(**c) for c in chunks],
-                             expected_section_ids=expected["expected_section_ids"] if expected else None)
+                             expected_section_ids=expected["expected_section_ids"] if expected else None,
+                             report_version=report.get("extraction_version"))
         if report["source_document_id"] not in primary:
             # Supplemental inline documents need exact source/section/chunk
             # fidelity, but they are not annual/quarterly reports and need not

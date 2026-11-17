@@ -93,6 +93,10 @@ _ITEM_HEADING = re.compile(r"^ITEM[ \t]+(\d+[A-Z]?)[ \t]*[.:–—-]?[ \t]*(.*)$
 _ITEM_LABEL = re.compile(r"[ \t|]*ITEM[ \t]+\d+[A-Z]?[ \t]*[.:–—-]?[ \t|]*", re.I)
 _PART_HEADING = re.compile(
     r"^PART[ \t]+(IV|III|II|I)(?:[ \t]*[.:–—-]?[ \t]*(?:FINANCIAL|OTHER) INFORMATION)?[ \t.]*$", re.I)
+# report-v4 also reads "Item 1.A." as Item 1A. The number, the period and the
+# letter are written without a space and the letter ends the label, so
+# "Item 1. A summary" and "Item 1.Business" are still Item 1.
+_DOTTED_ITEM = re.compile(r"^(ITEM[ \t]+\d+)\.([A-Z])(?=[ \t.:–—-]|$)", re.I)
 
 
 def _heading_text(line: str) -> str:
@@ -132,6 +136,8 @@ def detect_sections(full_text: str, form: str | None = None, *,
         if excluded_heading_offsets is not None and offsets[index] in excluded_heading_offsets:
             continue
         heading = _heading_text(raw_line)
+        if audited:
+            heading = _DOTTED_ITEM.sub(r"\1\2", heading)
         linked = (linked_headings or {}).get(offsets[index])
         if linked:
             heading = linked['label']
@@ -611,18 +617,101 @@ def _linked_exhibit_headings(document, full_text, anchors, form):
     return result
 
 
-def _original_statement_tables(document):
+_GROUPED_STATEMENTS_ROW = re.compile(
+    r'ITEM\s+1\s*[.:]?\s+(?:(?:INTERIM|UNAUDITED|CONDENSED|CONSOLIDATED)\s+)*FINANCIAL\s+STATEMENTS'
+    r'(?:\s*\(UNAUDITED\))?[\s.]*', re.I)
+
+
+def _linked_statement_headings(document, full_text, anchors, form):
+    """Resolve a quarterly Item 1 that the body prints without an Item heading.
+
+    The original contents table must list "Item 1. Financial Statements" exactly
+    once, as an unlinked group label over rows that link the individual
+    statements, and the body must have no Item 1 heading of its own. The section
+    then starts at the first visible text of the earliest linked statement
+    page, and a statement table must follow before the next Part or Item
+    heading. A statement title alone never assigns an Item number.
+    """
+    if form is None or form.upper().removesuffix('/A') != '10-Q':
+        return {}
+    groups = []
+    for table in document.xpath('//table'):
+        rows = table.xpath('./tr|./tbody/tr|./thead/tr|./tfoot/tr')
+        for index, row in enumerate(rows):
+            title = ' '.join(' '.join(row.itertext()).split())
+            if not _GROUPED_STATEMENTS_ROW.fullmatch(title):
+                continue
+            fragments = []
+            for following in rows[index + 1:]:
+                value = ' '.join(' '.join(following.itertext()).split())
+                if re.match(r'(?:ITEM\s*\d|PART\s+[IV]+(?:\W|$))', value, re.I):
+                    break
+                if re.search(r'\d+[\s.]*$', value):
+                    fragments.extend(unquote(link.get('href')[1:])
+                                     for link in following.xpath('.//a[starts-with(@href,"#")]'))
+            groups.append((table, row, fragments))
+    if len(groups) != 1:
+        return {}
+    table, row, fragments = groups[0]
+    if row.xpath('.//a[starts-with(@href,"#")]') or not fragments:
+        return {}
+    order = {node: index for index, node in enumerate(document.iter())}
+    targets = {}
+    for fragment in dict.fromkeys(fragments):
+        found = document.xpath('//*[@id=$target or @name=$target]', target=fragment)
+        if len(found) != 1:
+            return {}
+        targets.setdefault(found[0], fragment)
+    target = min(targets, key=order.__getitem__)
+    contents = set(table.iter())
+    if order[target] <= max(order[node] for node in contents):
+        return {}
+    lines, position = [], 0
+    for line in full_text.splitlines(keepends=True):
+        anchor = anchors[position]
+        if anchor is not None and line.strip() and anchor not in contents:
+            lines.append((position, _heading_text(line), anchor))
+        position += len(line)
+    for _, title, _ in lines:
+        # A bare "Item 1." may be a heading whose title is on the next line.
+        own = _ITEM_HEADING.fullmatch(title)
+        if own and own.group(1) == '1' and (not own.group(2).strip()
+                                            or re.match(_QUARTERLY_ITEMS['I', '1'][1], own.group(2), re.I)):
+            return {}
+    start = next((index for index, (_, _, anchor) in enumerate(lines) if order[anchor] >= order[target]), None)
+    if start is None or order[lines[start][2]] - order[target] > 30:
+        return {}
+    offset, _, anchor = lines[start]
+    limit = next((order[node] for _, title, node in lines[start + 1:]
+                  if _ITEM_HEADING.match(title) or _PART_HEADING.fullmatch(title)), len(order))
+    if not _statement_table_follows(anchor, limit, _original_statement_tables(document, recovered=True), order):
+        return {}
+    tree = document.getroottree()
+    return {offset: {'label': 'ITEM 1. FINANCIAL STATEMENTS', 'evidence': {
+        'heading_method': 'original_toc_target', 'toc_xpath': source_xpath(tree, row),
+        'target_xpath': source_xpath(tree, target), 'target_element_id': targets[target]}}}
+
+
+def _original_statement_tables(document, *, recovered=False):
     """Find headed statement bodies, excluding a list of statement/page references.
 
     This corroborates broadened appendix labels; it is not the acceptance gate.
     Acceptance separately maps every actually selected primary statement table.
+    With ``recovered`` a title may be separated from its table by the company
+    name, the period or the units, as statement selection itself allows.
     """
     from .tables import _hidden, _statement_headings, local
 
     found = []
     for table in document.xpath('//table'):
-        if table.xpath('.//table') or _hidden(table) or not _statement_headings(table):
+        if table.xpath('.//table') or _hidden(table):
             continue
+        if not _statement_headings(table):
+            if not recovered:
+                continue
+            from .statement_headings import recover_headings
+            if not recover_headings(table):
+                continue
         if any(local(node) == 'nonfraction' and not _hidden(node) for node in table.iter()):
             found.append(table)
             continue
@@ -694,7 +783,11 @@ def _separate_unnumbered_blocks(full_text, sections, anchors, heading_links, doc
             if key == 'financial-statements-appendix' and not re.fullmatch(
                     r'INDEX TO (?:THE )?(?:CONSOLIDATED )?FINANCIAL STATEMENTS[ .]*', title, re.I):
                 if statement_tables is None:
-                    statement_tables = _original_statement_tables(document)
+                    # A supplemental statement member of report-v4 (an annual
+                    # report exhibit) can print the company name between each
+                    # statement title and its table.
+                    statement_tables = _original_statement_tables(
+                        document, recovered=audited and owner.get('section_id') == 'full-report')
                     order = {node: index for index, node in enumerate(document.iter())}
                 end = owner['offset_end']
                 limit = order[anchors[end]] if end < len(anchors) else len(order)
@@ -756,9 +849,12 @@ def clean_report(html_path: str | Path, *, form: str | None = None,
     anchors = [annotation[0] if annotation is not None else None for annotation in annotations]
     heading_links = [annotation[1] if annotation is not None else None for annotation in annotations]
     form = _report_form(full_text, form)
+    linked_headings = _linked_exhibit_headings(document, full_text, anchors, form)
+    if audited:
+        linked_headings = _linked_statement_headings(document, full_text, anchors, form) | linked_headings
     sections = detect_sections(full_text, form=form,
                                excluded_heading_offsets=_navigation_heading_offsets(full_text, anchors, heading_links),
-                               linked_headings=_linked_exhibit_headings(document, full_text, anchors, form), audited=audited)
+                               linked_headings=linked_headings, audited=audited)
     sections = _separate_unnumbered_blocks(full_text, sections, anchors, heading_links, document, audited=audited)
     tree = document.getroottree()
     for section in sections:

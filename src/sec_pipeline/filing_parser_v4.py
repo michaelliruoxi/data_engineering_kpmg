@@ -313,9 +313,10 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
                      + json.dumps(statement_issues, sort_keys=True))
         if profile in CORRECTED_PROFILES and record['is_primary']:
             from .report_validation import audit_report, source_heading_expectations
-            expected = source_heading_expectations(path, form=manifest['form'])
+            expected = source_heading_expectations(path, form=manifest['form'], report_version=versions['reports'])
             assessment = audit_report(path, form=manifest['form'], report=cleaned, chunks=chunks,
-                                      expected_section_ids=expected['expected_section_ids'])
+                                      expected_section_ids=expected['expected_section_ids'],
+                                      report_version=versions['reports'])
             _require(assessment['status'] == 'passed',
                      'Corrected profile requires independently verified primary Part/Item boundaries: '
                      + json.dumps({'status': assessment['status'], 'issues': assessment['issues']}, sort_keys=True))

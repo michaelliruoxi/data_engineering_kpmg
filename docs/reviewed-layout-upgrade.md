@@ -489,6 +489,53 @@ share count). Every other filing, on the shortlist and in the three outside sets
 parses exactly as under V7, apart from the Casey's segments and two Costco
 holdout filings whose opening-cash review issues become recorded defects.
 
+## Section layouts accepted on November 16
+
+Two filings outside the shortlist were still served as `review_required` under
+the October 13 `filing-import-v4` load: the Clorox 10-K for fiscal 2026
+(`0000021076-26-000034`) and the Con Edison 10-Q for June 30, 2026
+(`0001047862-26-000142`). Each has one supplemental cash flow row tagged with
+`us-gaap:DividendsPayableCurrentAndNoncurrent`, a balance at a date, under
+columns that cover a period. V8 records exactly that as
+`instant_context_under_duration_header`, but V5 to V8 rejected both filings
+earlier, for their section layout. `report-v4` (V7 and V8) now reads three more
+layouts from the original document:
+
+| Layout | Filing | Evidence required | Recorded as |
+| --- | --- | --- | --- |
+| Items numbered "Item 1.A.", "Item 7.A.", "Item 9.B." in the contents, the body or both | Clorox | The number, a period and one letter without a space, the letter ending the label; "Item 1.Business" and "Item 1. A summary" remain Item 1. The independent contents reader applies the same reading | Section `part-i-item-1a` with title "Item 1A. RISK FACTORS"; `original_title` keeps "ITEM 1.A. RISK FACTORS" |
+| A statement title, then the company name, then a block holding the period caption and the table, in an exhibit that has no numbered Items | Clorox (Exhibit 99.1) | The title is recovered by the bounded rule statement selection already uses: only the company name, a period or units may lie between title and table | `financial-statements-appendix` starting at the first such title, as for a title printed directly above its table |
+| A 10-Q whose contents list "Item 1. Financial Statements" as an unlinked group label over rows that link each statement, with no Item 1 heading in the body | Con Edison | Exactly one such label; every linked row resolves to exactly one anchor and the earliest lies after the contents table; the body has no Item 1 heading; the first visible text at the earliest target is within 30 nodes of it; a statement table follows before the next Part or Item heading | Section `part-i-item-1` titled "Item 1. FINANCIAL STATEMENTS", `original_title` the first line of that page, `source_locator.heading_method` `original_toc_target` with the contents row and the target, as for a linked Item 6 |
+
+The independent audit checks the third layout separately: a section that
+exists only through a group label must start at the first visible text of the
+earliest linked target, or the filing fails with
+`section_navigation_target_mismatch`. A linked group label, a row whose target
+is missing, a second label, a target page without a statement, and a title
+separated from its table by prose are all still rejected; each has a regression
+test (`tests/test_outside_section_layouts.py`).
+
+`report-v1` to `report-v3` are untouched: the same inputs give the same text,
+sections and audit result as before, so V4 to V6 output is unchanged by
+construction. For `report-v4` the rules only turn a former rejection into an
+acceptance. All 334 locally archived filings (233 shortlist, 99 outside and
+these two) were fingerprinted under V6, V7 and V8 with the parser before and
+after. V6 accepts the same 286 filings, V7 the same 287 and V8 the same 293,
+every one with a byte-identical payload (facts, source occurrences, reports,
+sections, chunks, tables, issues, checks and defects), and every filing that is
+still rejected is rejected with the same message. The only difference is that
+V7 and V8 now also accept these two filings, V7 with their five review issues.
+No stored receipt changes content and the parser revisions are unchanged.
+
+Under V8 both filings now pass: Clorox with three recorded defects and Con
+Edison with two, the first real uses of
+`instant_context_under_duration_header`. Loaded and published into an empty
+local database at 001-017, both are served as `automated-v8`, `passed`; the
+three finance statement views return Clorox's values for every period, and the
+five flagged facts are absent from `sec.analysis_ready_facts`. The shared
+database needs the original October 13 files; the steps are in
+[review-required-reload-windows.md](review-required-reload-windows.md).
+
 ## Operational status and evidence outcomes
 
 `fully_imported` is deliberately an ingestion-completion label. This PR relaxes
