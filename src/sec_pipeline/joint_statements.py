@@ -77,12 +77,37 @@ def _primary_identity(tree, facts):
                 ('EntityCentralIndexKey', 'EntityRegistrantName', 'DocumentType', 'DocumentPeriodEndDate')}}
 
 
-def _company(value, names):
-    value = _words(value)
+_LEGAL_FORMS = {'corporation': 'corp', 'incorporated': 'inc', 'company': 'co', 'limited': 'ltd'}
+
+
+def _spelled(value):
+    """A registrant name without "the", its subsidiaries, spacing, or the spelling of its legal form."""
+    value = re.sub(r'([a-z])([A-Z])', r'\1 \2', value)
+    value = re.sub(r'\s*[/\\]\s*[A-Za-z]{2,3}\s*[/\\]?\s*$', '', value)
+    words = _words(value)
+    words = re.sub(r' and (?:its )?(?:consolidated )?(?:subsidiaries|subsidiary companies|subsidiary)$', '', words)
+    words = re.sub(r'^the ', '', words)
+    return ''.join(_LEGAL_FORMS.get(word, word) for word in words.split())
+
+
+def _company(value, names, *, spellings=False):
+    """The CIK of the registrant `value` names, or None.
+
+    `spellings` (tables-v3 `header_lines` attempt only) also accepts the name
+    with or without "The", in another spacing, and with a legal form in its
+    other spelling ("Corp" and "Corporation"). A printed name that fits two
+    registrants names neither.
+    """
+    words = _words(value)
     for cik, name in names.items():
         candidate = _words(name)
-        if value == candidate or value in {candidate + ' and subsidiaries', candidate + ' and subsidiary companies'}:
+        if words == candidate or words in {candidate + ' and subsidiaries', candidate + ' and subsidiary companies'}:
             return cik
+    if spellings and len(value) <= 200:
+        printed = _spelled(value)
+        matches = [cik for cik, name in names.items() if printed and printed == _spelled(name)]
+        if len(matches) == 1:
+            return matches[0]
     return None
 
 
@@ -99,12 +124,55 @@ def _header_metadata(value):
                 or value == 'the following table provides a reconciliation of cash cash equivalents and restricted cash reported on the balance sheet to the amount shown in the statements of cash flows')
 
 
-def _headings(table, tree, identity):
-    """Use only this table's headers or bounded preceding header-only blocks."""
+def _text_leaves(block):
+    """The elements that each hold one whole line of a block, or None.
+
+    A block such as "Table of Contents / DTE Energy Company / Consolidated
+    Statements of Operations" prints three header lines in one element. It is
+    split only when every piece of its text is the complete text of its own
+    element, so no line is cut out of a sentence.
+    """
+    from .tables import text
+    leaves = []
+    for fragment in block.xpath('.//text()'):
+        if not fragment.strip(' \u200b\xa0\r\n\t'):
+            continue
+        element = fragment.getparent()
+        if not fragment.is_text or ' '.join(text(element).split()) != ' '.join(fragment.split()):
+            return None
+        leaves.append(element)
+    return leaves if len(leaves) > 1 else None
+
+
+def _headings(table, tree, identity, *, header_lines=False):
+    """Use only this table's headers or bounded preceding header-only blocks.
+
+    `header_lines` (tables-v3 corroborated layouts, tried only after the
+    established reading has rejected the filing) reads the registrant's name
+    as `_company(..., spellings=True)` does, passes the header lines
+    `statement_headings._line_metadata` describes, reads the wider titles,
+    and reads a block that prints several header lines line by line. A line
+    naming another registrant still gives that table to the other registrant.
+    """
     from .tables import _hidden, layout_grid, local, text
+    from .statement_headings import _metadata
     # A financial note's text block is not a primary statement section.
     if any(local(node) in {'nonnumeric', 'continuation'} for node in table.iterancestors()):
         return None
+
+    def kind_of(value):
+        found = statement_kind(value)
+        if found is None and header_lines:
+            found = statement_kind(value, wide=True, header_lines=True)
+        return found
+
+    def company_of(value):
+        return _company(value, identity['names'], spellings=header_lines)
+
+    def readable(value):
+        return bool(kind_of(value) or company_of(value) or _header_metadata(value)
+                    or (header_lines and _metadata(value, (), True)))
+
     rows, _ = layout_grid(table, tree)
     blocks = []
     for row in rows[:24]:
@@ -117,8 +185,8 @@ def _headings(table, tree, identity):
         return None
     node, count = table, 0
     for _ in range(4):
-        kinds = {statement_kind(text(block)) for block in blocks} - {None}
-        companies = {_company(text(block), identity['names']) for block in blocks} - {None}
+        kinds = {kind_of(text(block)) for block in blocks} - {None}
+        companies = {company_of(text(block)) for block in blocks} - {None}
         if kinds and companies:
             break
         previous = node.getprevious()
@@ -130,17 +198,24 @@ def _headings(table, tree, identity):
                         or previous.xpath('.//table') or local(previous) == 'table'):
                     barrier = True
                     break
-                blocks.append(previous)
+                lines = [previous]
+                if header_lines and not readable(value):
+                    # One element printing several header lines is read line by line.
+                    leaves = _text_leaves(previous)
+                    if leaves and all(readable(text(leaf).strip(' \u200b')) for leaf in leaves):
+                        lines = leaves
+                blocks.extend(lines)
                 count += 1
                 # A complete nearby registrant/title pair does not need older text.
-                kinds = {statement_kind(text(block)) for block in blocks} - {None}
-                companies = {_company(text(block), identity['names']) for block in blocks} - {None}
+                kinds = {kind_of(text(block)) for block in blocks} - {None}
+                companies = {company_of(text(block)) for block in blocks} - {None}
                 if kinds and companies:
                     break
-                if not statement_kind(value) and not _company(value, identity['names']) and not _header_metadata(value):
+                if lines == [previous] and not readable(value):
                     barrier = True
                     break
-                if re.search(r'\bnotes?\s+(?:to|\d)|^item\s+\d|^part\s+[ivx]+', value, re.I):
+                if any(re.search(r'\bnotes?\s+(?:to|\d)|^item\s+\d|^part\s+[ivx]+', text(line).strip(' ​'), re.I)
+                       for line in lines):
                     barrier = True
                     break
             else:
@@ -149,8 +224,8 @@ def _headings(table, tree, identity):
                     barrier = True
                     break
             previous = previous.getprevious()
-        kinds = {statement_kind(text(block)) for block in blocks} - {None}
-        companies = {_company(text(block), identity['names']) for block in blocks} - {None}
+        kinds = {kind_of(text(block)) for block in blocks} - {None}
+        companies = {company_of(text(block)) for block in blocks} - {None}
         if kinds and companies:
             break
         if barrier or count >= 12:
@@ -158,13 +233,13 @@ def _headings(table, tree, identity):
         node = node.getparent()
         if node is None or local(node) in {'body', 'html', 'td', 'th', 'table'}:
             break
-    kinds = {statement_kind(text(block)) for block in blocks} - {None}
-    companies = {_company(text(block), identity['names']) for block in blocks} - {None}
+    kinds = {kind_of(text(block)) for block in blocks} - {None}
+    companies = {company_of(text(block)) for block in blocks} - {None}
     if len(kinds) != 1 or companies != {identity['cik']}:
         return None
     kind = next(iter(kinds))
-    titles = [block for block in blocks if statement_kind(text(block)) == kind]
-    company = next(block for block in blocks if _company(text(block), identity['names']) == identity['cik'])
+    titles = [block for block in blocks if kind_of(text(block)) == kind]
+    company = next(block for block in blocks if company_of(text(block)) == identity['cik'])
     title = titles[0]
     return {'kind': kind, 'heading': normalized_heading(text(title)),
             'continued': bool(re.search(r'\bcontinued\s*\)?\s*$', text(title), re.I)),
@@ -247,8 +322,11 @@ def _candidate(table, tree, facts, html_ids, identity, heading):
             'period_evidence': period_evidence, 'unresolved': unresolved, 'scopes': scopes}
 
 
-def select_joint_statement_segments(tree, facts):
-    """Return deterministic parent groups, or None for an ordinary filing."""
+def select_joint_statement_segments(tree, facts, *, header_lines=False):
+    """Return deterministic parent groups, or None for an ordinary filing.
+
+    `header_lines` is described at `_headings`.
+    """
     from .tables import _segment_facts, _STATEMENT_CONCEPTS, _hidden, local, _segments_adjacent, StatementSegment
     facts = _segment_facts(facts)
     identity = _primary_identity(tree, facts)
@@ -259,7 +337,7 @@ def select_joint_statement_segments(tree, facts):
     for table in tree.xpath('//table'):
         if _hidden(table) or table.xpath('.//table'):
             continue
-        heading = _headings(table, tree, identity)
+        heading = _headings(table, tree, identity, header_lines=header_lines)
         if heading is None:
             continue
         candidate = _candidate(table, tree, facts, html_ids, identity, heading)

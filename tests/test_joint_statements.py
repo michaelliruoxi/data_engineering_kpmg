@@ -127,6 +127,76 @@ class JointStatementTests(unittest.TestCase):
                 select_joint_statement_segments(tree, facts)
 
 
+class JointHeaderLineTests(unittest.TestCase):
+    """The tables-v3 reading tried after the established one has rejected a combined filing."""
+    PARENT = ['1-income_statement', '1-balance_sheet', '1-cash_flow']
+
+    def selected(self, tree, facts):
+        with self.assertRaises(t.TableExtractionError):
+            t.select_statement_segments(tree, facts)
+        with self.assertRaises(t.TableExtractionError):
+            select_joint_statement_segments(tree, facts)
+        segments = t.select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertTrue(all(segment.group['joint_statement']['registrant_cik'] == '0000000001' for segment in segments))
+        return [segment.element.get('id') for segment in segments]
+
+    def outside(self, tree, *lines, wrap=False):
+        """Print the parent's name, title and `lines` before each of its tables instead of in them."""
+        for table in tree.xpath('//table[starts-with(@id, "1-")]'):
+            name, title = (row[0].text for row in table.xpath('./tr')[:2])
+            for row in table.xpath('./tr')[:2]:
+                table.remove(row)
+            blocks = ''.join(f'<div>{line}</div>' for line in (name, title, *lines))
+            table.addprevious(html.fragment_fromstring(f'<div>{blocks}</div>' if wrap else f'<section>{blocks}</section>'))
+            if not wrap:
+                section = table.getprevious()
+                for block in list(section):
+                    table.addprevious(block)
+                section.getparent().remove(section)
+
+    def test_the_parents_name_in_the_other_spelling_of_its_legal_form(self):
+        tree, facts = fixture()
+        for cell in tree.xpath('//table[starts-with(@id, "1-")]/tr[1]/td'):
+            cell.text = 'THE PRIMARY CORP. AND SUBSIDIARY COMPANIES'
+        self.assertEqual(self.selected(tree, facts), self.PARENT)
+
+    def test_units_and_period_lines_between_the_title_and_the_table(self):
+        tree, facts = fixture()
+        self.outside(tree, '(millions, except per share amounts)', 'March 31, 2026 and 2025')
+        self.assertEqual(self.selected(tree, facts), self.PARENT)
+
+    def test_one_element_that_prints_several_header_lines(self):
+        tree, facts = fixture()
+        self.outside(tree, wrap=True)
+        self.assertEqual(self.selected(tree, facts), self.PARENT)
+
+    def test_another_name_or_any_other_line_still_ends_the_search(self):
+        for change in ('other name', 'sentence', 'sentence in one element'):
+            tree, facts = fixture()
+            if change == 'other name':
+                for cell in tree.xpath('//table[starts-with(@id, "1-")]/tr[1]/td'):
+                    cell.text = 'Primary Holdings Corporation'
+            else:
+                self.outside(tree, 'The following statement is unaudited and condensed.', wrap=change.endswith('element'))
+            with self.subTest(change=change), self.assertRaises(t.TableExtractionError):
+                t.select_statement_segments(tree, facts, corroborated_layouts=True)
+
+    def test_a_printed_name_is_matched_to_exactly_one_registrant(self):
+        from sec_pipeline.joint_statements import _company
+        utilities = {'1': 'AMERICAN ELECTRIC POWER CO INC.', '2': 'AEP TEXAS INC.'}
+        printed = 'AMERICAN ELECTRIC POWER COMPANY, INC. AND SUBSIDIARY COMPANIES'
+        self.assertIsNone(_company(printed, utilities))
+        self.assertEqual(_company(printed, utilities, spellings=True), '1')
+        self.assertEqual(_company('AEP Texas Inc. and Subsidiaries', utilities, spellings=True), '2')
+        self.assertEqual(_company('The Williams Companies, Inc.', {'1': 'Williams Companies, Inc.'}, spellings=True), '1')
+        self.assertEqual(_company('Southern Company and Subsidiary Companies', {'1': 'The Southern Company'}, spellings=True), '1')
+        self.assertEqual(_company('DTE Electric Company', {'1': 'DTE Energy Co', '2': 'DTE Electric Co'}, spellings=True), '2')
+        # Two registrants spelled alike, and a name printed for both at once, name neither.
+        self.assertIsNone(_company('The Example Corp.', {'1': 'Example Corp', '2': 'Example Corporation'}, spellings=True))
+        self.assertIsNone(_company('CARNIVAL CORPORATION & PLC', {'1': 'Carnival Corporation', '2': 'Carnival plc'}, spellings=True))
+        self.assertIsNone(_company('Consolidated Statements of Income', utilities, spellings=True))
+
+
 class ArchivedJointStatementTests(unittest.TestCase):
     CASES = {
         '0000922224-26-000044': ['div[291]/table', 'div[320]/table', 'div[330]/table', 'div[310]/table'],

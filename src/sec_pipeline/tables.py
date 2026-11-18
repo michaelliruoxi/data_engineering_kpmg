@@ -2144,7 +2144,19 @@ def select_statement_segments(tree, facts, *, cash_followers=False, corroborated
     """
     from .joint_statements import select_joint_statement_segments
     source_facts = _segment_facts(facts)
-    selected = select_joint_statement_segments(tree, source_facts)
+    try:
+        selected = select_joint_statement_segments(tree, source_facts)
+    except TableExtractionError:
+        if not corroborated_layouts:
+            raise
+        # A combined filing the established reading rejects is read once
+        # more; one it accepts keeps its exact segments and proof.
+        try:
+            selected = select_joint_statement_segments(tree, source_facts, header_lines=True)
+        except TableExtractionError:
+            selected = None
+        if selected is None:
+            raise
     if selected is not None:
         return selected
     try:
