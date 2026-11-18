@@ -210,8 +210,13 @@ DISPOSAL_CASH = 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIn
 
 def filing(*, income_header='Six Months Ended June 30, 2025', cash_concept='CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents',
            closing_label='Cash and cash equivalents at end of period', closing_date='2025-06-30',
-           income_title='Consolidated Statements of Income', registrant=None):
-    """Three ordinary statements, each one table under its printed title."""
+           income_title='Consolidated Statements of Income', registrant=None, split_balance=None):
+    """Three ordinary statements, each one table under its printed title.
+
+    `split_balance` prints the balance sheet as an assets table and a
+    liabilities-and-equity table: `between` is the HTML between them, `title`
+    the second table's title and `total` its liabilities-and-equity total.
+    """
     definitions = [
         ('income', income_title, income_header,
          [('Revenues', 'Revenues', '100', HALF), ('Operating income', 'OperatingIncomeLoss', '10', HALF),
@@ -226,6 +231,15 @@ def filing(*, income_header='Six Months Ended June 30, 2025', cash_concept='Cash
           ('Cash and cash equivalents at beginning of period', cash_concept, '20', {'instant': '2024-12-31'}),
           (closing_label, cash_concept, '25', {'instant': closing_date})]),
     ]
+    if split_balance is not None:
+        date = {'instant': '2025-06-30'}
+        title = split_balance.get('title', 'Consolidated Balance Sheets')
+        definitions[1:2] = [
+            ('assets', 'Consolidated Balance Sheets', 'June 30, 2025', [('Total assets', 'Assets', '100', date)]),
+            ('liabilities', f'{split_balance.get("between", "")}</p><p>{title}', 'June 30, 2025',
+             [('Total liabilities', 'Liabilities', '40', date), ('Total equity', 'StockholdersEquity', '60', date),
+              ('Total liabilities and equity', 'LiabilitiesAndStockholdersEquity', split_balance.get('total', '100'), date)]),
+        ]
     tables, facts = [], {}
     for key, heading, header, lines in definitions:
         rows = [f'<tr><td></td><td>{header}</td></tr>']
@@ -309,6 +323,138 @@ class WideTitleTests(unittest.TestCase):
         tree, facts = filing(income_title=options['income_title'], registrant='Somebody Else')
         with self.assertRaises(TableExtractionError):
             select_statement_segments(tree, facts, corroborated_layouts=True)
+
+
+class HeaderLineTests(unittest.TestCase):
+    REGISTRANTS = ['W. R. EXAMPLE CORP', 'AUTOEXAMPLE, INC /NY']
+    BALANCE = [('balance_sheet', 'Consolidated Balance Sheets')]
+
+    def headings(self, *blocks, header_lines=True, first_row='<td>Revenues</td><td>1</td>'):
+        tree = html.document_fromstring(
+            '<html><body>' + ''.join(f'<p>{block}</p>' for block in blocks)
+            + f'<table><tr>{first_row}</tr><tr><td>Revenues</td><td>1</td></tr></table></body></html>').getroottree()
+        [table] = tree.xpath('//table')
+        # As selection does: the other spellings of the name belong to this reading only.
+        found = recover_headings(table, wide=True, header_lines=header_lines,
+                                 registrants=registrant_names(self.REGISTRANTS, spellings=header_lines))
+        return [(item.kind, item.text) for item in found]
+
+    def test_lines_printed_between_a_title_and_its_table_are_passed_only_on_request(self):
+        lines = ('(Millions of Dollars, Except Share Data)', '(unaudited, in thousands, except per share data)',
+                 '(Dollars and shares in millions, except per share amounts; unaudited)',
+                 '(Unaudited; Dollars &amp; Shares in Millions Except Per Share Amounts)', '($ in millions)',
+                 'Millions of dollars, except per share data', 'March 31, 2025 and December 31, 2024',
+                 'FOR THE THREE- AND NINE-MONTHS ENDED SEPTEMBER 30, 2025 AND 2024',
+                 'Years Ended January 31, 2026, February 1, 2025 and February 3, 2024',
+                 'Three Months Ended March 31, 2025 and 2024 (in millions, except per share amounts)',
+                 'W. R. Example Corporation and Subsidiaries at December 31, 2025 and 2024',
+                 '____________________', 'Table of Contents', '36')
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertEqual(self.headings('Consolidated Balance Sheets', line), self.BALANCE)
+                self.assertEqual(self.headings('Consolidated Balance Sheets', line, header_lines=False), [])
+
+    def test_a_line_with_any_other_word_still_ends_the_search(self):
+        lines = ('The following table presents segment results', 'Segment results for the three months ended March 31, 2025',
+                 'Note 3', 'Millions of dollars, except for the acquisition described below', 'Supplemental information',
+                 'Three months ended March 31, 2025 compared with 2024', 'Somebody Else and Subsidiaries at December 31, 2025')
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertEqual(self.headings('Consolidated Balance Sheets', line), [])
+
+    def test_titles_with_missing_spaces_a_footnote_marker_or_another_spelling_of_the_registrant(self):
+        titles = {
+            'CONSOLIDATEDBALANCESHEETS (in thousands, except par values)': 'balance_sheet',
+            'CONDENSED CONSOLIDATEDSTATEMENTS OF INCOME AND TOTAL COMPREHENSIVE INCOME': 'income_statement',
+            '(UNAUDITED) CONSOLIDATED STATEMENTSOF EARNINGS AND COMPREHENSIVE EARNINGS': 'income_statement',
+            'CONSOLIDATED STATEMENTS OF CASH FLOWS(1)': 'cash_flow',
+            'CONSOLIDATED CASH FLOWS (Unaudited)': 'cash_flow',
+            'W. R. EXAMPLE CORPORATION AND SUBSIDIARIES CONSOLIDATED BALANCE SHEETS': 'balance_sheet',
+            'AutoExample, Inc. Consolidated Statements of Income': 'income_statement',
+            'AutoExample Incorporated &#8211; Consolidated Statements of Earnings': 'income_statement',
+        }
+        for title, kind in titles.items():
+            with self.subTest(title=title):
+                self.assertEqual([found for found, _ in self.headings(title)], [kind])
+                self.assertEqual(self.headings(title, header_lines=False), [])
+        for title in ('Cash Flows', 'Somebody Else Corporation Consolidated Balance Sheets', 'CONSOLIDATEDBALANCESHEETDATA',
+                      'Consolidated Statements of Cash Flows (1) continued from Note 2'):
+            with self.subTest(title=title):
+                self.assertEqual(self.headings(title), [])
+
+    def test_a_title_printed_over_two_lines_is_joined_only_where_the_break_is_inside_it(self):
+        first, second = 'CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS', 'AND COMPREHENSIVE INCOME (LOSS)'
+        self.assertEqual(self.headings(first, second, '(Unaudited)'), [('income_statement', f'{first} {second}')])
+        self.assertEqual(self.headings(first, second, '(Unaudited)', header_lines=False), [])
+        self.assertEqual(self.headings('CONDENSED CONSOLIDATED STATEMENTS OF', 'COMPREHENSIVE INCOME'),
+                         [('income_statement', 'CONDENSED CONSOLIDATED STATEMENTS OF COMPREHENSIVE INCOME')])
+        for lines in (('Consolidated Statements', 'Income'), ('Selected data of', 'Comprehensive Income'),
+                      (first, 'Comprehensive income is described in Note 4')):
+            with self.subTest(lines=lines):
+                self.assertEqual(self.headings(*lines), [])
+
+    def test_a_title_in_the_tables_own_header_beside_its_period(self):
+        row = '<td>CONDENSED CONSOLIDATED INCOME STATEMENTS (Unaudited)</td><td>Three Months Ended</td>'
+        self.assertEqual(self.headings(first_row=row), [('income_statement', 'CONDENSED CONSOLIDATED INCOME STATEMENTS (Unaudited)')])
+        self.assertEqual(self.headings(first_row=row, header_lines=False), [])
+        row = '<td>CONDENSED CONSOLIDATED INCOME STATEMENTS</td><td>By segment</td>'
+        self.assertEqual(self.headings(first_row=row), [])
+
+    def test_registrant_spellings_are_added_only_for_this_reading(self):
+        self.assertEqual(registrant_names(['CORNING INC /NY']), ('corning inc ny',))
+        self.assertEqual(set(registrant_names(['CORNING INC /NY'], spellings=True)), {'corning inc', 'corning incorporated'})
+        self.assertEqual(set(registrant_names(['Kroger Co'], spellings=True)), {'kroger co', 'kroger company'})
+        self.assertEqual(registrant_names(['Novo Nordisk A/S'], spellings=True), ('novo nordisk a s',))
+
+    def test_selection_reads_header_lines_after_every_other_reading_has_declined(self):
+        tree, facts = filing(income_title='CONSOLIDATEDSTATEMENTS OF INCOME</p><p>(Millions of Dollars, Except Share Data)')
+        with self.assertRaises(TableExtractionError):
+            select_statement_segments(tree, facts)
+        selected = select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertEqual([part.table_key for part in selected], ['income_statement', 'balance_sheet', 'cash_flow'])
+        tree, facts = filing(income_title='CONSOLIDATEDSTATEMENTS OF INCOME</p><p>Selected segment data in millions')
+        with self.assertRaises(TableExtractionError):
+            select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertIs(inspect.signature(recover_headings).parameters['header_lines'].default, False)
+        self.assertIs(inspect.signature(statement_kind).parameters['header_lines'].default, False)
+
+
+class TiedBalanceSheetTests(unittest.TestCase):
+    KEYS = ['income_statement', 'balance_sheet.segment_1', 'balance_sheet.segment_2', 'cash_flow']
+    NUMBERS = '<table><tr><td>Other assets</td><td><ix:nonfraction name="g:OtherAssets">5</ix:nonfraction></td></tr></table>'
+
+    def select(self, **split_balance):
+        tree, facts = filing(split_balance=split_balance)
+        return select_statement_segments(tree, facts, corroborated_layouts=True)
+
+    def test_two_tables_under_one_title_are_one_balance_sheet_when_the_totals_tie(self):
+        tree, facts = filing(split_balance={})
+        with self.assertRaisesRegex(TableExtractionError, 'balance_sheet: ambiguous or incomplete'):
+            select_statement_segments(tree, facts)
+        selected = self.select()
+        self.assertEqual([part.table_key for part in selected], self.KEYS)
+        assets, liabilities = selected[1], selected[2]
+        self.assertEqual([assets.element.get('id'), liabilities.element.get('id')], ['assets', 'liabilities'])
+        proof = assets.group['balance_continuation']
+        self.assertEqual(proof['verification_version'], 'tied-balance-totals-v1')
+        self.assertEqual(proof['totals'], [{'period': {'instant': '2025-06-30'},
+                                            'facts': {'Assets': 'assets-0', 'LiabilitiesAndStockholdersEquity': 'liabilities-2'},
+                                            'raw_values': {'Assets': '100', 'LiabilitiesAndStockholdersEquity': '100'}}])
+        self.assertEqual((assets.group['segment_index'], liabilities.group['segment_index']), (1, 2))
+
+    def test_footnotes_page_furniture_and_the_repeated_title_may_stand_between(self):
+        for between in ('See notes to consolidated financial statements.', 'Table of Contents',
+                        '<table><tr><td>86</td></tr></table>', '(1) Includes 5 of assets of consolidated entities.</p><p>86'):
+            with self.subTest(between=between):
+                self.assertEqual([part.table_key for part in self.select(between=between)], self.KEYS)
+
+    def test_totals_that_differ_another_title_or_anything_else_between_are_refused(self):
+        refused = ({'total': '101'}, {'title': 'Consolidated Statements of Financial Position'},
+                   {'between': self.NUMBERS}, {'between': 'Note 2. Summary of significant accounting policies'},
+                   {'between': 'Consolidated Statements of Cash Flows'}, {'between': 'Detail. ' * 300})
+        for options in refused:
+            with self.subTest(options=options), self.assertRaises(TableExtractionError):
+                self.select(**options)
 
 
 class SelectionTests(unittest.TestCase):

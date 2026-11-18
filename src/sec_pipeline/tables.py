@@ -1696,7 +1696,7 @@ def _cash_named_header_continuation(tree, first, table, facts, html_ids, heading
     return second
 
 
-def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corroborate=False):
+def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corroborate=False, extended=False):
     """Select original physical tables; v2 currently groups cash-flow continuations.
 
     Complete v1 selections are preserved. Split statements need matching exact
@@ -1704,6 +1704,10 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
     document adjacency. A group cannot contain two complete statements.
     `corroborate` (tables-v3 only) reads each candidate's column periods with
     `_corroborate_columns`, as extraction then does for the selected tables.
+    `extended` (with `corroborate`, tried last) gives a table that still has
+    no title the `header_lines` reading of `statement_headings.recover_headings`
+    and accepts a balance sheet printed as two tables whose totals tie
+    (`balance_segments.tied_balance_segments`).
     """
     concept_groups = _STATEMENT_CONCEPTS if concept_groups is None else concept_groups
     try:
@@ -1718,12 +1722,13 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
         if local(node) == 'nonfraction' and node.get('id'):
             html_ids[node.get('id')] = html_ids.get(node.get('id'), 0) + 1
     choices = {kind: [] for kind in concept_groups}
-    registrants = ()
+    registrants = spelled_registrants = ()
     if corroborate:
         from .statement_headings import registrant_names
-        registrants = registrant_names(record.get('raw_value') for record in facts.values()
-                                       if re.fullmatch(r'\{https?://xbrl\.sec\.gov/dei/[^}]+\}EntityRegistrantName',
-                                                       record.get('concept') or ''))
+        names = [record.get('raw_value') for record in facts.values()
+                 if re.fullmatch(r'\{https?://xbrl\.sec\.gov/dei/[^}]+\}EntityRegistrantName', record.get('concept') or '')]
+        registrants = registrant_names(names)
+        spelled_registrants = registrant_names(names, spellings=True) if extended else ()
     for table in tree.xpath('//table'):
         if _hidden(table) or table.xpath('.//table'):
             continue
@@ -1735,6 +1740,9 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
         if not kinds and corroborate:
             # Only a table no established rule recognizes gets the wider titles.
             heading_evidence = recover_headings(table, wide=True, registrants=registrants)
+            kinds = {item.kind for item in heading_evidence}
+        if not kinds and corroborate and extended:
+            heading_evidence = recover_headings(table, wide=True, registrants=spelled_registrants, header_lines=True)
             kinds = {item.kind for item in heading_evidence}
         for kind in kinds:
             if kind == 'cash_flow' and _standalone_cash_supplement(table):
@@ -1765,8 +1773,10 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
         if kind == 'balance_sheet' and not complete:
             balance_segments = _balance_header_continuation(tree, candidates, facts, html_ids)
             if balance_segments is None:
-                from .balance_segments import verified_balance_segments
+                from .balance_segments import tied_balance_segments, verified_balance_segments
                 balance_segments = verified_balance_segments(tree, candidates, facts)
+                if balance_segments is None and extended:
+                    balance_segments = tied_balance_segments(tree, candidates)
             if balance_segments is not None:
                 output.extend(balance_segments)
                 continue
@@ -2058,11 +2068,13 @@ def select_statement_segments(tree, facts, *, cash_followers=False, corroborated
         if selected is None and corroborated_layouts:
             # Last, so a filing the two established selections accept keeps
             # its exact segments and proof.
-            try:
-                selected = _select_statement_segments_v2(tree, facts, concept_groups=_CORROBORATED_STATEMENT_CONCEPTS,
-                                                         corroborate=True)
-            except TableExtractionError:
-                selected = None
+            for extended in (False, True):
+                try:
+                    selected = _select_statement_segments_v2(tree, facts, concept_groups=_CORROBORATED_STATEMENT_CONCEPTS,
+                                                             corroborate=True, extended=extended)
+                    break
+                except TableExtractionError:
+                    selected = None
         if selected is None:
             raise
     selected = _validate_primary_scope(selected, source_facts)
