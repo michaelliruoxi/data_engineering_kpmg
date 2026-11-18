@@ -469,7 +469,7 @@ class HeaderLineTests(unittest.TestCase):
                  'Years Ended January 31, 2026, February 1, 2025 and February 3, 2024',
                  'Three Months Ended March 31, 2025 and 2024 (in millions, except per share amounts)',
                  'W. R. Example Corporation and Subsidiaries at December 31, 2025 and 2024',
-                 '____________________', 'Table of Contents', '36')
+                 'W. R. EXAMPLE CORP. &amp; SUBSIDIARIES', '____________________', 'Table of Contents', '36')
         for line in lines:
             with self.subTest(line=line):
                 self.assertEqual(self.headings('Consolidated Balance Sheets', line), self.BALANCE)
@@ -491,6 +491,7 @@ class HeaderLineTests(unittest.TestCase):
             'CONSOLIDATED STATEMENTS OF CASH FLOWS(1)': 'cash_flow',
             'CONSOLIDATED CASH FLOWS (Unaudited)': 'cash_flow',
             'W. R. EXAMPLE CORPORATION AND SUBSIDIARIES CONSOLIDATED BALANCE SHEETS': 'balance_sheet',
+            'W. R. Example Corp. &amp; Subsidiaries Consolidated Balance Sheets': 'balance_sheet',
             'AutoExample, Inc. Consolidated Statements of Income': 'income_statement',
             'AutoExample Incorporated &#8211; Consolidated Statements of Earnings': 'income_statement',
         }

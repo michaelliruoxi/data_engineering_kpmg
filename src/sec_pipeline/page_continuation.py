@@ -1,0 +1,296 @@
+"""Statements the established selection rejects for their page layout.
+
+tables-v3 `extended` selection only, and only for a statement kind the
+established rules found "ambiguous or incomplete", so a filing they accept
+keeps the selection it has. Two layouts are read here:
+
+* a note repeats a statement's title above a table that holds none of the
+  statement's totals (`without_note_tables`);
+* a statement runs on to the next page in a table printed without a title
+  (`page_continuation`).
+"""
+
+from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
+import json
+import re
+
+from .source_locators import source_xpath
+
+
+_GAAP = r'\{https?://(?:fasb\.org|xbrl\.us)/us-gaap/[^}]+\}'
+_CIK = {'http://www.sec.gov/CIK', 'https://www.sec.gov/CIK'}
+_ACTIVITIES = (('operating', 'NetCashProvidedByUsedInOperatingActivities'),
+               ('investing', 'NetCashProvidedByUsedInInvestingActivities'),
+               ('financing', 'NetCashProvidedByUsedInFinancingActivities'))
+_NET_CHANGE = re.compile(r'(?:CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents|CashAndCashEquivalents)'
+                         r'PeriodIncreaseDecrease(?:IncludingExchangeRateEffect|ExcludingExchangeRateEffect)?')
+_NET_INCOME = ('ProfitLoss', 'NetIncomeLoss', 'IncomeLossFromContinuingOperations',
+               'IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest')
+VERIFICATION_VERSION = 'page-continuation-v1'
+
+
+def in_note(table):
+    """The table lies inside a tagged text block: a note or a policy, never a primary statement."""
+    from .tables import local
+
+    return any(local(node) in {'nonnumeric', 'continuation'} for node in table.iterancestors())
+
+
+def without_note_tables(candidates):
+    """Leave out tables of a note that carry a statement's title and none of its totals."""
+    return [candidate for candidate in candidates
+            if candidate['continued'] or any(candidate['coverage'].values()) or not in_note(candidate['table'])]
+
+
+def _name(ref):
+    return ref['concept'].split('}', 1)[-1]
+
+
+def _amount(ref):
+    try:
+        amount = Decimal(ref['raw_value'])
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return amount if amount.is_finite() else None
+
+
+def _core(refs):
+    """Reported standard facts of the whole entity: no dimension, no nil, a finite amount."""
+    return [ref for ref in refs if not ref['dimensions'] and not ref['is_nil'] and re.match(_GAAP, ref['concept'])
+            and _amount(ref) is not None]
+
+
+def _one(refs):
+    """The fact a line reports, when every tag of that line gives the same amount."""
+    return refs[0] if refs and len({_amount(ref) for ref in refs}) == 1 else None
+
+
+def _cash_tie(period, first_refs, second_refs):
+    """Opening cash plus the activity totals and the exchange-rate effect equals closing cash."""
+    from .tables import _CASH_TOTAL_CONCEPTS
+
+    opening_at = {'instant': (date.fromisoformat(period['startDate']) - timedelta(days=1)).isoformat()}
+    closing_at = {'instant': period['endDate']}
+    refs = _core([*first_refs, *second_refs])
+    used = {}
+    for label, concept in _ACTIVITIES:
+        used[label] = (_one([ref for ref in refs if _name(ref) == concept and ref['period'] == period])
+                       or _one([ref for ref in refs if _name(ref) == concept + 'ContinuingOperations'
+                                and ref['period'] == period]))
+        if used[label] is None:
+            return None
+    flows = sum(_amount(used[label]) for label, _ in _ACTIVITIES)
+    effects = [ref for ref in refs if _name(ref).startswith('EffectOfExchangeRateOn') and ref['period'] == period]
+    effect = Decimal(0)
+    if effects:
+        if _one(effects) is None:
+            return None
+        used['exchange_rate_effect'], effect = effects[0], _amount(effects[0])
+    for concept in _CASH_TOTAL_CONCEPTS:
+        opening = _one([ref for ref in refs if _name(ref) == concept and ref['period'] == opening_at])
+        closing = _one([ref for ref in refs if _name(ref) == concept and ref['period'] == closing_at])
+        if opening is not None and closing is not None and _amount(opening) + flows + effect == _amount(closing):
+            used['opening'], used['closing'] = opening, closing
+            break
+    else:
+        return None
+    # A printed net change must be the one these totals give.
+    for ref in refs:
+        if ref['period'] == period and _NET_CHANGE.fullmatch(_name(ref)):
+            expected = flows if _name(ref).endswith('ExcludingExchangeRateEffect') else flows + effect
+            if _amount(ref) != expected:
+                return None
+            used.setdefault('net_change', ref)
+    return used
+
+
+def _income_tie(period, first_refs, second_refs):
+    """Income before income taxes less income tax expense equals a net income line of the second table."""
+    first = [ref for ref in _core(first_refs) if ref['period'] == period]
+    tax = _one([ref for ref in first if _name(ref) == 'IncomeTaxExpenseBenefit'])
+    if tax is None:
+        return None
+    for before in first:
+        if not _name(before).startswith('IncomeLossFromContinuingOperationsBeforeIncomeTaxes'):
+            continue
+        for ref in _core(second_refs):
+            if (ref['period'] == period and _name(ref) in _NET_INCOME
+                    and _amount(before) - _amount(tax) == _amount(ref)):
+                return {'before_income_taxes': before, 'income_tax': tax, 'net_income': ref}
+    return None
+
+
+def _scope(refs):
+    """The one registrant and currency the tied facts share, or None."""
+    scopes = {json.dumps({key: ref[key] for key in ('entity', 'unit', 'dimensions')}, sort_keys=True) for ref in refs}
+    if len(scopes) != 1:
+        return None
+    scope = json.loads(next(iter(scopes)))
+    entity, unit = scope['entity'], scope['unit']
+    if (not isinstance(entity, dict) or entity.get('scheme') not in _CIK
+            or not re.fullmatch(r'[0-9]{1,10}', entity.get('identifier') or '')
+            or not isinstance(unit, dict) or unit.get('denominator') != [] or len(unit.get('numerator') or []) != 1
+            or not re.fullmatch(r'\{http://www.xbrl.org/2003/iso4217\}[A-Z]{3}', unit['numerator'][0])):
+        return None
+    return scope
+
+
+def page_continuation(tree, kind, first, table, facts, html_ids, concept_groups):
+    """Return a titled table and the untitled table that continues it on the next page.
+
+    `first` is the one incomplete titled table of its kind and `table` the
+    next table of the document, for which no reading finds a title. Both
+    lie outside the notes and only page furniture separates them. The second
+    table either prints the first table's column periods again, or prints no
+    column headers and has the same columns, in which case each column takes
+    the period the first table gives it. Both report one entity; together
+    they hold every concept group, and (except for a liabilities total) no
+    group twice. The statement's own arithmetic must then hold across the
+    page break for every period:
+
+    * balance sheet: the one total assets fact of the first table equals the
+      one total liabilities and equity fact of the second
+      (`balance_segments.tied_balance_segments`);
+    * cash flow: opening cash plus the three activity totals and the
+      exchange-rate effect equals closing cash, and a tagged net change
+      agrees with those totals;
+    * income statement: income before income taxes less income tax expense,
+      both in the first table, equals a net income line of the second.
+    """
+    from .tables import (StatementSegment, TableExtractionError, _column_periods, _page_furniture_between,
+                         _segment_candidate, column_headers, layout_grid, local)
+
+    required = set(range(len(concept_groups[kind])))
+    shape = {'instant'} if kind == 'balance_sheet' else {'startDate', 'endDate'}
+    covered = set().union(*first['coverage'].values()) if first['coverage'] else set()
+    if (not first['axes'] or not first['headings'] or first['continued'] or not covered or covered >= required
+            or any(groups != covered for groups in first['coverage'].values())
+            or any(set(json.loads(axis)) != shape for axis in first['axes'])
+            or in_note(first['table']) or in_note(table)
+            or not _page_furniture_between(tree, first['table'], table, kind)):
+        return None
+
+    def numeric(row):
+        return any(local(node) == 'nonfraction' for cell in row for node in cell['_element'].iter())
+
+    first_rows, first_grid = layout_grid(first['table'], tree)
+    rows, grid = layout_grid(table, tree)
+    first_data = next(index for index, row in enumerate(first_rows) if numeric(row))
+    data = next((index for index, row in enumerate(rows) if numeric(row)), None)
+    if data is None or not grid or not first_grid:
+        return None
+    columns = sorted({cell['column'] for row in rows[data:] for cell in row if cell['column'] > 0})
+    inherited = {}
+    if not any(column_headers(rows, data, column) for column in columns):
+        if len(first_grid[0]) != len(grid[0]):
+            return None
+        periods, _ = _column_periods(first_rows, first_data, facts, {}, html_ids, advanced=True, corroborate=True)
+        for column in columns:
+            period = periods.get(column)
+            if period is not None and set(period) == shape:
+                inherited[str(column)] = {'period': period, 'source_cells': [
+                    {'source_xpath': cell['source_xpath'], 'display_text': cell['display_text'],
+                     'row': cell['row'], 'column': cell['column'], 'colspan': cell['colspan']}
+                    for row in first_rows[:first_data] for cell in row
+                    if cell['display_text'] and cell['column'] <= column < cell['column'] + cell['colspan']]}
+    try:
+        # Inherited headers establish their own periods; corroboration never adds to them.
+        second = _segment_candidate(
+            tree, table, kind, facts, html_ids, concept_groups=concept_groups, corroborate=not inherited,
+            inherited_periods={int(column): value['period'] for column, value in inherited.items()} or None)
+    except TableExtractionError:
+        return None
+    if second is None or second['axes'] != first['axes']:
+        return None
+    entities = {json.dumps(ref['entity'], sort_keys=True) for candidate in (first, second)
+                for refs in candidate['references'].values() for ref in refs}
+    if len(entities) != 1:
+        return None
+    second = second | {'headings': set(first['headings']), 'continued': False}
+    evidence = {'verification_version': VERIFICATION_VERSION, 'untitled_table': source_xpath(tree, table)}
+    if kind == 'balance_sheet':
+        from .balance_segments import tied_balance_segments
+
+        tied = tied_balance_segments(tree, [first, second])
+        if tied is None:
+            return None
+        common = {key: value for key, value in tied[0].group.items() if key != 'segment_index'}
+    else:
+        if any(first['coverage'][axis] & second['coverage'][axis]
+               or first['coverage'][axis] | second['coverage'][axis] != required for axis in first['axes']):
+            return None
+        tie = _cash_tie if kind == 'cash_flow' else _income_tie
+        ties, tied_refs, groups = [], [], []
+        for axis in first['axes']:
+            period = json.loads(axis)
+            used = tie(period, first['references'][axis], second['references'][axis])
+            if used is None:
+                return None
+            tied_refs.extend(used.values())
+            ties.append({'period': period, 'facts': {name: ref['xml_id'] for name, ref in used.items()},
+                         'raw_values': {name: ref['raw_value'] for name, ref in used.items()}})
+            combined = {group: list(identities) for group, identities in first['evidence'][axis].items()}
+            for group, identities in second['evidence'][axis].items():
+                combined.setdefault(group, []).extend(identities)
+            groups.append({'period': period, 'groups': combined})
+        scope = _scope(tied_refs)
+        if scope is None:
+            return None
+        keys = [f'{kind}.segment_1', f'{kind}.segment_2']
+        common = {'group_key': kind, 'segment_count': 2, 'segment_keys': keys,
+                  'source_xpaths': [source_xpath(tree, first['table']), source_xpath(tree, table)],
+                  'heading': sorted(first['headings'])[0],
+                  'column_periods': [json.loads(axis) for axis in first['axes']], 'scope': scope,
+                  'combined_concept_evidence': groups}
+        evidence |= {'ties': ties, 'detail_scopes': sorted(first['scopes'] | second['scopes'])}
+    common['page_continuation'] = evidence
+    inheritance = ({'header_inheritance': {'source_table_key': common['segment_keys'][0],
+                                           'source_xpath': source_xpath(tree, first['table']), 'columns': inherited}}
+                   if inherited else {})
+    return (StatementSegment(kind, common['segment_keys'][0], first['table'], common | {'segment_index': 1}),
+            StatementSegment(kind, common['segment_keys'][1], table, common | {'segment_index': 2} | inheritance))
+
+
+def recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups):
+    """Select a statement the established rules leave "ambiguous or incomplete", or return None.
+
+    With the note tables left out, one complete table that no other candidate
+    shares a title with is the statement, as the established rule has it.
+    Otherwise a titled table that shares its title with no other candidate
+    may continue on the next page (`page_continuation`); exactly one must.
+    A cash flow statement is read this way only as the single candidate left.
+    """
+    from .tables import StatementSegment, _hidden, local
+
+    required = set(range(len(concept_groups[kind])))
+    kept = without_note_tables(candidates)
+
+    def alone(candidate):
+        return (not candidate['continued'] and (kind != 'cash_flow' or len(kept) == 1)
+                and all(other is candidate or (not other['continued']
+                        and not other['headings'].intersection(candidate['headings'])) for other in kept))
+
+    complete = [candidate for candidate in kept
+                if candidate['axes'] and all(groups == required for groups in candidate['coverage'].values())]
+    if complete:
+        if (len(kept) != len(candidates) and len(complete) == 1 and alone(complete[0])
+                and not in_note(complete[0]['table'])):
+            return (StatementSegment(kind, kind, complete[0]['table']),)
+        return None
+    tables = [table for table in tree.xpath('//table') if not _hidden(table) and not table.xpath('.//table')]
+    positions = {table: index for index, table in enumerate(tables)}
+    found = []
+    for first in kept:
+        if not alone(first):
+            continue
+        # The next table that holds a number; a layout table before it counts
+        # as page furniture, which `page_continuation` checks.
+        following = next((table for table in tables[positions[first['table']] + 1:]
+                          if any(local(node) == 'nonfraction' for node in table.iter())), None)
+        if following is None or following not in untitled:
+            continue
+        segments = page_continuation(tree, kind, first, following, facts, html_ids, concept_groups)
+        if segments is not None:
+            found.append(segments)
+    return found[0] if len(found) == 1 else None

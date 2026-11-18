@@ -1925,6 +1925,7 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
         if local(node) == 'nonfraction' and node.get('id'):
             html_ids[node.get('id')] = html_ids.get(node.get('id'), 0) + 1
     choices = {kind: [] for kind in concept_groups}
+    untitled = set()
     registrants = spelled_registrants = ()
     if corroborate:
         from .statement_headings import registrant_names
@@ -1949,6 +1950,8 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
             heading_evidence = _memo(('recover_header_lines', table), lambda: recover_headings(
                 table, wide=True, registrants=spelled_registrants, header_lines=True))
             kinds = {item.kind for item in heading_evidence}
+        if not kinds:
+            untitled.add(table)
         for kind in kinds:
             if kind == 'cash_flow' and _standalone_cash_supplement(table):
                 continue
@@ -2004,7 +2007,16 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
             output.append(StatementSegment(kind, kind, candidates[0]['table']))
             continue
         if kind != 'cash_flow' or len(candidates) < 2 or len(complete) > 1:
-            raise TableExtractionError(f'{kind}: ambiguous or incomplete physical statement segments')
+            recovered = None
+            if extended:
+                # Only where every established rule gives up: a note table
+                # under the statement's title, or an untitled next page.
+                from .page_continuation import recover
+                recovered = recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups)
+            if recovered is None:
+                raise TableExtractionError(f'{kind}: ambiguous or incomplete physical statement segments')
+            output.extend(recovered)
+            continue
         candidates = _include_cash_reconciliations(tree, candidates, facts, html_ids)
         first = candidates[0]
         if first['continued'] or not first['axes'] or len(first['scopes']) != 1:

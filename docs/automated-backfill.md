@@ -439,7 +439,7 @@ its table. The whole line must be made of these:
 | --- | --- |
 | Units | "(Millions of Dollars, Except Share Data)", "(Unaudited; in millions, except per share amounts)" |
 | Periods and dates | "March 31, 2025 and December 31, 2024", "For the Three- and Nine-Months Ended September 30, 2025 and 2024" |
-| The registrant's name, in either spelling of its legal form | "W. R. Berkley Corporation and Subsidiaries" for the DEI name "W. R. BERKLEY CORP" |
+| The registrant's name, in either spelling of its legal form | "W. R. Berkley Corporation and Subsidiaries" for the DEI name "W. R. BERKLEY CORP"; "Emerson Electric Co. & Subsidiaries" |
 | Running page headers, rules and page numbers | "Table of Contents", "Item 1. Financial Statements", "36" |
 
 A line with any other word still ends the search. The same reading accepts a
@@ -488,6 +488,43 @@ continuation. The last attempt also passes a small table without numbers, such
 as a page number, under the same conditions as between the two tables of a
 balance sheet.
 
+**A statement continued on an untitled next page.** Many filings break a
+statement at the page end and print the rest as a new table with no title,
+after only a page number. Where the established rules find one incomplete
+titled table of a kind, the last attempt reads the next table that holds a
+number as its continuation (`page_continuation`, `page-continuation-v1`) when
+all of these hold:
+
+- no reading finds a title for the second table, and neither table lies inside
+  a tagged text block (a note);
+- nothing but footnotes and page furniture stands between them, as above;
+- the second table prints the first table's column periods again, or prints no
+  column headers and has the same columns, in which case each column takes the
+  period the first table gives it (`header_inheritance`);
+- both tables report one entity, together they hold every concept group, and
+  the first shares its title with no other table read as that statement;
+- the statement's own arithmetic holds across the page break for every period.
+
+| Statement | Arithmetic that must hold |
+| --- | --- |
+| Balance sheet | The one total assets fact of the first table equals the one total liabilities and equity fact of the second (`tied-balance-totals-v1`) |
+| Cash flow | Opening cash plus the operating, investing and financing totals and the exchange-rate effect equals closing cash; a tagged net change must agree with those totals |
+| Income statement | Income before income taxes less income tax expense, both in the first table, equals a net income line of the second |
+
+The tables are stored as `<kind>.segment_1` and `<kind>.segment_2` with the
+tied facts in `page_continuation`. A cash flow statement is read this way only
+when it is the single table found under a cash flow title.
+
+**A note table under a statement's title.** A note sometimes repeats a
+statement's title above a table of detail ("Condensed Consolidated Balance
+Sheets" over a table of deferred revenue). The established rules then find two
+tables under one title and reject the statement. The last attempt leaves such a
+table out when it lies inside a tagged text block, is not marked as a
+continuation and holds none of the statement's totals; the one complete table
+outside the notes is then the statement, stored as a single table as before. A
+note table that holds a statement total, or the same table outside a note,
+still makes the statement ambiguous.
+
 **Utility revenue.** When every reading above has declined the filing,
 selection is tried a final time counting
 `RegulatedAndUnregulatedOperatingRevenue`, the total operating revenue a
@@ -517,9 +554,9 @@ Measured offline on the 3,305 filings archived on this machine:
 | --- | --- | ---: |
 | Parsed cleanly | Byte-identical tables | 1,887 |
 | Statements selected, unresolved cells | Parse cleanly | 364 |
-| Rejected at statement selection | Parse cleanly | 457 |
+| Rejected at statement selection | Parse cleanly | 503 |
 | Statements selected, unresolved cells | Still not accepted | 191 |
-| Rejected at statement selection | Still not accepted | 406 |
+| Rejected at statement selection | Still not accepted | 360 |
 
 Filings already stored as text-only are not retried automatically; replay them
 as described above.
