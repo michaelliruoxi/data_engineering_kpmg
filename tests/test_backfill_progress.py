@@ -67,6 +67,28 @@ def test_validated_only_ingestion_filters_work_without_trusting_the_dry_run(queu
     assert queue.state['last_run']['complete'] is False
 
 
+def test_pending_only_skips_stored_imports_and_earlier_failures(progressing_queue):
+    queue = progressing_queue
+    failed, pending, done = queue.accessions
+    queue.state['filings'][failed]['status'] = 'failed'
+    queue.state['filings'][done]['status'] = 'ingested'
+    untouched = {key: deepcopy(queue.state['filings'][key]) for key in (failed, done)}
+    assert backfill.process_queue(queue.path, queue.state, None, queue.root,
+        pending_only=True, emit=lambda event: None) == 1
+    assert queue.dry_run.call_count == 1
+    assert queue.dry_run.call_args.kwargs['manifest_path'].parent.name == pending
+    assert queue.state['filings'][pending]['status'] == 'validated'
+    assert all(queue.state['filings'][key] == entry for key, entry in untouched.items())
+    assert queue.state['last_run']['complete'] is False
+
+
+@pytest.mark.parametrize('other', ['retry_failed_only', 'validated_only'])
+def test_pending_only_rejects_other_selections(queue, other):
+    with pytest.raises(ValueError, match='Pending-only'):
+        backfill.process_queue(queue.path, queue.state, None, queue.root, mode='ingest',
+            connection=Connection(), pending_only=True, emit=lambda event: None, **{other: True})
+
+
 @pytest.mark.parametrize('size', [1000, 1500])
 def test_database_size_limit_preserves_pending_entry_and_does_not_import(queue, monkeypatch, size):
     from types import SimpleNamespace

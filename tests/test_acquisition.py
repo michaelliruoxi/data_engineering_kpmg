@@ -119,6 +119,42 @@ class SecTransportTests(unittest.TestCase):
                 client.get(SUBMISSIONS)
         self.assertEqual(len(calls), 2)
 
+    def test_transport_failures_get_the_same_bounded_retry(self):
+        calls = []
+
+        def respond(request):
+            calls.append(request)
+            if len(calls) < 3:
+                raise httpx.ConnectTimeout("timed out", request=request)
+            return httpx.Response(200, content=b"source")
+
+        with SecClient(IDENTITY, transport=httpx.MockTransport(respond)) as client, \
+                patch("sec_pipeline.acquisition.time.sleep"):
+            data, _ = client.get(SUBMISSIONS)
+            self.assertEqual([event.get("result") for event in client.request_log],
+                             ["transient_retry", "transient_retry", None])
+        self.assertEqual((data, len(calls)), (b"source", 3))
+        # A persistent outage still ends the request, and with it the run.
+        calls.clear()
+        with SecClient(IDENTITY, max_retries=1, transport=httpx.MockTransport(respond)) as client, \
+                patch("sec_pipeline.acquisition.time.sleep"):
+            with self.assertRaisesRegex(AcquisitionError, "ConnectTimeout"):
+                client.get(SUBMISSIONS)
+        self.assertEqual(len(calls), 2)
+
+    def test_non_transient_http_errors_are_not_retried(self):
+        calls = []
+
+        def respond(request):
+            calls.append(request)
+            raise httpx.DecodingError("bad encoding", request=request)
+
+        with SecClient(IDENTITY, transport=httpx.MockTransport(respond)) as client, \
+                patch("sec_pipeline.acquisition.time.sleep"):
+            with self.assertRaisesRegex(AcquisitionError, "DecodingError"):
+                client.get(SUBMISSIONS)
+        self.assertEqual(len(calls), 1)
+
     def test_declared_and_streamed_size_limits(self):
         for headers, stream in (({"Content-Length": "9"}, None), ({}, httpx.ByteStream(b"too large"))):
             def respond(request):

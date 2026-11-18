@@ -68,3 +68,10 @@ def test_launcher_offline_and_validated_only_switches_reach_the_importer():
     assert 'if ($RetryFailedOnly -and $ValidatedOnly) {' in text
     # Only a run that contacts the SEC needs the contact identity.
     assert 'if (-not $Offline -and -not $env:EDGAR_IDENTITY) {' in text
+
+
+def test_launcher_pending_only_switch_reaches_the_importer():
+    text=(Path(__file__).parents[1]/'scripts/start_backfill.ps1').read_text()
+    assert '[switch]$PendingOnly' in text
+    assert "if ($PendingOnly) { $arguments += '--pending-only' }" in text
+    assert 'if ($PendingOnly -and ($RetryFailedOnly -or $ValidatedOnly)) {' in text

@@ -105,10 +105,16 @@ def validate_sec_url(url: str) -> str:
     return url
 
 
+# A single timeout or dropped connection must not end a multi-day run; a
+# persistent outage still exhausts the retries and stops it.
+_TRANSIENT_TRANSPORT_ERRORS = (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)
+
+
 class SecClient:
     """One sequential, TLS-verified SEC client with a runtime-only identity.
 
-    Only transient HTTP 500/502/503/504 responses receive bounded retries.
+    Transient HTTP 500/502/503/504 responses and transient transport failures
+    (timeouts, dropped or refused connections) receive the same bounded retries.
     Authentication/rate blocks stop the client permanently, including responses
     disguised as successful HTML. Contact details are never copied to metadata.
     """
@@ -196,6 +202,10 @@ class SecClient:
                         return data, metadata
                 except httpx.HTTPError as exc:
                     event["error"] = type(exc).__name__
+                    if isinstance(exc, _TRANSIENT_TRANSPORT_ERRORS) and attempt < self.max_retries:
+                        event["result"] = "transient_retry"
+                        time.sleep(min(2 ** attempt, 8))
+                        continue
                     raise AcquisitionError(f"SEC request failed ({type(exc).__name__}).") from None
         raise AcquisitionError("SEC request failed.")  # pragma: no cover
 
