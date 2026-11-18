@@ -7,6 +7,7 @@ import unittest
 from lxml import html
 
 from sec_pipeline import filing_adapter_v3
+from sec_pipeline.statement_headings import recover_headings, registrant_names, statement_kind
 from sec_pipeline.tables import (
     TableExtractionError, _CORROBORATED_STATEMENT_CONCEPTS, _STATEMENT_CONCEPTS, _column_periods,
     _endpoint_balance_period, _printed_period_tokens, _segment_candidate, extract_tables, layout_grid,
@@ -208,10 +209,11 @@ DISPOSAL_CASH = 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIn
 
 
 def filing(*, income_header='Six Months Ended June 30, 2025', cash_concept='CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents',
-           closing_label='Cash and cash equivalents at end of period', closing_date='2025-06-30'):
+           closing_label='Cash and cash equivalents at end of period', closing_date='2025-06-30',
+           income_title='Consolidated Statements of Income', registrant=None):
     """Three ordinary statements, each one table under its printed title."""
     definitions = [
-        ('income', 'Consolidated Statements of Income', income_header,
+        ('income', income_title, income_header,
          [('Revenues', 'Revenues', '100', HALF), ('Operating income', 'OperatingIncomeLoss', '10', HALF),
           ('Net income', 'NetIncomeLoss', '8', HALF)]),
         ('balance', 'Consolidated Balance Sheets', 'June 30, 2025',
@@ -237,9 +239,76 @@ def filing(*, income_header='Six Months Ended June 30, 2025', cash_concept='Cash
                                  'unit': {'numerator': ['{http://www.xbrl.org/2003/iso4217}USD'], 'denominator': []},
                                  'entity': {'scheme': 'http://www.sec.gov/CIK', 'identifier': '0000000001'}}
         tables.append(f'<p>{heading}</p><table id="{key}">{"".join(rows)}</table>')
+    if registrant:
+        facts['name'] = {'xml_id': 'name', 'concept': '{http://xbrl.sec.gov/dei/2026}EntityRegistrantName',
+                         'context_ref': 'name', 'unit_ref': None, 'period': dict(HALF), 'raw_value': registrant,
+                         'is_nil': False, 'dimensions': [], 'unit': None,
+                         'entity': {'scheme': 'http://www.sec.gov/CIK', 'identifier': '0000000001'}}
     tree = html.document_fromstring(f'<html xmlns:g="{GAAP}" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"><body>'
                                    + ''.join(tables) + '</body></html>').getroottree()
     return tree, facts
+
+
+class WideTitleTests(unittest.TestCase):
+    NAMES = registrant_names(['The Example Group', 'Example & Sons'])
+    ACCEPTED = {
+        'The Example Group Consolidated Statements of Income': 'income_statement',
+        'Example & Sons and Subsidiaries Consolidated Balance Sheets': 'balance_sheet',
+        'Consolidated Balance Sheets in thousands, except par values': 'balance_sheet',
+        'Condensed Consolidated Statements of Net Income': 'income_statement',
+        'Consolidated Statements of Earnings and Comprehensive Earnings': 'income_statement',
+        'Interim Condensed Consolidated Statements of Operations and Comprehensive Income (Loss)': 'income_statement',
+        'Condensed and Consolidated Statements of Comprehensive Income': 'income_statement',
+        'Consolidated and Combined Statements of Earnings': 'income_statement',
+        'Consolidated Statements of (Loss) Earnings': 'income_statement',
+        'Statements of Income and Total Comprehensive Income': 'income_statement',
+        'Consolidated Results of Operations': 'income_statement',
+        'Consolidated Statement of Condition': 'balance_sheet',
+    }
+
+    def test_wider_titles_are_read_only_on_request(self):
+        for title, kind in self.ACCEPTED.items():
+            with self.subTest(title=title):
+                self.assertIsNone(statement_kind(title))
+                self.assertEqual(statement_kind(title, wide=True, registrants=self.NAMES), kind)
+
+    def test_the_whole_text_must_still_be_a_title(self):
+        refused = ('See the Consolidated Statements of Income', 'Notes to Consolidated Statements of Income',
+                   'Another Company Consolidated Statements of Income', 'Parent Company Statements of Cash Flows',
+                   'Statements of Income Data', 'Statements of Changes in Equity', 'Selected Financial Data',
+                   'Results of Operations by Segment', 'The Example Group')
+        for title in refused:
+            with self.subTest(title=title):
+                self.assertIsNone(statement_kind(title, wide=True, registrants=self.NAMES))
+
+    def test_established_titles_mean_the_same_with_and_without_the_option(self):
+        for title in ('Consolidated Statements of Income', 'Condensed Consolidated Balance Sheets',
+                      'Statements of Consolidated Cash Flows', 'Consolidated Statements of Operations and Comprehensive Loss'):
+            with self.subTest(title=title):
+                self.assertIsNotNone(statement_kind(title))
+                self.assertEqual(statement_kind(title, wide=True, registrants=self.NAMES), statement_kind(title))
+
+    def test_a_registrant_name_between_title_and_table_is_header_metadata(self):
+        tree = html.document_fromstring(
+            '<html><body><p>Consolidated Statements of Net Income</p><p>The Example Group</p>'
+            '<table><tr><td>Revenues</td><td>1</td></tr></table></body></html>').getroottree()
+        [table] = tree.xpath('//table')
+        self.assertEqual(recover_headings(table), ())
+        [evidence] = recover_headings(table, wide=True, registrants=self.NAMES)
+        self.assertEqual((evidence.kind, evidence.text), ('income_statement', 'Consolidated Statements of Net Income'))
+        self.assertEqual(recover_headings(table, wide=True, registrants=registrant_names(['Somebody Else'])), ())
+
+    def test_selection_reads_a_title_printed_after_the_registrant_name(self):
+        options = {'income_title': 'The Example Group Consolidated Statements of Income', 'registrant': 'The Example Group'}
+        tree, facts = filing(**options)
+        with self.assertRaises(TableExtractionError):
+            select_statement_segments(tree, facts)
+        selected = select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertEqual([part.table_key for part in selected], ['income_statement', 'balance_sheet', 'cash_flow'])
+        # Another company's name is not this filing's title.
+        tree, facts = filing(income_title=options['income_title'], registrant='Somebody Else')
+        with self.assertRaises(TableExtractionError):
+            select_statement_segments(tree, facts, corroborated_layouts=True)
 
 
 class SelectionTests(unittest.TestCase):

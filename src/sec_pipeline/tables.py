@@ -1718,6 +1718,12 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
         if local(node) == 'nonfraction' and node.get('id'):
             html_ids[node.get('id')] = html_ids.get(node.get('id'), 0) + 1
     choices = {kind: [] for kind in concept_groups}
+    registrants = ()
+    if corroborate:
+        from .statement_headings import registrant_names
+        registrants = registrant_names(record.get('raw_value') for record in facts.values()
+                                       if re.fullmatch(r'\{https?://xbrl\.sec\.gov/dei/[^}]+\}EntityRegistrantName',
+                                                       record.get('concept') or ''))
     for table in tree.xpath('//table'):
         if _hidden(table) or table.xpath('.//table'):
             continue
@@ -1725,6 +1731,10 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
         heading_evidence = ()
         if not kinds:
             heading_evidence = recover_headings(table)
+            kinds = {item.kind for item in heading_evidence}
+        if not kinds and corroborate:
+            # Only a table no established rule recognizes gets the wider titles.
+            heading_evidence = recover_headings(table, wide=True, registrants=registrants)
             kinds = {item.kind for item in heading_evidence}
         for kind in kinds:
             if kind == 'cash_flow' and _standalone_cash_supplement(table):

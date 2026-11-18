@@ -81,11 +81,38 @@ def normalized_heading(value):
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
-def statement_kind(value):
-    """Recognize only a complete supported title, never a substring in prose."""
+def registrant_names(values):
+    """Normalize the filing's own registrant names for `wide` title matching."""
+    names = {normalized_heading(value) for value in values if isinstance(value, str)}
+    return tuple(sorted((name for name in names if len(name) >= 3), key=len, reverse=True))
+
+
+def _registrant_prefix(value, registrants):
+    """The length of a leading registrant name, with "and subsidiaries", or 0."""
+    for name in registrants:
+        match = re.match(re.escape(name) + r"(?: and (?:its )?(?:consolidated )?(?:subsidiaries|subsidiary companies))?(?: |$)", value)
+        if match:
+            return match.end()
+    return 0
+
+
+def statement_kind(value, *, wide=False, registrants=()):
+    """Recognize only a complete supported title, never a substring in prose.
+
+    `wide` (tables-v3 corroborated layouts only) also reads a title printed
+    after the filing's own registrant name or before its units, the prefixes
+    "interim" and "and", and these complete wordings: a net, loss or
+    comprehensive-earnings variant of the income statement, "results of
+    operations", and "statement of condition". The whole text must still be
+    the title: prose that merely mentions a statement never matches.
+    """
     if _FORBIDDEN.search(_clean(value)):
         return None
     value = normalized_heading(value)
+    if wide:
+        value = value[_registrant_prefix(value, registrants):]
+        value = re.sub(r"\s+(?:(?:amounts|dollars|u s dollars)\s+)?in (?:thousands|millions|billions)\b.*$", "", value)
+        value = re.sub(r"^(?:(?:condensed|consolidated|combined|unaudited|audited|interim|and)\s+)+", "", value)
     value = re.sub(r"^(?:(?:condensed|consolidated|combined|unaudited|audited)\s+)+", "", value)
     value = re.sub(r"^(statements? of )(?:(?:condensed|consolidated|combined)\s+)+", r"\1", value)
     if re.fullmatch(r"(?:statements? of (?:income|operations|earnings)(?: loss)?(?: and comprehensive (?:income|loss)(?: loss)?)?"
@@ -95,10 +122,18 @@ def statement_kind(value):
         return "balance_sheet"
     if re.fullmatch(r"(?:statements? of cash flows?|cash flows? statements?)", value):
         return "cash_flow"
+    if wide:
+        if re.fullmatch(r"(?:statements? of (?:net )?(?:income|operations|earnings|loss)(?: (?:loss|income|earnings))?"
+                        r"(?: and (?:total |other )?comprehensive (?:income|loss|earnings)(?: (?:loss|income))?)?"
+                        r"|statements? of comprehensive (?:income|loss|earnings)(?: (?:loss|income))?"
+                        r"|(?:statements? of )?results of operations)", value):
+            return "income_statement"
+        if re.fullmatch(r"statements? of condition", value):
+            return "balance_sheet"
     return None
 
 
-def _metadata(value):
+def _metadata(value, registrants=()):
     value = _clean(value)
     if not value:
         return True
@@ -107,6 +142,11 @@ def _metadata(value):
     stripped = _without_qualifiers(value).strip(" ()").strip()
     if not stripped or stripped.lower() in {"unaudited", "audited"} or _units(stripped):
         return True
+    if registrants:
+        # The filing's own registrant name, whatever its legal form.
+        normalized = normalized_heading(stripped)
+        if normalized and _registrant_prefix(normalized, registrants) == len(normalized):
+            return True
     company = re.fullmatch(r"[a-z0-9&][a-z0-9&'., -]{0,150}\b(?:inc|incorporated|corporation|corp|co|company|companies|ltd|limited|plc)\.?"
                            r"(?:\s+and\s+subsidiaries)?", stripped, re.I)
     if company:
@@ -120,13 +160,14 @@ def _numeric(node):
     return any(_local(child) == "nonfraction" and not _hidden(child) for child in node.iter())
 
 
-def _block_headings(node):
+def _block_headings(node, *, wide=False, registrants=()):
     """Return local title nodes only when surrounding text is header metadata."""
     if _numeric(node):
         return ()
     visible = _visible_text(node)
     if not visible or len(visible) > 640 or _FORBIDDEN.search(visible):
         return ()
+    kind = (lambda text: statement_kind(text, wide=True, registrants=registrants)) if wide else statement_kind
     candidates = []
     for child in node.iter():
         if not isinstance(child.tag, str) or _hidden(child):
@@ -134,7 +175,7 @@ def _block_headings(node):
         if any(ancestor in candidates for ancestor in child.iterancestors()):
             continue
         value = _visible_text(child)
-        if len(value) <= 320 and statement_kind(value):
+        if len(value) <= 320 and kind(value):
             candidates.append(child)
     if not candidates:
         return ()
@@ -150,14 +191,14 @@ def _block_headings(node):
         return values
 
     remainder = _clean(" ".join(residual(node)))
-    if not _metadata(remainder):
+    if not _metadata(remainder, registrants if wide else ()):
         return ()
     tree = node.getroottree()
     evidence = []
     for child in candidates:
         value = _visible_text(child)
         evidence.append(HeadingEvidence(
-            kind=statement_kind(value), text=value, signature=normalized_heading(value),
+            kind=kind(value), text=value, signature=normalized_heading(value),
             continued=bool(_CONTINUATION.search(value)),
             consolidated=bool(re.search(r"\bconsolidated\b", value, re.I)),
             source_xpath=source_xpath(tree, child),
@@ -172,7 +213,7 @@ def _unique(evidence):
     return tuple(by_signature.values()) if len(by_signature) == 1 else ()
 
 
-def _previous(node, max_empty, max_blocks):
+def _previous(node, max_empty, max_blocks, *, wide=False, registrants=()):
     empty = blocks = 0
     sibling = node.getprevious()
     while sibling is not None:
@@ -187,22 +228,23 @@ def _previous(node, max_empty, max_blocks):
             blocks += 1
             if blocks > max_blocks:
                 return (), False
-            found = _block_headings(sibling)
+            found = _block_headings(sibling, wide=wide, registrants=registrants)
             if found:
                 return found, False
             if (_local(sibling) == "table" or sibling.xpath(".//table")
-                    or _numeric(sibling) or not _metadata(value)):
+                    or _numeric(sibling) or not _metadata(value, registrants if wide else ())):
                 return (), False
         sibling = sibling.getprevious()
     return (), True
 
 
-def recover_headings(table, *, max_empty=128, max_blocks=8, max_ancestors=4):
+def recover_headings(table, *, max_empty=128, max_blocks=8, max_ancestors=4, wide=False, registrants=()):
     """Recover one title from its own header or nearest bounded header blocks.
 
     Empty anchors do not consume the meaningful-block budget. Parent traversal
     is allowed only past empty/known metadata siblings, and never through a
     containing table/cell, preceding financial table, note, or prose boundary.
+    `wide` and `registrants` are described at `statement_kind`.
     """
     if _local(table) != "table" or _hidden(table):
         return ()
@@ -212,12 +254,12 @@ def recover_headings(table, *, max_empty=128, max_blocks=8, max_ancestors=4):
             break
         if _FORBIDDEN.search(_visible_text(row)):
             return ()
-        own.extend(_block_headings(row))
+        own.extend(_block_headings(row, wide=wide, registrants=registrants))
     if own:
         return _unique(own)
     node = table
     for _ in range(max_ancestors + 1):
-        found, may_ascend = _previous(node, max_empty, max_blocks)
+        found, may_ascend = _previous(node, max_empty, max_blocks, wide=wide, registrants=registrants)
         if found or not may_ascend:
             return found
         node = node.getparent()
