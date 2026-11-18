@@ -371,10 +371,48 @@ on any other date stays unresolved. So does any other balance concept: a
 liability such as dividends payable on a supplemental row that reports a flow
 is a company tagging error, which only `tables-v8` records.
 
-Measured offline on the 3,305 filings archived on this machine: of the 555
-whose statements were selected but had unresolved cells, 343 now parse without
-one. The 1,887 that parsed cleanly before produce byte-identical tables, and
-the 863 rejected at statement selection are rejected with the same message.
+**Statement selection.** The same header reading applies when candidate
+statement tables are examined, so a statement whose columns need corroboration
+is no longer dropped with "Statement segment has an unresolved column period".
+And when the established selection and the strict cash alias
+(`standard-cash-alias-v1`) both decline a filing, selection is tried once more
+counting `CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations`
+as a closing cash balance. That is the standard total a statement closes on
+when the company reports discontinued operations or assets held for sale. The
+strict alias accepts it only under a few exact row labels; here each such cell
+must still be a cash balance dated at an endpoint of its column, or match a
+labelled opening or closing rule, when the statement is extracted. This attempt
+comes last, so a filing either established selection accepts keeps its exact
+segments and proof.
+
+**Statement titles.** A table that no established rule recognizes as a
+statement is examined once more with a wider reading of its title
+(`recover_headings(..., wide=True)`). The whole text must still be the title;
+prose that mentions a statement never matches. The wider reading accepts:
+
+- a title printed after the filing's own registrant name, taken from its DEI
+  `EntityRegistrantName` facts, with or without "and subsidiaries" ("The Cigna
+  Group Consolidated Statements of Income"), and that name alone as a header
+  line between a title and its table;
+- a title followed by its units ("Consolidated Balance Sheets in thousands,
+  except par values");
+- the prefixes "interim" and "and" ("Condensed and Consolidated", "Consolidated
+  and Combined");
+- these complete wordings: "Statements of Net Income", "Statements of (Loss)
+  Earnings", "Statements of Earnings and Comprehensive Earnings", "Statements
+  of Income and Total Comprehensive Income", "Results of Operations", and
+  "Statement of Condition" for a balance sheet.
+
+Measured offline on the 3,305 filings archived on this machine:
+
+| Before November 18 | After | Filings |
+| --- | --- | ---: |
+| Parsed cleanly | Byte-identical tables | 1,887 |
+| Statements selected, unresolved cells | Parse cleanly | 343 |
+| Rejected at statement selection | Parse cleanly | 178 |
+| Statements selected, unresolved cells | Still not accepted | 212 |
+| Rejected at statement selection | Still not accepted | 685 |
+
 Filings already stored as text-only are not retried automatically; replay them
 as described above.
 
