@@ -515,6 +515,23 @@ The tables are stored as `<kind>.segment_1` and `<kind>.segment_2` with the
 tied facts in `page_continuation`. A cash flow statement is read this way only
 when it is the single table found under a cash flow title.
 
+**Dimensional detail on a continued cash flow page.** The established rule
+joins the pages of a cash flow statement only when every fact on every page
+has the scope of the first page: one entity, one unit and the same dimensions.
+A page marked "(continued)" often adds rows of detail that carry a dimension:
+cash held by consolidated entities, by segment or by location. The last
+attempt joins such a page when all of these hold:
+
+- the page also holds facts of the statement's own scope;
+- every other scope on it has the same entity and the same unit, at least one
+  dimension, and no other legal entity (`LegalEntityAxis`);
+- each concept group the page covers is evidenced by a fact of the statement's
+  own scope.
+
+The added scopes are recorded as `detail_scopes` in the statement group. Every
+other condition of the established rule (same title, same periods, adjacency,
+ordered continuation, complete combined evidence) is unchanged.
+
 **A note table under a statement's title.** A note sometimes repeats a
 statement's title above a table of detail ("Condensed Consolidated Balance
 Sheets" over a table of deferred revenue). The established rules then find two
@@ -554,9 +571,9 @@ Measured offline on the 3,305 filings archived on this machine:
 | --- | --- | ---: |
 | Parsed cleanly | Byte-identical tables | 1,887 |
 | Statements selected, unresolved cells | Parse cleanly | 364 |
-| Rejected at statement selection | Parse cleanly | 503 |
+| Rejected at statement selection | Parse cleanly | 517 |
 | Statements selected, unresolved cells | Still not accepted | 191 |
-| Rejected at statement selection | Still not accepted | 360 |
+| Rejected at statement selection | Still not accepted | 346 |
 
 Filings already stored as text-only are not retried automatically; replay them
 as described above.

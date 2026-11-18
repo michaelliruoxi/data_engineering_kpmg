@@ -44,13 +44,13 @@ def document(*tables):
     parts, facts = [], {}
     for item in tables:
         rows = [f'<tr><td></td><td>{item["header"]}</td></tr>'] if item['header'] else []
-        for index, (label, concept, value, period) in enumerate(item['lines']):
+        for index, (label, concept, value, period, *dimensions) in enumerate(item['lines']):
             identifier = f'{item["key"]}-{index}'
             rows.append(f'<tr><td>{label}</td><td><ix:nonfraction id="{identifier}" name="g:{concept}" '
                         f'contextref="{identifier}" unitref="usd">{value}</ix:nonfraction></td></tr>')
             facts[identifier] = {'xml_id': identifier, 'concept': '{' + GAAP + '}' + concept, 'context_ref': identifier,
                                  'unit_ref': 'usd', 'period': dict(period), 'raw_value': value, 'is_nil': False,
-                                 'dimensions': [],
+                                 'dimensions': [dict(dimension) for dimension in dimensions],
                                  'unit': {'numerator': ['{http://www.xbrl.org/2003/iso4217}USD'], 'denominator': []},
                                  'entity': {'scheme': 'http://www.sec.gov/CIK', 'identifier': '0000000001'}}
         printed = (f'<p>{item["title"]}</p>' if item['title'] else '') + f'<table id="{item["key"]}">{"".join(rows)}</table>'
@@ -182,6 +182,38 @@ class IncomeStatementPageTests(unittest.TestCase):
 
     def test_another_amount_or_a_first_page_without_the_tax_line_is_refused(self):
         for options in ({'net': '9'}, {'first': INCOME[:2]}, {'first': [INCOME[0], INCOME[2]]}):
+            with self.subTest(options=options), self.assertRaises(TableExtractionError):
+                select(*self.parts(**options))
+
+
+class ContinuedPageDetailTests(unittest.TestCase):
+    """A page marked "(continued)" that adds rows of dimensional detail to the cash flow statement."""
+    KEYS = ['income_statement', 'balance_sheet', 'cash_flow.segment_1', 'cash_flow.segment_2']
+    SEGMENT = {'dimension': '{' + GAAP + '}StatementBusinessSegmentsAxis', 'member': '{http://example.com/2025}HomebuildingMember'}
+    OTHER_ENTITY = {'dimension': '{http://xbrl.sec.gov/dei/2026}LegalEntityAxis', 'member': '{http://example.com/2025}SubsidiaryMember'}
+
+    def parts(self, *, detail, second=FLOWS[2:] + BALANCES):
+        return (whole('income'), whole('balance'), table('cash', FLOWS[:2], title=TITLES['cash'], header=DURATION_HEADER),
+                table('cash-continued', [*second, *detail], title=TITLES['cash'] + ' (continued)', header=DURATION_HEADER,
+                      before='<p>See notes.</p>'))
+
+    def test_detail_with_dimensions_on_a_continued_page_no_longer_separates_it(self):
+        detail = [('Homebuilding cash', 'CashAndCashEquivalentsAtCarryingValue', '15', DATE, self.SEGMENT)]
+        self.assertEqual(keys(*self.parts(detail=[])), self.KEYS)
+        with self.assertRaisesRegex(TableExtractionError, 'scope'):
+            select(*self.parts(detail=detail), corroborated_layouts=False)
+        selected = select(*self.parts(detail=detail))
+        self.assertEqual([part.table_key for part in selected], self.KEYS)
+        [scope] = selected[2].group['detail_scopes']
+        self.assertIn('HomebuildingMember', scope)
+        self.assertEqual(selected[2].group['scope']['dimensions'], [])
+        self.assertNotIn('detail_scopes', select(*self.parts(detail=[]))[2].group)
+
+    def test_another_legal_entity_or_a_total_reported_only_with_a_dimension_is_refused(self):
+        other_entity = [('Subsidiary cash', 'CashAndCashEquivalentsAtCarryingValue', '15', DATE, self.OTHER_ENTITY)]
+        financing = ('Net cash used in financing activities', 'NetCashProvidedByUsedInFinancingActivities', '-2', HALF, self.SEGMENT)
+        plain = ('Other financing', 'ProceedsFromPaymentsForOtherFinancingActivities', '-1', HALF)
+        for options in ({'detail': other_entity}, {'detail': [], 'second': [financing, plain, *BALANCES]}):
             with self.subTest(options=options), self.assertRaises(TableExtractionError):
                 select(*self.parts(**options))
 

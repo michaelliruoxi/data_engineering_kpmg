@@ -1826,6 +1826,35 @@ def _cash_named_header_continuation(tree, first, table, facts, html_ids, heading
     return second
 
 
+def _continuation_detail_scopes(first, candidate, facts):
+    """The dimensional detail a later cash flow page adds to the statement's own scope, or None.
+
+    tables-v3 `extended` selection only. The established rule joins the
+    pages of a cash flow statement only when every fact of every page has
+    the scope of the first: one entity, one unit, the same dimensions. A
+    later page often adds rows of detail (cash held by consolidated
+    entities, by segment, by location), which carry dimensions. Those are
+    accepted when the page also holds the statement's own scope, every other
+    scope has the same entity and unit, at least one dimension and no other
+    legal entity, and each concept group the page covers is evidenced by a
+    fact of the statement's own scope.
+    """
+    if len(first['scopes']) != 1 or not first['scopes'] <= candidate['scopes']:
+        return None
+    own = json.loads(next(iter(first['scopes'])))
+    added = sorted(candidate['scopes'] - first['scopes'])
+    for value in added:
+        scope = json.loads(value)
+        if (scope['entity'] != own['entity'] or scope['unit'] != own['unit'] or not scope['dimensions']
+                or any(dimension.get('dimension', '').endswith('}LegalEntityAxis') for dimension in scope['dimensions'])):
+            return None
+    for groups in candidate['evidence'].values():
+        for identities in groups.values():
+            if not any(facts[identity]['dimensions'] == own['dimensions'] for identity in identities):
+                return None
+    return added
+
+
 def _page_furniture_between(tree, left, right, kind):
     """Nothing but footnotes, page furniture and the repeated title separates two tables.
 
@@ -2025,6 +2054,7 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
             raise TableExtractionError('Cash-flow statement segments require duration column headers')
         headings = set(first['headings'])
         previous_groups = set()
+        detail_scopes = set()
         combined = {axis: set() for axis in first['axes']}
         combined_evidence = {axis: {} for axis in first['axes']}
         for index, candidate in enumerate(candidates):
@@ -2033,7 +2063,14 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                 headings &= candidate['headings']
             wanted_axes = ([json.dumps({'instant': json.loads(axis)['endDate']}, sort_keys=True)
                             for axis in first['axes']] if is_reconciliation else first['axes'])
-            if (candidate['axes'] != wanted_axes or candidate['scopes'] != first['scopes']
+            same_scopes = candidate['scopes'] == first['scopes']
+            if not same_scopes and extended and index and not is_reconciliation:
+                # A later page may add dimensional detail to the statement's own scope.
+                added = _continuation_detail_scopes(first, candidate, facts)
+                if added is not None:
+                    same_scopes = True
+                    detail_scopes.update(added)
+            if (candidate['axes'] != wanted_axes or not same_scopes
                     or (index and not _segments_adjacent(tree, candidates[index - 1]['table'], candidate['table'], kind,
                                                         numbered_footer=bool(candidate.get('inherited_columns')))
                         and not (extended and _page_furniture_between(tree, candidates[index - 1]['table'],
@@ -2072,6 +2109,8 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                       {'period': json.loads(axis), 'groups': {group: sorted(set(identities))
                        for group, identities in sorted(combined_evidence[axis].items())}}
                       for axis in first['axes']]}
+        if detail_scopes:
+            common['detail_scopes'] = sorted(detail_scopes)
         has_reconciliation = any(candidate.get('role') == 'cash_reconciliation' for candidate in candidates)
         if has_reconciliation:
             common['segment_roles'] = [candidate.get('role', 'statement') for candidate in candidates]
