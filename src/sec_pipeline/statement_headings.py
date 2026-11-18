@@ -5,6 +5,7 @@ independent statement concept groups and reject competing financial tables.
 Legacy table selection can remain unchanged and use these helpers on fallback.
 """
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import re
 
@@ -36,14 +37,43 @@ def _clean(value):
     return " ".join(value.split())
 
 
-def _hidden(node):
-    for element in [node, *node.iterancestors()]:
-        style = re.sub(r"\s+", "", element.get("style", "").lower())
-        if (_local(element) == "hidden" or "hidden" in element.attrib
+_VISIBILITY = None
+
+
+@contextmanager
+def cached_visibility():
+    """Remember which nodes are hidden while one unchanged document is read.
+
+    `_hidden` walks every ancestor of a node, and the title search asks it of
+    every node of every block near every table. Within this context the answer
+    for a node is computed once. The document must not be modified meanwhile.
+    """
+    global _VISIBILITY
+    previous = _VISIBILITY
+    if previous is None:
+        _VISIBILITY = {}
+    try:
+        yield
+    finally:
+        _VISIBILITY = previous
+
+
+def _hides(element):
+    style = re.sub(r"\s+", "", element.get("style", "").lower())
+    return bool(_local(element) == "hidden" or "hidden" in element.attrib
                 or element.get("aria-hidden", "").lower() == "true"
-                or re.search(r"(?:^|;)(?:display:none|visibility:hidden)(?:!important)?(?:;|$)", style)):
-            return True
-    return False
+                or re.search(r"(?:^|;)(?:display:none|visibility:hidden)(?:!important)?(?:;|$)", style))
+
+
+def _hidden(node):
+    cache = _VISIBILITY
+    if cache is None:
+        return any(_hides(element) for element in [node, *node.iterancestors()])
+    known = cache.get(node)
+    if known is None:
+        parent = node.getparent()
+        known = cache[node] = _hides(node) or (parent is not None and _hidden(parent))
+    return known
 
 
 def _visible_text(node):

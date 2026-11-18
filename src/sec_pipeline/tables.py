@@ -256,7 +256,29 @@ def _nearby_headings(node):
     return values
 
 
+_SELECTION_MEMO = None
+
+
+def _memo(key, compute):
+    """Reuse a pure reading of the document within one `select_statement_segments` call.
+
+    Selection makes several attempts over the same unchanged document, and
+    each asked every table for its headings again. `key` holds the element, so
+    the element stays alive and its identity stays valid while the memo lives.
+    """
+    memo = _SELECTION_MEMO
+    if memo is None:
+        return compute()
+    if key not in memo:
+        memo[key] = compute()
+    return memo[key]
+
+
 def _statement_heading_values(table):
+    return list(_memo(('heading_values', table), lambda: tuple(_statement_heading_values_uncached(table))))
+
+
+def _statement_heading_values_uncached(table):
     values = _nearby_headings(table)
     # A heading may be a caption or an opening non-data row inside the table.
     values.extend(text(node) for node in table.xpath('./caption'))
@@ -931,6 +953,8 @@ def _printed_period_tokens(headers):
     two different durations or week counts, which no single period can satisfy.
     """
     value = _period_text(re.sub(r'([a-z])([A-Z])', r'\1 \2', ' '.join(headers)))
+    # "March 30,2025": a date printed without a space after its comma.
+    value = re.sub(r'\b(\d{1,2}),(?=(?:19|20)\d\d\b)', r'\1, ', value)
     value = re.sub(r'\b(\d+)[-\s]+(months?|weeks?|quarters?)\b', r'\1 \2', value)
     if re.search(r'\b\d{1,2}\s*(?:and|or|&|/)\s*\d{1,2} (?:months?|weeks?|quarters?)\b', value):
         return None
@@ -969,7 +993,9 @@ def _printed_tokens_agree(tokens, period, fiscal_year_offset):
     the filing's own DEI facts name for it). A printed date must be the end
     date, a printed month the end month, and a printed duration the period's
     length: within ten days for months, which admits 13- and 14-week quarters,
-    and exact for weeks.
+    and within four days for weeks. A fiscal period that starts on a fixed
+    calendar day and ends on a Saturday is a few days longer or shorter than
+    the whole weeks its header names; a 53-week year is never "52 weeks".
     """
     if tokens is None or not tokens['years']:
         return False
@@ -992,7 +1018,7 @@ def _printed_tokens_agree(tokens, period, fiscal_year_offset):
     days = (end - date.fromisoformat(period['startDate'])).days + 1
     if tokens['months'] is not None and abs(days - tokens['months'] * 30.4375) > 10:
         return False
-    if tokens['weeks'] is not None and days != 7 * tokens['weeks']:
+    if tokens['weeks'] is not None and abs(days - 7 * tokens['weeks']) > 4:
         return False
     return True
 
@@ -1815,14 +1841,16 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
         kinds = _statement_headings(table) | _statement_headings(table, continued=True)
         heading_evidence = ()
         if not kinds:
-            heading_evidence = recover_headings(table)
+            heading_evidence = _memo(('recover', table), lambda: recover_headings(table))
             kinds = {item.kind for item in heading_evidence}
         if not kinds and corroborate:
             # Only a table no established rule recognizes gets the wider titles.
-            heading_evidence = recover_headings(table, wide=True, registrants=registrants)
+            heading_evidence = _memo(('recover_wide', table),
+                                     lambda: recover_headings(table, wide=True, registrants=registrants))
             kinds = {item.kind for item in heading_evidence}
         if not kinds and corroborate and extended:
-            heading_evidence = recover_headings(table, wide=True, registrants=spelled_registrants, header_lines=True)
+            heading_evidence = _memo(('recover_header_lines', table), lambda: recover_headings(
+                table, wide=True, registrants=spelled_registrants, header_lines=True))
             kinds = {item.kind for item in heading_evidence}
         for kind in kinds:
             if kind == 'cash_flow' and _standalone_cash_supplement(table):
@@ -2141,7 +2169,25 @@ def select_statement_segments(tree, facts, *, cash_followers=False, corroborated
     ``cash_followers`` (V8 only) adds the closing cash reconciliation and the
     supplemental disclosures printed directly after the cash flow statement.
     ``corroborated_layouts`` (tables-v3 only) is described at `extract_tables`.
+
+    The document is only read here, so the headings of each table and the
+    visibility of each node are computed once for all attempts (`_memo`,
+    `statement_headings.cached_visibility`). That changes no result.
     """
+    from .statement_headings import cached_visibility
+    global _SELECTION_MEMO
+    outer = _SELECTION_MEMO
+    if outer is None:
+        _SELECTION_MEMO = {}
+    try:
+        with cached_visibility():
+            return _select_statement_segments(tree, facts, cash_followers=cash_followers,
+                                              corroborated_layouts=corroborated_layouts)
+    finally:
+        _SELECTION_MEMO = outer
+
+
+def _select_statement_segments(tree, facts, *, cash_followers, corroborated_layouts):
     from .joint_statements import select_joint_statement_segments
     source_facts = _segment_facts(facts)
     try:

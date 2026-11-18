@@ -10,7 +10,7 @@ from sec_pipeline import filing_adapter_v3
 from sec_pipeline.statement_headings import recover_headings, registrant_names, statement_kind
 from sec_pipeline.tables import (
     TableExtractionError, _CORROBORATED_STATEMENT_CONCEPTS, _STATEMENT_CONCEPTS, _UTILITY_STATEMENT_CONCEPTS, _column_periods,
-    _endpoint_balance_period, _printed_period_tokens, _segment_candidate, extract_tables, layout_grid,
+    _endpoint_balance_period, _printed_period_tokens, _segment_candidate, _select_statement_segments, extract_tables, layout_grid,
     select_statement_segments, validate_statement_segments,
 )
 from sec_pipeline.tables_bridge import parse_tables
@@ -99,6 +99,38 @@ class PrintedDurationTests(unittest.TestCase):
                 periods, provenance = resolve([[value] for value in header], [period])
                 self.assertNotEqual(periods[1], period)
                 self.assertNotIn('1', provenance)
+
+
+    def test_a_week_count_is_the_whole_weeks_nearest_a_period_that_starts_on_a_calendar_day(self):
+        accepted = (
+            # A fiscal year that starts on October 1 and closes its quarters on Saturdays.
+            (['Twenty-Six Week Periods Ended', 'March 29, 2025'], duration('2024-10-01', '2025-03-29')),   # 180 days
+            (['Three Months (13 Weeks) Ended', 'April 5, 2025'], duration('2025-01-01', '2025-04-05')),    # 95 days
+        )
+        for header, period in accepted:
+            with self.subTest(header=header):
+                periods, provenance = resolve([[value] for value in header], [period])
+                self.assertEqual(periods[1], period)
+                self.assertEqual(provenance['1']['anchor'], 'printed_duration')
+        refused = (
+            (['Thirteen Week Periods Ended', 'April 5, 2025'], duration('2024-12-31', '2025-04-05')),      # 96 days
+            (['Fiscal Year', '2025', '(52 weeks)'], duration('2024-12-22', '2025-12-27')),                 # 53 weeks
+            (['Twenty-Six Week Periods Ended', 'March 29, 2025'], duration('2024-12-29', '2025-03-29')),   # 13 weeks
+        )
+        for header, period in refused:
+            with self.subTest(header=header):
+                periods, provenance = resolve([[value] for value in header], [period])
+                self.assertNotEqual(periods[1], period)
+                self.assertNotIn('1', provenance)
+
+    def test_a_date_printed_without_a_space_after_its_comma_is_a_full_date(self):
+        self.assertEqual(_printed_period_tokens(['Fiscal Year Ended', 'February 1,2025'])['full_dates'],
+                         _printed_period_tokens(['Fiscal Year Ended', 'February 1, 2025'])['full_dates'])
+        periods, provenance = resolve([['Fiscal Year Ended'], ['February 1,2025']], [{'instant': '2025-02-01'}])
+        self.assertEqual(periods[1], {'instant': '2025-02-01'})
+        self.assertEqual(provenance['1']['anchor'], 'printed_balance_date')
+        periods, provenance = resolve([['Fiscal Year Ended'], ['February 1,2025']], [{'instant': '2025-02-02'}])
+        self.assertNotIn('1', provenance)
 
 
 class ComparativeColumnTests(unittest.TestCase):
@@ -542,7 +574,7 @@ class UtilityRevenueTests(unittest.TestCase):
         for kind, groups in _CORROBORATED_STATEMENT_CONCEPTS.items():
             added = [set(new) - set(old) for old, new in zip(groups, _UTILITY_STATEMENT_CONCEPTS[kind])]
             self.assertEqual(added, ([{self.CONCEPT}, set(), set()] if kind == 'income_statement' else [set()] * len(groups)))
-        source = inspect.getsource(select_statement_segments)
+        source = inspect.getsource(_select_statement_segments)
         self.assertLess(source.index('_CORROBORATED_STATEMENT_CONCEPTS, True'), source.index('_UTILITY_STATEMENT_CONCEPTS, True'))
 
 

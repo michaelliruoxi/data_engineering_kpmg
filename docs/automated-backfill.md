@@ -346,8 +346,12 @@ and `tables-v4` to `tables-v8` produce what they produced before.
 column must already carry one period, shared by at least two concepts, and the
 header must print nothing that contradicts it: the year is the period's end
 year, a printed date is its end date, a printed month its end month, and a
-printed length matches (within ten days for months, exactly for weeks). One of
-these must also hold:
+printed length matches: within ten days for months and within four days for
+weeks. A fiscal period that starts on a fixed calendar day and ends on a
+Saturday ("Twenty-Six Week Periods Ended March 29, 2025", tagged from October
+1) is a few days off the whole weeks its header names; a 53-week year is never
+"52 weeks". A date printed without a space after its comma ("February
+1,2025") is read as that date. One of these must also hold:
 
 | Evidence (`anchor`) | Example header | Requirement |
 | --- | --- | --- |
