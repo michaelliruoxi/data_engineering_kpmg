@@ -10,9 +10,13 @@ existing shards are reused, and a shard whose worker is still running is left
 alone. Each worker spaces its own SEC requests by one second, so the combined
 rate is one request per second per worker; keep -Workers at 8 or fewer.
 
-The database limits the useful worker count. On November 17, 2026 eight
-workers overloaded the shared instance: it stopped responding and restarted.
-Four ran steadily. Raise -Workers only after raising the instance class.
+The database limits the useful worker count. Do not use this launcher while
+the shared instance is a db.t4g.micro. On November 17, 2026 eight workers ran
+it out of memory and four emptied its disk burst allowance; it restarted both
+times. Two workers stalled it. On that class run one worker with
+start_backfill.ps1 -PendingOnly, and use this launcher only after the instance
+class has been raised. See "Several workers at once" in
+docs\automated-backfill.md.
 
 While shard queues exist the main queue must not be imported. When every
 worker has stopped, copy the results back with:
