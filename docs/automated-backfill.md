@@ -467,15 +467,33 @@ selection is tried a final time counting
 `RegulatedAndUnregulatedOperatingRevenue`, the total operating revenue a
 regulated utility reports, as the revenue line of an income statement.
 
+**Combined filings.** A filing made for a parent and its subsidiaries selects
+the reporting parent's statements by the registrant name printed with each
+title (`joint_statements`). When that established reading rejects the filing,
+it is read once more (`header_lines=True`) with:
+
+- the parent's name with or without "The", in another spacing, or with its
+  legal form in the other spelling ("American Electric Power Company, Inc. and
+  Subsidiary Companies" for the DEI name "AMERICAN ELECTRIC POWER CO INC."). A
+  printed name that fits two registrants names neither;
+- the header lines listed above between the name, the title and the table;
+- the wider titles;
+- an element that prints several header lines ("Table of Contents", the name,
+  the title), read line by line when every piece of its text is the whole
+  text of an element of its own.
+
+A line naming another registrant still gives the table to that registrant, and
+any other line still ends the search.
+
 Measured offline on the 3,305 filings archived on this machine:
 
 | Before November 18 | After | Filings |
 | --- | --- | ---: |
 | Parsed cleanly | Byte-identical tables | 1,887 |
 | Statements selected, unresolved cells | Parse cleanly | 343 |
-| Rejected at statement selection | Parse cleanly | 423 |
+| Rejected at statement selection | Parse cleanly | 454 |
 | Statements selected, unresolved cells | Still not accepted | 212 |
-| Rejected at statement selection | Still not accepted | 440 |
+| Rejected at statement selection | Still not accepted | 409 |
 
 Filings already stored as text-only are not retried automatically; replay them
 as described above.
