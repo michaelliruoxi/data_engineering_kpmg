@@ -441,15 +441,41 @@ on the next page". The last attempt also accepts the pair
 The tables are stored as `balance_sheet.segment_1` and
 `balance_sheet.segment_2`, with the tied facts in `balance_continuation`.
 
+**An income statement printed once per period length.** A quarterly report may
+print the income statement as one table for the quarter and another for the
+year to date, each complete and under the same title. The last attempt accepts
+them as `income_statement.segment_1` and `income_statement.segment_2`
+(`period-tables-v1`) when all of these hold:
+
+- every complete table carries the same title, for one reporting entity;
+- each table holds periods of one length, and no two tables the same length;
+- the columns of every table end on the same dates;
+- any other table read as an income statement carries another title, and none
+  is a continuation.
+
+A second complete table for the same periods, or one under another title, is
+still ambiguous and rejected.
+
+**Page furniture between the parts of a cash flow statement.** The established
+adjacency rule lets only text stand between a cash flow table and its
+continuation. The last attempt also passes a small table without numbers, such
+as a page number, under the same conditions as between the two tables of a
+balance sheet.
+
+**Utility revenue.** When every reading above has declined the filing,
+selection is tried a final time counting
+`RegulatedAndUnregulatedOperatingRevenue`, the total operating revenue a
+regulated utility reports, as the revenue line of an income statement.
+
 Measured offline on the 3,305 filings archived on this machine:
 
 | Before November 18 | After | Filings |
 | --- | --- | ---: |
 | Parsed cleanly | Byte-identical tables | 1,887 |
 | Statements selected, unresolved cells | Parse cleanly | 343 |
-| Rejected at statement selection | Parse cleanly | 375 |
+| Rejected at statement selection | Parse cleanly | 423 |
 | Statements selected, unresolved cells | Still not accepted | 212 |
-| Rejected at statement selection | Still not accepted | 488 |
+| Rejected at statement selection | Still not accepted | 440 |
 
 Filings already stored as text-only are not retried automatically; replay them
 as described above.
