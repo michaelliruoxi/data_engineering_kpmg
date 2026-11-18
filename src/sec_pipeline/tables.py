@@ -897,8 +897,181 @@ def _tagging_defect_candidate(references, balance_dates, headers, *, advanced, f
     return printed, 'fiscal_calendar_start_tagging_defects', [json.dumps(tagged, sort_keys=True)]
 
 
-def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, tagging_defects=False):
+_MONTH_NUMBERS = {name.lower(): month for month in range(1, 13)
+                  for name in (calendar.month_name[month], calendar.month_abbr[month])}
+_MONTH_NUMBERS['sept'] = 9
+_MONTH_NAMES = '|'.join(sorted(_MONTH_NUMBERS, key=len, reverse=True))
+
+
+def _printed_period_tokens(headers):
+    """The years, dates and duration wording a column header prints.
+
+    Only what is printed is collected; nothing is inferred. Durations are in
+    months, except explicit week counts. Returns None for a header that names
+    two different durations or week counts, which no single period can satisfy.
+    """
+    value = _period_text(re.sub(r'([a-z])([A-Z])', r'\1 \2', ' '.join(headers)))
+    value = re.sub(r'\b(\d+)[-\s]+(months?|weeks?|quarters?)\b', r'\1 \2', value)
+    if re.search(r'\b\d{1,2}\s*(?:and|or|&|/)\s*\d{1,2} (?:months?|weeks?|quarters?)\b', value):
+        return None
+    full_dates = set(_full_header_dates(value))
+    for month, day, year in re.findall(r'\b(\d{1,2})/(\d{1,2})/((?:19|20)\d\d)\b', value):
+        try:
+            full_dates.add(date(int(year), int(month), int(day)))
+        except ValueError:
+            return None
+    month_days = {(_MONTH_NUMBERS[name], int(day)) for name, day in re.findall(
+        r'\b(' + _MONTH_NAMES + r')\.?\s+(\d{1,2})\b', value)}
+    month_only = {_MONTH_NUMBERS[name] for name in re.findall(
+        r'\b(' + _MONTH_NAMES + r')\b\.?(?!\s+\d{1,2}\b)', value)}
+    year_to_date = bool(re.search(r'\byear[-\s]to[-\s]date\b|\bytd\b', value))
+    wording = re.sub(r'\byear[-\s]to[-\s]date\b|\bytd\b', ' ', value)
+    months = {int(count) for count in re.findall(r'\b(\d{1,2}) months?\b', wording)}
+    months.update(int(count) * 3 for count in re.findall(r'\b([1-4]) quarters?\b', wording))
+    if re.search(r'\bquarters?\b', re.sub(r'\b[1-4] quarters?\b', ' ', wording)):
+        months.add(3)
+    if re.search(r'\b(?:first|1st) half\b|\bhalf[-\s]year\b', wording):
+        months.add(6)
+    if re.search(r'\b(?:fiscal )?years? (?:ended|ending)\b|\bfiscal years?\b', wording):
+        months.add(12)
+    weeks = {int(count) for count in re.findall(r'\b(\d{1,2}) weeks?\b', wording)}
+    if len(months) > 1 or len(weeks) > 1:
+        return None
+    return {'years': {int(year) for year in re.findall(r'\b((?:19|20)\d\d)\b', value)},
+            'full_dates': full_dates, 'month_days': month_days, 'month_only': month_only,
+            'months': next(iter(months), None), 'weeks': next(iter(weeks), None), 'year_to_date': year_to_date}
+
+
+def _printed_tokens_agree(tokens, period, fiscal_year_offset):
+    """Whether everything the header prints is true of the tagged period.
+
+    The year must be printed and be the period's end year (or the fiscal year
+    the filing's own DEI facts name for it). A printed date must be the end
+    date, a printed month the end month, and a printed duration the period's
+    length: within ten days for months, which admits 13- and 14-week quarters,
+    and exact for weeks.
+    """
+    if tokens is None or not tokens['years']:
+        return False
+    end = date.fromisoformat(period.get('endDate', period.get('instant')))
+    labelled = {end.year, end.year - 1} if fiscal_year_offset == 1 else {end.year}
+    if tokens['full_dates']:
+        if tokens['full_dates'] != {end} or not tokens['years'] <= labelled:
+            return False
+    elif len(tokens['years']) != 1 or not tokens['years'] <= labelled:
+        return False
+    if tokens['month_days'] and tokens['month_days'] != {(end.month, end.day)}:
+        return False
+    if tokens['month_only']:
+        previous = end.month - 1 or 12
+        if tokens['month_only'] != {end.month} and not (end.day <= 7 and tokens['month_only'] == {previous}):
+            return False
+    if 'startDate' not in period:
+        # A balance column: the printed date itself must be the tagged date.
+        return tokens['full_dates'] == {end}
+    days = (end - date.fromisoformat(period['startDate'])).days + 1
+    if tokens['months'] is not None and abs(days - tokens['months'] * 30.4375) > 10:
+        return False
+    if tokens['weeks'] is not None and days != 7 * tokens['weeks']:
+        return False
+    return True
+
+
+def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset):
+    """Accept the tagged period of columns whose printed header cannot be parsed alone.
+
+    Every tagged number in such a column already carries one period, shared by
+    at least two concepts, and the header prints nothing that contradicts it
+    (`_printed_tokens_agree`). That is not enough by itself: one of these must
+    also hold.
+    - The header prints the period's length ("Six Months", "First Quarter",
+      "39 Weeks") and it matches.
+    - The header says "Year to Date" and the period starts on the day after a
+      balance date this filing reports.
+    - Another column of the same table has an established period of the same
+      length ending one year earlier or later: the comparative column of a
+      caption that physically spans only its neighbour.
+    - A balance column prints the tagged date in full.
+    Nothing is read from the header that it does not print, and a column that
+    meets none of these stays unresolved.
+    """
+    pending = {}
+    for column, (candidate, references, headers) in deferred.items():
+        tokens = _printed_period_tokens(headers)
+        if _printed_tokens_agree(tokens, candidate, fiscal_year_offset):
+            pending[column] = (candidate, references, tokens)
+    accepted = {}
+
+    def accept(column, anchor, **evidence):
+        candidate, references, _ = pending.pop(column)
+        accepted[column] = candidate
+        periods[column] = candidate
+        provenance[str(column)] = {
+            'method': 'corroborated_printed_header', 'anchor': anchor, 'period': candidate,
+            'context_refs': sorted({reference['context_ref'] for reference in references}),
+            'xml_ids': sorted({reference['xml_id'] for reference in references}), **evidence}
+
+    for column in sorted(pending):
+        candidate, _, tokens = pending[column]
+        if 'startDate' not in candidate:
+            accept(column, 'printed_balance_date')
+        elif tokens['months'] is not None or tokens['weeks'] is not None:
+            accept(column, 'printed_duration')
+        elif (tokens['year_to_date'] and balance_dates is not None
+              and (date.fromisoformat(candidate['startDate']) - timedelta(days=1)).isoformat() in balance_dates):
+            accept(column, 'year_to_date_from_reported_balance')
+    changed = True
+    while pending and changed:
+        changed = False
+        for column in sorted(pending):
+            candidate = pending[column][0]
+            start, end = (date.fromisoformat(candidate[key]) for key in ('startDate', 'endDate'))
+            for other in sorted(periods):
+                established = periods[other]
+                if (other == column or other in pending or established is None
+                        or set(established) != {'startDate', 'endDate'}):
+                    continue
+                other_start, other_end = (date.fromisoformat(established[key]) for key in ('startDate', 'endDate'))
+                if (abs((other_end - other_start).days - (end - start).days) <= 7
+                        and 357 <= abs((other_end - end).days) <= 373):
+                    accept(column, 'comparative_column', comparative_column=other, comparative_period=dict(established))
+                    changed = True
+                    break
+    return accepted
+
+
+def _endpoint_balance_period(reference, preceding_text, header):
+    """A cash balance printed in a cash-flow column that covers a period.
+
+    XBRL ties a balance to a date, so the components of the opening and
+    closing cash balance ("Cash and cash equivalents", "Restricted cash",
+    "Total") carry a date under the statement's "... ended" headers. Such a
+    tag is accepted when its concept is a cash balance, and its date is the
+    column's last day and the row names no opening balance, or the day before
+    the column's first day and the row names no closing balance.
+
+    Any other date stays unresolved. So does any other balance concept: a
+    liability such as dividends payable on a supplemental row that reports a
+    flow is a company tagging error, which only the flagged profile records.
+    """
+    if set(header) != {'startDate', 'endDate'} or set(reference['period']) != {'instant'}:
+        return None
+    if 'Cash' not in reference['concept'].rsplit('}', 1)[-1]:
+        return None
+    instant = reference['period']['instant']
+    opening = (date.fromisoformat(header['startDate']) - timedelta(days=1)).isoformat()
+    words = preceding_text.lower()
+    if instant == header['endDate'] and not re.search(r'\b(?:beginning|begin|start|opening|prior|previous)\b', words):
+        return {'instant': instant}
+    if instant == opening and not re.search(r'\b(?:end|ending|closing)\b', words):
+        return {'instant': instant}
+    return None
+
+
+def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, tagging_defects=False,
+                    corroborate=False):
     balance_dates, fiscal_year_offset = _fiscal_calendar_evidence(facts) if advanced else (None, None)
+    deferred = {}
     columns = {cell['column'] for row in rows[first_data:] for cell in row if cell['column'] > 0}
     headers = {column: column_headers(rows, first_data, column, advanced=advanced) for column in columns}
     # A left-hand header such as "Year ended December 31" applies to the
@@ -953,6 +1126,10 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, ta
                 corroborated, calendar_sources = _v2_calendar_period(revised, candidate, table)
                 if corroborated is not None:
                     resolved = corroborated
+            # A column whose printed header already gives the tagged period
+            # needs nothing, and must keep its recorded evidence unchanged.
+            if corroborate and candidate not in (resolved, periods[column]):
+                deferred[column] = (candidate, references, revised)
         if resolved is None and tagging_defects and advanced:
             flagged = _tagging_defect_candidate(references, balance_dates, headers[column], advanced=advanced,
                                                 fiscal_year_offset=fiscal_year_offset)
@@ -973,6 +1150,8 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, ta
                 provenance[str(column)]['header_sources'] = source_headers
             if calendar_sources:
                 provenance[str(column)]['calendar_sources'] = calendar_sources
+    if deferred:
+        _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset)
     return periods, provenance
 
 
@@ -1855,7 +2034,8 @@ def select_statement_segments(tree, facts, *, cash_followers=False):
     return _with_cash_followers(tree, selected, source_facts) if cash_followers else selected
 
 
-def validate_statement_segments(tables, tree, facts, *, xml_path=None, cash_followers=False, tagging_defects=False):
+def validate_statement_segments(tables, tree, facts, *, xml_path=None, cash_followers=False, tagging_defects=False,
+                                corroborated_layouts=False):
     """Independently reselect physical groups from unchanged source evidence."""
     expected = select_statement_segments(tree, facts, cash_followers=cash_followers)
     if len(tables) != len(expected):
@@ -1886,7 +2066,8 @@ def validate_statement_segments(tables, tree, facts, *, xml_path=None, cash_foll
             validate_alias_cells(table, segment, tree, _segment_facts(facts))
     if xml_path is not None:
         from .cash_reconciliation import validate_cash_reconciliations
-        validate_cash_reconciliations(tables, tree, xml_path, tagging_defects=tagging_defects)
+        validate_cash_reconciliations(tables, tree, xml_path, tagging_defects=tagging_defects,
+                                      corroborated_layouts=corroborated_layouts)
     elif any(table.structure.get('cash_reconciliation_evidence') or any(
             cell.get('period_binding') for row in table.structure['rows'] for cell in row) for table in tables):
         raise TableExtractionError('Cash reconciliation validation requires its archived source XML')
@@ -1918,7 +2099,15 @@ def same_row_repeat_reference(cell, refs):
 
 def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UUID,
                    xml_document_id: UUID, facts_version='facts-v1', tables_version=VERSION, cash_followers=False,
-                   tagging_defects=False):
+                   tagging_defects=False, corroborated_layouts=False):
+    """Extract the selected primary statements.
+
+    `corroborated_layouts` (tables-v3 only) accepts two layouts that are
+    otherwise left unresolved: a column whose header cannot be parsed alone
+    but agrees with the one period all its tags carry (`_corroborate_columns`),
+    and a balance dated at an endpoint of a cash-flow column
+    (`_endpoint_balance_period`). It changes no cell that resolves without it.
+    """
     if html_document_id == xml_document_id:
         raise TableExtractionError('HTML and XML must have distinct source IDs')
     tree = html.parse(str(html_path), parser=html.HTMLParser(encoding='utf-8', no_network=True))
@@ -1949,12 +2138,15 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
         rows, grid = layout_grid(table, tree)
         first_data = next(i for i, row in enumerate(rows) if any(
             local(e) == 'nonfraction' for c in row for e in c['_element'].iter()))
-        column_periods, period_provenance = _column_periods(rows, first_data, facts, ns, html_ids, advanced=advanced,
-                                                            tagging_defects=tagging_defects)
         inherited_headers = (segment.group or {}).get('header_inheritance')
+        joint_statement = (segment.group or {}).get('joint_statement')
+        # Inherited and joint-statement headers establish their own periods
+        # below; corroboration never adds evidence to those segments.
+        column_periods, period_provenance = _column_periods(
+            rows, first_data, facts, ns, html_ids, advanced=advanced, tagging_defects=tagging_defects,
+            corroborate=corroborated_layouts and advanced and not inherited_headers and not joint_statement)
         if inherited_headers:
             column_periods.update({int(column): value['period'] for column, value in inherited_headers['columns'].items()})
-        joint_statement = (segment.group or {}).get('joint_statement')
         standard_cash_alias = (segment.group or {}).get('standard_cash_alias')
         if joint_statement:
             column_periods.update({int(column): period for column, period in joint_statement['column_periods'].items()})
@@ -2071,6 +2263,10 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                                           and re.fullmatch(r'dividends declared and not paid', label)
                                           and re.fullmatch(r'\{https?://fasb\.org/us-gaap/[^}]+\}DividendsPayableCurrentAndNoncurrent', ref['concept'])):
                                         wanted = {'instant': header['endDate']}
+                                    elif corroborated_layouts and _endpoint_balance_period(
+                                            ref, ' '.join(other['display_text'] for other in row
+                                                          if other['column'] < cell['column']), header) is not None:
+                                        wanted = dict(ref['period'])
                                     else:
                                         raise TableExtractionError('Unexpected instant in cash-flow row')
                                 if ref['period'] != wanted:

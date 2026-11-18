@@ -335,6 +335,49 @@ only its SQLSTATE).
 In an offline check of 40 failed filings with archived sources, 39 passed every
 text-only check; the remaining filing failed a fact correspondence check.
 
+### Layouts accepted on corroboration
+
+Since November 18, 2026 `tables-v3` resolves two layouts that used to leave
+statement cells unresolved and send the filing to the text-only fallback. Only
+the `tables-v3` adapter turns them on (`corroborated_layouts`), so `tables-v2`
+and `tables-v4` to `tables-v8` produce what they produced before.
+
+**A column header that cannot be read alone.** Every tagged number in the
+column must already carry one period, shared by at least two concepts, and the
+header must print nothing that contradicts it: the year is the period's end
+year, a printed date is its end date, a printed month its end month, and a
+printed length matches (within ten days for months, exactly for weeks). One of
+these must also hold:
+
+| Evidence (`anchor`) | Example header | Requirement |
+| --- | --- | --- |
+| `printed_duration` | "Six Months / 2025", "Three-Month Period Ended March 28, 2025", "Second Quarter / 2025" | The header prints the period's length and it matches |
+| `year_to_date_from_reported_balance` | "Year to Date / 2025" | The period starts the day after a balance date the filing reports |
+| `comparative_column` | "2024" or "March 30, 2024" beside a fully captioned column | Another column of the table has an established period of the same length (within seven days) ending one year earlier or later |
+| `printed_balance_date` | "Fiscal Year Ended / December 28, 2025" on a balance sheet | The tagged date is printed in full |
+
+The accepted period is the tagged one, and the proof is stored in the table's
+`column_period_evidence` with method `corroborated_printed_header`. A header
+naming two durations, a missing year, or any printed value that differs from
+the tags leaves the column unresolved, as before.
+
+**A cash balance in a cash-flow column.** The components of the opening and
+closing cash balance ("Cash and cash equivalents", "Restricted cash", "Total")
+are tagged with a date under the statement's "... ended" headers. Such a tag is
+accepted when its concept is a cash balance (its name contains `Cash`), and its
+date is the column's last day and the row names no opening balance, or the day
+before the column's first day and the row names no closing balance. A balance
+on any other date stays unresolved. So does any other balance concept: a
+liability such as dividends payable on a supplemental row that reports a flow
+is a company tagging error, which only `tables-v8` records.
+
+Measured offline on the 3,305 filings archived on this machine: of the 555
+whose statements were selected but had unresolved cells, 343 now parse without
+one. The 1,887 that parsed cleanly before produce byte-identical tables, and
+the 863 rejected at statement selection are rejected with the same message.
+Filings already stored as text-only are not retried automatically; replay them
+as described above.
+
 ## Versioned statements and shared filings
 
 The additive `tables-v4` profile supports a verified set of original inline

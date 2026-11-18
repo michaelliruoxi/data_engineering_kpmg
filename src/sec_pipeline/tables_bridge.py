@@ -23,8 +23,12 @@ def _source_path(context, role):
     return resolved
 
 
-def parse_tables(context):
-    """Pure stage: retain inline/XML IDs; no database UUID lookup here."""
+def parse_tables(context, *, corroborated_layouts=False):
+    """Pure stage: retain inline/XML IDs; no database UUID lookup here.
+
+    `corroborated_layouts` is set by the tables-v3 adapter only; see
+    `extract_tables`.
+    """
     if (context.versions.get('facts') != 'facts-v1'
             or context.versions.get('tables') not in {'tables-v1', 'tables-v2'}):
         raise ProcessingError('This bridge requires facts-v1 and tables-v1 or tables-v2.')
@@ -36,6 +40,7 @@ def parse_tables(context):
         xml_document_id=context.source_ids.xml_document_id,
         facts_version=context.versions['facts'],
         tables_version=context.versions['tables'],
+        corroborated_layouts=corroborated_layouts,
     )
     return ParseResult(tables, unresolved_cells=sum(
         t.structure['inventory'].get('unresolved', 0) for t in tables))

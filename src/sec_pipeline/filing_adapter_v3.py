@@ -38,7 +38,9 @@ def _v2_context(context):
 
 
 def parse_tables(context):
-    parsed = parse_v2_tables(_v2_context(context))
+    # Only this profile accepts the corroborated layouts; tables-v2 and the
+    # document-set profiles call the extractor without them.
+    parsed = parse_v2_tables(_v2_context(context), corroborated_layouts=True)
     source = base._source_path(context, "main_inline_xbrl_filing").read_bytes()
     tables = transform_tables(parsed.items, source, base._parsed(context, "facts").items)
     return ParseResult(tables, rejected=parsed.rejected,
@@ -171,7 +173,7 @@ def validate(context):
     try:
         segments = validate_statement_segments(
             [replace(table, extraction_version="tables-v2") for table in tables], bindings.tree, facts,
-            xml_path=base._source_path(context, "extracted_xbrl_instance")) is True
+            xml_path=base._source_path(context, "extracted_xbrl_instance"), corroborated_layouts=True) is True
     except ValueError:
         segments = False
     index_metadata = segmented.configuration_metadata(context.manifest, context.data_root)
