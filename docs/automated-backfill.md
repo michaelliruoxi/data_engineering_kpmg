@@ -403,15 +403,53 @@ prose that mentions a statement never matches. The wider reading accepts:
   of Income and Total Comprehensive Income", "Results of Operations", and
   "Statement of Condition" for a balance sheet.
 
+**Lines around a title.** When all of that still leaves a filing rejected,
+selection is tried one last time with two more readings. In the first, a table
+that still has no title is read with `recover_headings(..., wide=True,
+header_lines=True)`, which passes the lines a filing prints between a title and
+its table. The whole line must be made of these:
+
+| Line | Example |
+| --- | --- |
+| Units | "(Millions of Dollars, Except Share Data)", "(Unaudited; in millions, except per share amounts)" |
+| Periods and dates | "March 31, 2025 and December 31, 2024", "For the Three- and Nine-Months Ended September 30, 2025 and 2024" |
+| The registrant's name, in either spelling of its legal form | "W. R. Berkley Corporation and Subsidiaries" for the DEI name "W. R. BERKLEY CORP" |
+| Running page headers, rules and page numbers | "Table of Contents", "Item 1. Financial Statements", "36" |
+
+A line with any other word still ends the search. The same reading accepts a
+title in the table's own header row beside such text; a title whose words are
+printed without a space ("CONSOLIDATEDBALANCE SHEETS"); one carrying a footnote
+marker ("Statements of Cash Flows(1)"); a title printed over two lines where
+the break falls inside it ("... Statements of Operations" / "and Comprehensive
+Income (Loss)"); and the cash flow statement titled "Consolidated Cash Flows".
+
+**A balance sheet printed as two tables.** The established rules join an
+assets table and a liabilities-and-equity table only when the second has no
+title and no dates of its own, or when the filing prints "statement continues
+on the next page". The last attempt also accepts the pair
+(`tied-balance-totals-v1`) when all of these hold:
+
+- both tables carry the same title and the same dates, for one entity;
+- nothing but footnotes, page furniture and the repeated title stands between
+  them: no table with a number, no other statement's title, no note heading;
+- the first holds the assets (and at most the liabilities), the second the
+  liabilities and equity;
+- for every date, the one undimensioned `Assets` fact of the first equals the
+  one undimensioned `LiabilitiesAndStockholdersEquity` fact of the second, in
+  one currency.
+
+The tables are stored as `balance_sheet.segment_1` and
+`balance_sheet.segment_2`, with the tied facts in `balance_continuation`.
+
 Measured offline on the 3,305 filings archived on this machine:
 
 | Before November 18 | After | Filings |
 | --- | --- | ---: |
 | Parsed cleanly | Byte-identical tables | 1,887 |
 | Statements selected, unresolved cells | Parse cleanly | 343 |
-| Rejected at statement selection | Parse cleanly | 178 |
+| Rejected at statement selection | Parse cleanly | 375 |
 | Statements selected, unresolved cells | Still not accepted | 212 |
-| Rejected at statement selection | Still not accepted | 685 |
+| Rejected at statement selection | Still not accepted | 488 |
 
 Filings already stored as text-only are not retried automatically; replay them
 as described above.
