@@ -279,6 +279,22 @@ the shared instance is a `db.t4g.micro`; see the database limit below.
   runs, and stop it before either falls below 30%. Use this launcher only
   after the instance class has been raised, and then watch the logs and both
   balances for the first 15 minutes.
+
+  That rate held only while the indexes fitted in memory. On November 18,
+  with the database at 12 GiB, the same single worker used about 0.25% of the
+  allowance for a typical quarterly report and 0.5% to 0.75% for a large
+  annual report, which the refill sustains at roughly 15 to 30 filings an
+  hour. `pg_statio_user_indexes` showed the cause. The `id` columns default
+  to random UUIDs, so each new row landed on a random page of every index
+  that starts with its identifier: five such indexes on facts, cells and
+  chunks accounted for about three quarters of all index block reads, and
+  17% to 26% of their lookups missed the buffer cache. The 548 MiB index on
+  (source document, version, occurrence key), whose rows arrive in order,
+  missed 0.9%. Bulk storage therefore supplies time-ordered identifiers
+  (`database.time_ordered_uuid`, UUID version 7) for the facts, cells and
+  chunks it inserts, so new rows share the newest index pages. The column
+  defaults and the schema are unchanged, and existing rows keep their
+  identifiers.
 - Stop the single-queue importer first; the launcher refuses to start while the
   main queue is locked. While shard queues exist, `backfill_sec.py` refuses to
   import the main queue directly (`--status` still works).

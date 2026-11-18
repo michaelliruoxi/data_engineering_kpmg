@@ -8,8 +8,9 @@ import ipaddress
 import os
 from pathlib import Path
 import re
+import time
 import unittest
-from uuid import UUID
+from uuid import RFC_4122, UUID
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -231,6 +232,44 @@ class BulkStorageTests(unittest.TestCase):
         self.assertEqual(values['metadata'].obj, chunk.metadata)
 
 
+class TimeOrderedIdentifierTests(unittest.TestCase):
+    def test_identifiers_are_version_7_unique_and_always_increase(self):
+        before = time.time_ns() // 1_000_000
+        values = [db.time_ordered_uuid() for _ in range(10_000)]
+        after = time.time_ns() // 1_000_000
+        self.assertTrue(all(value.version == 7 and value.variant == RFC_4122 for value in values))
+        self.assertEqual(values, sorted(values))
+        self.assertEqual(len(set(values)), len(values))
+        # The leading 48 bits are the creation time in milliseconds. More than
+        # 4,096 identifiers in one millisecond borrow from the next.
+        self.assertGreaterEqual(values[0].int >> 80, before)
+        self.assertLessEqual(values[-1].int >> 80, after + 3)
+
+    def test_bulk_inserts_supply_the_identifier_last_and_in_record_order(self):
+        conn = RecordingConnection([(UUID(int=10),), (UUID(int=11),)])
+        store_many(conn, 'financial_facts', [fact(1), fact(2)], FACT_KEYS)
+        (query, first), (_, second) = conn.groups[0]
+        self.assertIn('"id") VALUES', query)
+        self.assertEqual(len(first), len(asdict(fact())) + 1)
+        self.assertEqual((first[-1].version, second[-1].version), (7, 7))
+        self.assertLess(first[-1], second[-1])
+
+    def test_a_replayed_row_is_looked_up_without_the_new_identifier(self):
+        conn = RecordingConnection([None, (UUID(int=10),)])
+        self.assertEqual(store_many(conn, 'financial_facts', [fact()], FACT_KEYS), [UUID(int=10)])
+        query, parameters = conn.groups[1][0]
+        self.assertNotIn('"id" =', query)
+        self.assertEqual(len(parameters), len(asdict(fact())))
+
+    def test_link_tables_have_no_identifier_of_their_own(self):
+        membership = {'filing_id': UUID(int=1), 'table_id': UUID(int=2), 'fact_id': UUID(int=3)}
+        conn = RecordingConnection([(UUID(int=3),)])
+        store_many(conn, 'financial_table_facts', [membership], ('table_id', 'fact_id'), returning='fact_id')
+        query, parameters = conn.groups[0][0]
+        self.assertNotIn('"id"', query)
+        self.assertEqual(len(parameters), 3)
+
+
 @unittest.skipUnless(os.environ.get('SEC_BULK_TEST') == '1', 'Set SEC_BULK_TEST=1 for dedicated local PostgreSQL tests.')
 class BulkStoragePostgresTests(unittest.TestCase):
     """Optional real pipeline checks; local dedicated database, forced rollback."""
@@ -275,6 +314,17 @@ class BulkStoragePostgresTests(unittest.TestCase):
                 store_many(self.conn, 'financial_facts', [replace(self.records[0], occurrence_key='new-before-conflict'),
                                                         replace(self.records[1], label='changed')], FACT_KEYS)
         self.assertEqual(self.conn.execute('SELECT id, raw_value, created_at FROM sec.financial_facts ORDER BY occurrence_key').fetchall(), before)
+
+    def test_real_rows_take_the_supplied_time_ordered_identifiers(self):
+        ids = store_many(self.conn, 'financial_facts', self.records, FACT_KEYS, batch_size=2)
+        self.assertEqual([ident.version for ident in ids], [7, 7, 7])
+        self.assertEqual(ids, sorted(ids))
+        stored = self.conn.execute('SELECT id FROM sec.financial_facts ORDER BY occurrence_key').fetchall()
+        self.assertEqual([row[0] for row in stored], ids)
+        # The column default still serves writers that supply no identifier.
+        default = self.conn.execute("SELECT column_default FROM information_schema.columns WHERE table_schema = 'sec' "
+                                    "AND table_name = 'financial_facts' AND column_name = 'id'").fetchone()[0]
+        self.assertEqual(default, 'gen_random_uuid()')
 
     def test_real_duplicates_use_postgres_equality_and_caller_savepoint_rollback(self):
         ident, duplicate = store_many(self.conn, 'financial_facts', [self.records[0], self.records[0]], FACT_KEYS)

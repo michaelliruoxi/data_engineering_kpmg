@@ -15,7 +15,7 @@ import psycopg
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
-from .database import ChunkInput, DataConflict, DatabaseError, FactInput, _JSON_FIELDS
+from .database import ChunkInput, DataConflict, DatabaseError, FactInput, _JSON_FIELDS, time_ordered_uuid
 from .table_cells import TableCellInput
 
 
@@ -80,9 +80,14 @@ def store_many(
     if not items:
         return []
 
+    # Facts, chunks and cells have a surrogate identifier. Supplying it in
+    # insertion order keeps the indexes that start with it compact and in
+    # memory (`time_ordered_uuid`); a row that already exists keeps its own.
+    generated = returning == 'id'
+    insert_columns = (*columns, 'id') if generated else columns
     insert = sql.SQL('INSERT INTO sec.{} ({}) VALUES ({}) ON CONFLICT ({}) DO NOTHING RETURNING {}').format(
-        sql.Identifier(table), sql.SQL(', ').join(map(sql.Identifier, columns)),
-        sql.SQL(', ').join(sql.Placeholder() for _ in columns),
+        sql.Identifier(table), sql.SQL(', ').join(map(sql.Identifier, insert_columns)),
+        sql.SQL(', ').join(sql.Placeholder() for _ in insert_columns),
         sql.SQL(', ').join(map(sql.Identifier, keys)), sql.Identifier(returning),
     )
     # Canonical identity columns are NOT NULL. Ordinary equality lets PostgreSQL
@@ -104,7 +109,8 @@ def store_many(
         # A cursor cannot be read until the pipeline has synchronized. SQL errors
         # propagate from execute/sync and leave recovery to the caller.
         with conn.pipeline():
-            inserted = [conn.execute(insert, values) for values in bound]
+            inserted = [conn.execute(insert, [*values, time_ordered_uuid()] if generated else values)
+                        for values in bound]
         rows = [cursor.fetchone() for cursor in inserted]
         conflicts = [index for index, row in enumerate(rows) if row is None]
         if conflicts:
