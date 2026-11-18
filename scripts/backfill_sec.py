@@ -56,6 +56,9 @@ def main(argv=None):
     try:
         with ExitStack() as stack:
             if not args.status:
+                from sec_pipeline.queue_shards import shard_paths
+                if shard_paths(args.state):
+                    raise ValueError("This queue is split into shard queues; merge them before importing it directly.")
                 stack.enter_context(queue_lock(args.state))
             elif not args.state.is_file():
                 raise ValueError("The queue must exist before querying status.")
