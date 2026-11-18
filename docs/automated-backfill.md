@@ -295,6 +295,24 @@ the shared instance is a `db.t4g.micro`; see the database limit below.
   chunks it inserts, so new rows share the newest index pages. The column
   defaults and the schema are unchanged, and existing rows keep their
   identifiers.
+
+  Measured the same afternoon, 40 minutes apart on the same database, for new
+  filings loaded by one worker:
+
+  | Per 1,000 rows inserted | Random identifiers | Time-ordered identifiers |
+  | --- | ---: | ---: |
+  | Index blocks read | 1,822 | 39 |
+  | Full-page images in the write-ahead log | 1,643 | 66 |
+  | Write-ahead log volume | 9.2 MiB | 1.9 MiB |
+  | Buffers the background writer had to clean | 1,471 | 45 |
+
+  Disk traffic fell from about 500 MiB to about 55 MiB per new filing, and
+  the allowance stayed at 43% to 44% while 13 large filings were loaded in
+  seven minutes. Re-importing a filing whose facts were stored with random
+  identifiers still looks those facts up (406 index blocks read per 1,000
+  rows, down from 1,739). `ANALYZE` on a large table reads 30,000 blocks
+  (234 MiB) whenever autovacuum triggers it, which shows as a short burst of
+  reads unrelated to the load.
 - Stop the single-queue importer first; the launcher refuses to start while the
   main queue is locked. While shard queues exist, `backfill_sec.py` refuses to
   import the main queue directly (`--status` still works).
