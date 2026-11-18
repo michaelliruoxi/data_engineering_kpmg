@@ -346,8 +346,12 @@ and `tables-v4` to `tables-v8` produce what they produced before.
 column must already carry one period, shared by at least two concepts, and the
 header must print nothing that contradicts it: the year is the period's end
 year, a printed date is its end date, a printed month its end month, and a
-printed length matches (within ten days for months, exactly for weeks). One of
-these must also hold:
+printed length matches: within ten days for months and within four days for
+weeks. A fiscal period that starts on a fixed calendar day and ends on a
+Saturday ("Twenty-Six Week Periods Ended March 29, 2025", tagged from October
+1) is a few days off the whole weeks its header names; a 53-week year is never
+"52 weeks". A date printed without a space after its comma ("February
+1,2025") is read as that date. One of these must also hold:
 
 | Evidence (`anchor`) | Example header | Requirement |
 | --- | --- | --- |
@@ -355,6 +359,12 @@ these must also hold:
 | `year_to_date_from_reported_balance` | "Year to Date / 2025" | The period starts the day after a balance date the filing reports |
 | `comparative_column` | "2024" or "March 30, 2024" beside a fully captioned column | Another column of the table has an established period of the same length (within seven days) ending one year earlier or later |
 | `printed_balance_date` | "Fiscal Year Ended / December 28, 2025" on a balance sheet | The tagged date is printed in full |
+| `caption_duration`, `caption_balance_date` | "2025" under the line "For the quarters ended March 31, 2025 and 2024"; "March 31, 2025" under "Three months ended March 31, 2025 and 2024"; "2025" under "October 31, 2025 and 2024" on a balance sheet | A caption shared by the columns prints the period's end, as a full date or as a month and day beside that year, and for a duration its length; the column prints exactly one year, the period's end year; and the table has a column for every year the caption names |
+
+A caption is a header cell that names two or more years, or a line printed
+between the statement's title and the table (the lines listed under "Lines
+around a title" below; any other text ends the search). A caption for a
+balance column must print no length.
 
 The accepted period is the tagged one, and the proof is stored in the table's
 `column_period_evidence` with method `corroborated_printed_header`. A header
@@ -490,10 +500,10 @@ Measured offline on the 3,305 filings archived on this machine:
 | Before November 18 | After | Filings |
 | --- | --- | ---: |
 | Parsed cleanly | Byte-identical tables | 1,887 |
-| Statements selected, unresolved cells | Parse cleanly | 343 |
-| Rejected at statement selection | Parse cleanly | 454 |
-| Statements selected, unresolved cells | Still not accepted | 212 |
-| Rejected at statement selection | Still not accepted | 409 |
+| Statements selected, unresolved cells | Parse cleanly | 364 |
+| Rejected at statement selection | Parse cleanly | 457 |
+| Statements selected, unresolved cells | Still not accepted | 191 |
+| Rejected at statement selection | Still not accepted | 406 |
 
 Filings already stored as text-only are not retried automatically; replay them
 as described above.

@@ -256,7 +256,29 @@ def _nearby_headings(node):
     return values
 
 
+_SELECTION_MEMO = None
+
+
+def _memo(key, compute):
+    """Reuse a pure reading of the document within one `select_statement_segments` call.
+
+    Selection makes several attempts over the same unchanged document, and
+    each asked every table for its headings again. `key` holds the element, so
+    the element stays alive and its identity stays valid while the memo lives.
+    """
+    memo = _SELECTION_MEMO
+    if memo is None:
+        return compute()
+    if key not in memo:
+        memo[key] = compute()
+    return memo[key]
+
+
 def _statement_heading_values(table):
+    return list(_memo(('heading_values', table), lambda: tuple(_statement_heading_values_uncached(table))))
+
+
+def _statement_heading_values_uncached(table):
     values = _nearby_headings(table)
     # A heading may be a caption or an opening non-data row inside the table.
     values.extend(text(node) for node in table.xpath('./caption'))
@@ -931,6 +953,9 @@ def _printed_period_tokens(headers):
     two different durations or week counts, which no single period can satisfy.
     """
     value = _period_text(re.sub(r'([a-z])([A-Z])', r'\1 \2', ' '.join(headers)))
+    # "March 30,2025": a date printed without a space after its comma.
+    value = re.sub(r'\b(\d{1,2}),(?=(?:19|20)\d\d\b)', r'\1, ', value)
+    value = re.sub(r'\b(years?|months?|quarters?|weeks?|periods?)-(ended|ending)\b', r'\1 \2', value)
     value = re.sub(r'\b(\d+)[-\s]+(months?|weeks?|quarters?)\b', r'\1 \2', value)
     if re.search(r'\b\d{1,2}\s*(?:and|or|&|/)\s*\d{1,2} (?:months?|weeks?|quarters?)\b', value):
         return None
@@ -969,7 +994,9 @@ def _printed_tokens_agree(tokens, period, fiscal_year_offset):
     the filing's own DEI facts name for it). A printed date must be the end
     date, a printed month the end month, and a printed duration the period's
     length: within ten days for months, which admits 13- and 14-week quarters,
-    and exact for weeks.
+    and within four days for weeks. A fiscal period that starts on a fixed
+    calendar day and ends on a Saturday is a few days longer or shorter than
+    the whole weeks its header names; a 53-week year is never "52 weeks".
     """
     if tokens is None or not tokens['years']:
         return False
@@ -992,12 +1019,77 @@ def _printed_tokens_agree(tokens, period, fiscal_year_offset):
     days = (end - date.fromisoformat(period['startDate'])).days + 1
     if tokens['months'] is not None and abs(days - tokens['months'] * 30.4375) > 10:
         return False
-    if tokens['weeks'] is not None and days != 7 * tokens['weeks']:
+    if tokens['weeks'] is not None and abs(days - 7 * tokens['weeks']) > 4:
         return False
     return True
 
 
-def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset):
+def _caption_lines(table):
+    """The header lines printed between a statement's title and its table.
+
+    Only lines `statement_headings` reads as header metadata are collected
+    (periods, dates, units, a company name, page furniture); the search ends
+    at the title or at any other text, and never crosses a table or a number.
+    """
+    from .statement_headings import _metadata, _numeric, _visible_text
+    lines, node = [], table
+    for _ in range(5):
+        sibling, blocks = node.getprevious(), 0
+        while sibling is not None:
+            if _numeric(sibling) or local(sibling) == 'table' or sibling.xpath('.//table'):
+                return lines
+            value = _visible_text(sibling)
+            if value:
+                blocks += 1
+                if blocks > 8 or not _metadata(value, (), True):
+                    return lines
+                lines.append(value)
+            sibling = sibling.getprevious()
+        node = node.getparent()
+        if node is None or local(node) in {'body', 'html', 'td', 'th', 'table'}:
+            break
+    return lines
+
+
+def _caption_agrees(own, caption, period, fiscal_year_offset):
+    """Whether a column's own header and a caption above it together print `period`.
+
+    The caption is a period line shared by all columns ("For the quarters
+    ended March 31, 2025 and 2024"); the column prints which year it is. The
+    column must print exactly one year, the period's end year, and nothing
+    that differs from the period. The caption must print the period's end,
+    as a full date or as a month and day beside that year, and for a
+    duration its length, which must match as in `_printed_tokens_agree`.
+    """
+    if own is None or caption is None or len(own['years']) != 1:
+        return False
+    end = date.fromisoformat(period.get('endDate', period.get('instant')))
+    labelled = {end.year, end.year - 1} if fiscal_year_offset == 1 else {end.year}
+    if (not own['years'] <= labelled or not own['full_dates'] <= {end}
+            or not own['month_days'] <= {(end.month, end.day)} or own['month_only'] - {end.month}):
+        return False
+    ends = set(caption['full_dates'])
+    if len(caption['month_days']) == 1:
+        month, day = next(iter(caption['month_days']))
+        for year in caption['years']:
+            try:
+                ends.add(date(year, month, day))
+            except ValueError:
+                return False
+    if end not in ends:
+        return False
+    months = {value for value in (own['months'], caption['months']) if value is not None}
+    weeks = {value for value in (own['weeks'], caption['weeks']) if value is not None}
+    if 'startDate' not in period:
+        return not months and not weeks
+    if len(months) > 1 or len(weeks) > 1 or not (months or weeks):
+        return False
+    days = (end - date.fromisoformat(period['startDate'])).days + 1
+    return (all(abs(days - value * 30.4375) <= 10 for value in months)
+            and all(abs(days - 7 * value) <= 4 for value in weeks))
+
+
+def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset, captions=()):
     """Accept the tagged period of columns whose printed header cannot be parsed alone.
 
     Every tagged number in such a column already carries one period, shared by
@@ -1012,6 +1104,10 @@ def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_ye
       length ending one year earlier or later: the comparative column of a
       caption that physically spans only its neighbour.
     - A balance column prints the tagged date in full.
+    - A caption shared by the columns prints the period's end and length and
+      the column prints its year (`_caption_agrees`). A caption is a header
+      cell naming two or more years, or one of `captions`, the lines printed
+      between the statement's title and the table.
     Nothing is read from the header that it does not print, and a column that
     meets none of these stays unresolved.
     """
@@ -1023,7 +1119,7 @@ def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_ye
     accepted = {}
 
     def accept(column, anchor, **evidence):
-        candidate, references, _ = pending.pop(column)
+        candidate, references, _ = pending.pop(column, None) or deferred[column]
         accepted[column] = candidate
         periods[column] = candidate
         provenance[str(column)] = {
@@ -1040,23 +1136,48 @@ def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_ye
         elif (tokens['year_to_date'] and balance_dates is not None
               and (date.fromisoformat(candidate['startDate']) - timedelta(days=1)).isoformat() in balance_dates):
             accept(column, 'year_to_date_from_reported_balance')
-    changed = True
-    while pending and changed:
-        changed = False
-        for column in sorted(pending):
-            candidate = pending[column][0]
-            start, end = (date.fromisoformat(candidate[key]) for key in ('startDate', 'endDate'))
-            for other in sorted(periods):
-                established = periods[other]
-                if (other == column or other in pending or established is None
-                        or set(established) != {'startDate', 'endDate'}):
-                    continue
-                other_start, other_end = (date.fromisoformat(established[key]) for key in ('startDate', 'endDate'))
-                if (abs((other_end - other_start).days - (end - start).days) <= 7
-                        and 357 <= abs((other_end - end).days) <= 373):
-                    accept(column, 'comparative_column', comparative_column=other, comparative_period=dict(established))
-                    changed = True
-                    break
+
+    def comparatives():
+        changed = True
+        while pending and changed:
+            changed = False
+            for column in sorted(pending):
+                candidate = pending[column][0]
+                start, end = (date.fromisoformat(candidate[key]) for key in ('startDate', 'endDate'))
+                for other in sorted(periods):
+                    established = periods[other]
+                    if (other == column or other in pending or established is None
+                            or set(established) != {'startDate', 'endDate'}):
+                        continue
+                    other_start, other_end = (date.fromisoformat(established[key]) for key in ('startDate', 'endDate'))
+                    if (abs((other_end - other_start).days - (end - start).days) <= 7
+                            and 357 <= abs((other_end - end).days) <= 373):
+                        accept(column, 'comparative_column', comparative_column=other, comparative_period=dict(established))
+                        changed = True
+                        break
+
+    comparatives()
+
+    def several_years(header):
+        return len(set(re.findall(r'\b(?:19|20)\d\d\b', header))) > 1
+
+    own = {column: _printed_period_tokens([header for header in headers if not several_years(header)])
+           for column, (_, _, headers) in deferred.items()}
+    # A caption belongs to this table only if the table has a column for every year it names.
+    column_years = {year for tokens in own.values() if tokens is not None for year in tokens['years']}
+    column_years.update(date.fromisoformat(period.get('endDate', period.get('instant'))).year
+                        for period in periods.values() if period is not None)
+    for column in sorted(deferred):
+        if column in accepted:
+            continue
+        candidate, _, headers = deferred[column]
+        for caption in [*(header for header in headers if several_years(header)), *captions]:
+            tokens = _printed_period_tokens([caption])
+            if (tokens is not None and tokens['years'] <= column_years
+                    and _caption_agrees(own[column], tokens, candidate, fiscal_year_offset)):
+                accept(column, 'caption_duration' if 'startDate' in candidate else 'caption_balance_date', caption=caption)
+                break
+    comparatives()
     return accepted
 
 
@@ -1171,7 +1292,9 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, ta
             if calendar_sources:
                 provenance[str(column)]['calendar_sources'] = calendar_sources
     if deferred:
-        _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset)
+        table = next(cell for row in rows for cell in row)['_element'].xpath('ancestor::table[1]')[0]
+        captions = _memo(('caption_lines', table), lambda: tuple(_caption_lines(table)))
+        _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset, captions)
     return periods, provenance
 
 
@@ -1815,14 +1938,16 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
         kinds = _statement_headings(table) | _statement_headings(table, continued=True)
         heading_evidence = ()
         if not kinds:
-            heading_evidence = recover_headings(table)
+            heading_evidence = _memo(('recover', table), lambda: recover_headings(table))
             kinds = {item.kind for item in heading_evidence}
         if not kinds and corroborate:
             # Only a table no established rule recognizes gets the wider titles.
-            heading_evidence = recover_headings(table, wide=True, registrants=registrants)
+            heading_evidence = _memo(('recover_wide', table),
+                                     lambda: recover_headings(table, wide=True, registrants=registrants))
             kinds = {item.kind for item in heading_evidence}
         if not kinds and corroborate and extended:
-            heading_evidence = recover_headings(table, wide=True, registrants=spelled_registrants, header_lines=True)
+            heading_evidence = _memo(('recover_header_lines', table), lambda: recover_headings(
+                table, wide=True, registrants=spelled_registrants, header_lines=True))
             kinds = {item.kind for item in heading_evidence}
         for kind in kinds:
             if kind == 'cash_flow' and _standalone_cash_supplement(table):
@@ -2141,7 +2266,25 @@ def select_statement_segments(tree, facts, *, cash_followers=False, corroborated
     ``cash_followers`` (V8 only) adds the closing cash reconciliation and the
     supplemental disclosures printed directly after the cash flow statement.
     ``corroborated_layouts`` (tables-v3 only) is described at `extract_tables`.
+
+    The document is only read here, so the headings of each table and the
+    visibility of each node are computed once for all attempts (`_memo`,
+    `statement_headings.cached_visibility`). That changes no result.
     """
+    from .statement_headings import cached_visibility
+    global _SELECTION_MEMO
+    outer = _SELECTION_MEMO
+    if outer is None:
+        _SELECTION_MEMO = {}
+    try:
+        with cached_visibility():
+            return _select_statement_segments(tree, facts, cash_followers=cash_followers,
+                                              corroborated_layouts=corroborated_layouts)
+    finally:
+        _SELECTION_MEMO = outer
+
+
+def _select_statement_segments(tree, facts, *, cash_followers, corroborated_layouts):
     from .joint_statements import select_joint_statement_segments
     source_facts = _segment_facts(facts)
     try:
