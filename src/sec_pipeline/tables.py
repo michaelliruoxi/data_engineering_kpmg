@@ -164,6 +164,19 @@ _STATEMENT_CONCEPTS = {
 }
 
 
+# tables-v3 corroborated layouts only. A statement that reports discontinued
+# operations or assets held for sale closes on the standard total that
+# includes their cash. The strict alias selection (statement_aliases) accepts
+# that concept under a few exact row labels; this catalog is tried after it,
+# and each such cell must still pass `_endpoint_balance_period` or a labelled
+# opening/closing rule when the statement is extracted.
+_CORROBORATED_STATEMENT_CONCEPTS = {
+    **_STATEMENT_CONCEPTS,
+    'cash_flow': (*_STATEMENT_CONCEPTS['cash_flow'][:3], _STATEMENT_CONCEPTS['cash_flow'][3] | {
+        'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations'}),
+}
+
+
 def _inline_namespaces(element, fallback=None):
     namespaces = dict(fallback or {})
     for node in [*reversed(list(element.iterancestors())), element]:
@@ -1199,14 +1212,15 @@ def _segment_heading_signatures(table, kind):
     return signatures
 
 
-def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=None, heading_evidence=(), concept_groups=None):
+def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=None, heading_evidence=(), concept_groups=None,
+                       corroborate=False):
     concept_groups = _STATEMENT_CONCEPTS if concept_groups is None else concept_groups
     rows, _ = layout_grid(table, tree)
     first = next((index for index, row in enumerate(rows) if any(
         local(element) == 'nonfraction' for cell in row for element in cell['_element'].iter())), None)
     if first is None:
         return None
-    periods, _ = _column_periods(rows, first, facts, {}, html_ids, advanced=True)
+    periods, _ = _column_periods(rows, first, facts, {}, html_ids, advanced=True, corroborate=corroborate)
     if inherited_periods:
         for column, period in inherited_periods.items():
             if periods.get(column) is not None:
@@ -1682,12 +1696,14 @@ def _cash_named_header_continuation(tree, first, table, facts, html_ids, heading
     return second
 
 
-def _select_statement_segments_v2(tree, facts, *, concept_groups=None):
+def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corroborate=False):
     """Select original physical tables; v2 currently groups cash-flow continuations.
 
     Complete v1 selections are preserved. Split statements need matching exact
     heading identities, source period axes, entity/unit/dimension scopes and
     document adjacency. A group cannot contain two complete statements.
+    `corroborate` (tables-v3 only) reads each candidate's column periods with
+    `_corroborate_columns`, as extraction then does for the selected tables.
     """
     concept_groups = _STATEMENT_CONCEPTS if concept_groups is None else concept_groups
     try:
@@ -1715,7 +1731,7 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None):
                 continue
             try:
                 candidate = _segment_candidate(tree, table, kind, facts, html_ids, heading_evidence=heading_evidence,
-                                               concept_groups=concept_groups)
+                                               concept_groups=concept_groups, corroborate=corroborate)
             except TableExtractionError as exc:
                 if kind != 'cash_flow' or len(choices[kind]) != 1 or str(exc) != 'Statement segment has an unresolved column period':
                     raise
@@ -2012,11 +2028,12 @@ def _with_cash_followers(tree, segments, facts):
     return tuple(segment for segment in segments if segment.statement_type != 'cash_flow') + tuple(rebuilt)
 
 
-def select_statement_segments(tree, facts, *, cash_followers=False):
+def select_statement_segments(tree, facts, *, cash_followers=False, corroborated_layouts=False):
     """Resolve combined-filer identity before attempting ordinary selection.
 
     ``cash_followers`` (V8 only) adds the closing cash reconciliation and the
     supplemental disclosures printed directly after the cash flow statement.
+    ``corroborated_layouts`` (tables-v3 only) is described at `extract_tables`.
     """
     from .joint_statements import select_joint_statement_segments
     source_facts = _segment_facts(facts)
@@ -2024,10 +2041,18 @@ def select_statement_segments(tree, facts, *, cash_followers=False):
     if selected is not None:
         return selected
     try:
-        selected = _select_statement_segments_v2(tree, facts)
+        selected = _select_statement_segments_v2(tree, facts, corroborate=corroborated_layouts)
     except TableExtractionError:
         from .statement_aliases import select_alias_statement_segments
         selected = select_alias_statement_segments(tree, facts)
+        if selected is None and corroborated_layouts:
+            # Last, so a filing the two established selections accept keeps
+            # its exact segments and proof.
+            try:
+                selected = _select_statement_segments_v2(tree, facts, concept_groups=_CORROBORATED_STATEMENT_CONCEPTS,
+                                                         corroborate=True)
+            except TableExtractionError:
+                selected = None
         if selected is None:
             raise
     selected = _validate_primary_scope(selected, source_facts)
@@ -2037,7 +2062,8 @@ def select_statement_segments(tree, facts, *, cash_followers=False):
 def validate_statement_segments(tables, tree, facts, *, xml_path=None, cash_followers=False, tagging_defects=False,
                                 corroborated_layouts=False):
     """Independently reselect physical groups from unchanged source evidence."""
-    expected = select_statement_segments(tree, facts, cash_followers=cash_followers)
+    expected = select_statement_segments(tree, facts, cash_followers=cash_followers,
+                                         corroborated_layouts=corroborated_layouts)
     if len(tables) != len(expected):
         raise TableExtractionError('Stored statement segment count differs from the original sources')
     for table, segment in zip(tables, expected):
@@ -2120,7 +2146,8 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
     if cash_followers and not advanced:
         raise TableExtractionError('Cash flow followers require the advanced statement selector')
     if advanced:
-        selected = select_statement_segments(tree, facts, cash_followers=cash_followers)
+        selected = select_statement_segments(tree, facts, cash_followers=cash_followers,
+                                             corroborated_layouts=corroborated_layouts)
         facts = {key: {name: value for name, value in record.items() if name != 'entity'} for key, record in facts.items()}
     else:
         selected = tuple(StatementSegment(kind, kind, table) for kind, table in select_statements(tree).items())
