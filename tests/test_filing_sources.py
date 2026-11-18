@@ -101,8 +101,25 @@ class FilingDocumentTests(unittest.TestCase):
         payloads[HTML_ROLE] = payloads[HTML_ROLE].replace(b"2025-12-31", b"December 31, 2025")
         payloads[XML_ROLE] = payloads[XML_ROLE].replace(b"xmlns:dei=", b"xmlns:d=").replace(b"dei:", b"d:")
         self.assertEqual(verify_documents(manifest, payloads), manifest)
-        for value in ("December 31, 2025", "Dec 31 2025", "12/31/2025", "31 December 2025"):
+        for value in ("December 31, 2025", "Dec 31 2025", "12/31/2025", "31 December 2025",
+                      "Dec. 31, 2025", "12/31/25"):
             self.assertEqual(normalized_date(value), "2025-12-31")
+        self.assertEqual(normalized_date("3/31/25"), "2025-03-31")
+        self.assertEqual(normalized_date("Sept. 30, 2025"), "2025-09-30")
+        self.assertEqual(normalized_date("September 30, 2025"), "2025-09-30")
+        # A spelling that names no single date stays as printed and fails the comparison.
+        for value in ("31/12/25", "Dec. 2025", "13/31/25", "March 31", "Decem. 31, 2025", "3/31/5"):
+            self.assertNotRegex(normalized_date(value), r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+
+    def test_a_period_printed_with_a_short_month_or_a_two_digit_year_verifies(self):
+        for printed in (b"Dec. 31, 2025", b"12/31/25"):
+            manifest, payloads = fixture()
+            payloads[HTML_ROLE] = payloads[HTML_ROLE].replace(b"2025-12-31", printed)
+            self.assertEqual(verify_documents(manifest, payloads), manifest)
+        manifest, payloads = fixture()
+        payloads[HTML_ROLE] = payloads[HTML_ROLE].replace(b"2025-12-31", b"12/30/25")
+        with self.assertRaises(SourceVerificationError):
+            verify_documents(manifest, payloads)
 
     def test_changed_document_identity_is_rejected(self):
         for role, before, after in (

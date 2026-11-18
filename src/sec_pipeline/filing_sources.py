@@ -31,8 +31,17 @@ def archive_base(manifest):
 
 
 def normalized_date(value):
+    """Read a displayed calendar date; an unreadable one is returned unchanged.
+
+    Callers only compare the result with the date the SEC index gives, so a
+    spelling this function cannot read fails that comparison.
+    """
     value = re.sub(r"[\s,]+", " ", value).strip()
-    for pattern in ("%Y-%m-%d", "%B %d %Y", "%b %d %Y", "%m/%d/%Y", "%m-%d-%Y", "%d %B %Y"):
+    # An abbreviated month printed with its period ("Dec. 31, 2024", "Sept. 30, 2025").
+    value = re.sub(r"^(?:(Sep)t|([A-Za-z]{3}))\.? (?=[0-9])", lambda match: (match[1] or match[2]) + " ", value)
+    for pattern in ("%Y-%m-%d", "%B %d %Y", "%b %d %Y", "%m/%d/%Y", "%m-%d-%Y", "%d %B %Y",
+                    # A two-digit year ("3/31/25") is tried only after the four-digit forms.
+                    "%m/%d/%y"):
         try:
             return datetime.strptime(value, pattern).date().isoformat()
         except ValueError:
