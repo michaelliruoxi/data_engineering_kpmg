@@ -20,11 +20,12 @@ GAAP = 'http://fasb.org/us-gaap/2026'
 CONCEPTS = ('Revenues', 'NetIncomeLoss')
 
 
-def resolve(header_rows, column_periods, *, corroborate=True, extra_facts=()):
+def resolve(header_rows, column_periods, *, corroborate=True, extra_facts=(), before=''):
     """One value column per period; header rows are given exactly as printed.
 
     Returns ({column: period}, provenance). `extra_facts` adds undimensioned
-    facts elsewhere in the filing, such as a reported balance.
+    facts elsewhere in the filing, such as a reported balance. `before` is the
+    HTML printed directly above the table.
     """
     headers = ''.join('<tr><td></td>' + ''.join(f'<td>{value}</td>' for value in row) + '</tr>' for row in header_rows)
     body = ''.join(
@@ -33,7 +34,7 @@ def resolve(header_rows, column_periods, *, corroborate=True, extra_facts=()):
             f'</ix:nonfraction></td>' for column in range(1, len(column_periods) + 1)) + '</tr>'
         for index, concept in enumerate(CONCEPTS))
     tree = html.document_fromstring(
-        f'<html xmlns:g="{GAAP}" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"><body><table>{headers}{body}'
+        f'<html xmlns:g="{GAAP}" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"><body>{before}<table>{headers}{body}'
         f'</table></body></html>').getroottree()
     facts, ids = {}, {}
     for column, period in enumerate(column_periods, 1):
@@ -131,6 +132,78 @@ class PrintedDurationTests(unittest.TestCase):
         self.assertEqual(provenance['1']['anchor'], 'printed_balance_date')
         periods, provenance = resolve([['Fiscal Year Ended'], ['February 1,2025']], [{'instant': '2025-02-02'}])
         self.assertNotIn('1', provenance)
+
+
+class CaptionTests(unittest.TestCase):
+    """A period line shared by the columns, printed above the table or in a header cell naming several years."""
+    QUARTERS = [duration('2025-01-01', '2025-03-31'), duration('2024-01-01', '2024-03-31')]
+    TITLE = '<p>Condensed Consolidated Income Statements</p>'
+
+    def test_bare_year_columns_under_a_caption_that_prints_the_date_and_length(self):
+        caption = 'For the quarters ended March 31, 2025 and 2024'
+        periods, provenance = resolve([['2025', '2024']], self.QUARTERS,
+                                      before=f'{self.TITLE}<p>{caption}</p><p>(Dollars in millions)</p>')
+        self.assertEqual([periods[1], periods[2]], self.QUARTERS)
+        self.assertEqual([provenance[key]['anchor'] for key in ('1', '2')], ['caption_duration'] * 2)
+        self.assertEqual(provenance['1']['caption'], caption)
+        # The same columns stay unresolved without the caption, and without the option.
+        self.assertIsNone(resolve([['2025', '2024']], self.QUARTERS, before=self.TITLE)[0][1])
+        self.assertIsNone(resolve([['2025', '2024']], self.QUARTERS, before=f'<p>{caption}</p>', corroborate=False)[0][1])
+
+    def test_dated_columns_take_their_length_from_the_caption(self):
+        periods, provenance = resolve([['March 31, 2025', 'March 31, 2024']], self.QUARTERS,
+                                      before='<p>Three months ended March 31, 2025 and 2024</p>')
+        self.assertEqual([periods[1], periods[2]], self.QUARTERS)
+        self.assertEqual(provenance['2']['anchor'], 'caption_duration')
+        halves = [duration('2024-09-01', '2025-02-28'), duration('2023-09-01', '2024-02-29')]
+        periods, _ = resolve([['February 28, 2025', 'February 29, 2024']], halves,
+                             before='<p>For the Six Months Ended February 28, 2025 and February 29, 2024</p>')
+        self.assertEqual([periods[1], periods[2]], halves)
+
+    def test_a_header_cell_naming_several_years_is_a_caption(self):
+        caption = 'Fiscal years ended December 31, 2025 and 2024'
+        years = [duration('2025-01-01', '2025-12-31'), duration('2024-01-01', '2024-12-31')]
+        quarters = [duration('2025-10-01', '2025-12-31'), duration('2024-10-01', '2024-12-31')]
+        periods, _ = resolve([[caption, caption], ['2025', '2024']], years)
+        self.assertEqual([periods[1], periods[2]], years)
+        periods, provenance = resolve([[caption, caption], ['2025', '2024']], quarters)
+        self.assertNotEqual(periods[1], quarters[0])
+        self.assertEqual(provenance, {})
+
+    def test_balance_columns_take_their_date_from_a_caption_without_a_length(self):
+        caption = 'December 31, 2025 and 2024'
+        dates = [{'instant': '2025-12-31'}, {'instant': '2024-12-31'}]
+        periods, provenance = resolve([[caption, caption], ['2025', '2024']], dates)
+        self.assertEqual([periods[1], periods[2]], dates)
+        self.assertEqual([provenance[key]['anchor'] for key in ('1', '2')], ['caption_balance_date'] * 2)
+        # Another tagged date, or a caption that prints a length, is no balance caption.
+        periods, provenance = resolve([[caption, caption], ['2025', '2024']],
+                                      [{'instant': '2025-09-30'}, {'instant': '2024-09-30'}])
+        self.assertEqual(provenance, {})
+        caption = 'Years ended December 31, 2025 and 2024'
+        periods, provenance = resolve([[caption, caption], ['2025', '2024']], dates)
+        self.assertEqual(provenance, {})
+
+    def test_a_caption_that_prints_another_date_length_or_year_is_refused(self):
+        cases = (
+            ('For the quarters ended June 30, 2025 and 2024', ['2025', '2024']),       # another date
+            ('For the six months ended March 31, 2025 and 2024', ['2025', '2024']),    # another length
+            ('For the quarters ended March 31, 2024 and 2023', ['2025', '2024']),      # the caption lacks 2025
+            ('For the quarters ended March 31, 2025 and 2024', ['2026', '2024']),      # the column prints another year
+            ('For the periods ended March 31, 2025 and 2024', ['2025', '2024']),       # no length printed
+            ('For the quarters ended March 31, 2025 and 2024</p><p>The following table is unaudited and condensed.',
+             ['2025', '2024']),                                                         # other text in between
+        )
+        for caption, header in cases:
+            with self.subTest(caption=caption, header=header):
+                periods, provenance = resolve([header], self.QUARTERS, before=f'<p>{caption}</p>')
+                self.assertNotEqual(periods[1], self.QUARTERS[0])
+                self.assertNotIn('1', provenance)
+
+    def test_a_hyphenated_year_ended_header_prints_twelve_months(self):
+        year = duration('2024-01-01', '2024-12-31')
+        periods, provenance = resolve([['Year-Ended December 31,'], ['2024']], [year])
+        self.assertEqual(periods[1], year)
 
 
 class ComparativeColumnTests(unittest.TestCase):
