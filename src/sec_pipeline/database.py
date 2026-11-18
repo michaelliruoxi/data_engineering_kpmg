@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
+import time
 from typing import Any
 from uuid import UUID
 
@@ -225,6 +227,33 @@ def migrate(conn: psycopg.Connection) -> list[str]:
                          (name, migration_digest(content)))
             applied_now.append(name)
     return applied_now
+
+
+_LAST_IDENTIFIER = [0, 0]
+
+
+def time_ordered_uuid() -> UUID:
+    """Return a version 7 UUID (RFC 9562): its creation time, then a counter and random bits.
+
+    The `id` columns default to `gen_random_uuid()`, so every inserted row
+    lands on a random page of each index that starts with its identifier.
+    Once those indexes outgrow the database's memory, each row costs reads
+    and writes of whole index pages. Identifiers created together, in order,
+    share the newest pages instead.
+
+    Successive calls in one process always increase. The value carries no
+    meaning beyond identity, and the column defaults are unchanged.
+    """
+    millisecond = time.time_ns() // 1_000_000
+    last, counter = _LAST_IDENTIFIER
+    if millisecond > last:
+        counter = 0
+    else:
+        millisecond, counter = last, counter + 1
+        if counter > 0xFFF:
+            millisecond, counter = last + 1, 0
+    _LAST_IDENTIFIER[:] = [millisecond, counter]
+    return UUID(int=(millisecond << 80) | (0x7 << 76) | (counter << 64) | (0b10 << 62) | secrets.randbits(62))
 
 
 _JSON_FIELDS = {'sections', 'metadata', 'unit', 'dimensions', 'source_reference', 'structure'}
