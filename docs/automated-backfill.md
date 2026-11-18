@@ -237,6 +237,50 @@ it to resume after a stop; it cannot be combined with `-RetryFailedOnly` or
 .\scripts\start_backfill.ps1 -PendingOnly -MaxDatabaseGiB 40
 ```
 
+### Several workers at once
+
+`scripts\start_parallel_backfill.ps1` splits the filings not attempted yet
+into shard queues under `data\backfill\2026-10-13\shards` and starts one
+background `--pending-only` importer per shard, each with its own writer lock
+and its own log pair (`backfill_<timestamp>_queue-NN.*`):
+
+```powershell
+.\scripts\start_parallel_backfill.ps1 -Workers 4 -MaxDatabaseGiB 40
+```
+
+- Every filing of an issuer goes to the same shard, so two workers never write
+  one company's rows. Annual reports count three times a quarterly report when
+  the work is balanced.
+- Each worker spaces its own SEC requests by one second, so the combined rate
+  is one request per second per worker. `-Workers` accepts 2 to 8; the SEC
+  allows ten requests per second from one address.
+- The database, not this machine or the SEC, limits the worker count. On
+  November 17, 2026 the shared instance (it reports `max_connections = 79` and
+  under 100 MB of shared buffers) ran four workers steadily at about nine
+  seconds per filing. Eight workers were no faster, and after ten minutes the
+  server stopped responding and restarted; committed filings were intact, but
+  the database was unavailable to everyone for about six minutes and every
+  worker hung on its dead connection. Stay at four unless the instance class
+  has been raised, and watch the logs for a stall after any increase.
+- Stop the single-queue importer first; the launcher refuses to start while the
+  main queue is locked. While shard queues exist, `backfill_sec.py` refuses to
+  import the main queue directly (`--status` still works).
+- Run the launcher again to resume: existing shards are reused, `-Workers` is
+  ignored, and a shard whose worker is still running is left alone.
+- The main `queue.json` does not change while workers run. Progress is in the
+  shard queues and logs, and `report_backfill_status.py` stays accurate because
+  it reconciles against the database rather than the queue's own statuses.
+- When every worker has stopped, copy the results back. The merge refuses to
+  run while any shard is locked and moves the shard files to
+  `shards\merged-<timestamp>`:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\shard_backfill_queue.py merge --state data\backfill\2026-10-13\queue.json
+```
+
+Earlier failures are not in any shard. After merging, retry them with
+`.\scripts\start_backfill.ps1 -RetryFailedOnly`.
+
 The SEC client retries a request up to twice, with a short backoff, after a
 transient HTTP 500/502/503/504 response or a transient transport failure
 (timeout, dropped or refused connection). A failure that outlasts the retries
