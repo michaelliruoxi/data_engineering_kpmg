@@ -14,34 +14,6 @@ from .source_locators import source_xpath
 _GAAP = r'https?://(?:fasb\.org|xbrl\.us)/us-gaap/[^/]+'
 
 
-def _only_page_furniture_between(tree, left, right):
-    """Nothing but footnotes, page furniture and the repeated title separates two tables.
-
-    No table with a number or with more than a page footer's text, no title of
-    another statement and no note heading may stand between them.
-    """
-    from .tables import _hidden, _statement_heading, local, text
-
-    nodes = list(tree.iter())
-    positions = {node: index for index, node in enumerate(nodes)}
-    start, end = max(positions[node] for node in left.iter()) + 1, positions[right]
-    if start > end:
-        return False
-    length = 0
-    for node in nodes[start:end]:
-        if not isinstance(node.tag, str) or _hidden(node):
-            continue
-        if local(node) == 'table' and (len(text(node)) > 240 or any(local(child) == 'nonfraction' for child in node.iter())):
-            return False
-        for piece in (node.text, node.tail):
-            value = ' '.join((piece or '').split())
-            length += len(value)
-            if (_statement_heading(value) not in {None, 'balance_sheet'}
-                    or re.match(r'^(?:note\s+\d+\b|notes to\b)', value, re.I)):
-                return False
-    return length <= 2000
-
-
 def tied_balance_segments(tree, candidates):
     """Return an assets table and a liabilities-and-equity table tied by their totals.
 
@@ -54,7 +26,7 @@ def tied_balance_segments(tree, candidates):
     undimensioned LiabilitiesAndStockholdersEquity fact of the second, in one
     currency.
     """
-    from .tables import StatementSegment
+    from .tables import StatementSegment, _page_furniture_between
 
     if len(candidates) != 2:
         return None
@@ -64,7 +36,7 @@ def tied_balance_segments(tree, candidates):
             or any(groups not in ({0}, {0, 1}) for groups in first['coverage'].values())
             or any(groups != {1, 2} for groups in second['coverage'].values())
             or not first['headings'].intersection(second['headings'])
-            or not _only_page_furniture_between(tree, first['table'], second['table'])):
+            or not _page_furniture_between(tree, first['table'], second['table'], 'balance_sheet')):
         return None
     core_scope, totals, groups = None, [], []
     for axis in first['axes']:

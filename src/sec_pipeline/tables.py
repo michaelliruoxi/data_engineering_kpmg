@@ -175,6 +175,13 @@ _CORROBORATED_STATEMENT_CONCEPTS = {
     'cash_flow': (*_STATEMENT_CONCEPTS['cash_flow'][:3], _STATEMENT_CONCEPTS['cash_flow'][3] | {
         'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations'}),
 }
+# Tried after the catalog above has declined a filing: the total operating
+# revenue a regulated utility reports in place of `Revenues`.
+_UTILITY_STATEMENT_CONCEPTS = {
+    **_CORROBORATED_STATEMENT_CONCEPTS,
+    'income_statement': (_STATEMENT_CONCEPTS['income_statement'][0] | {'RegulatedAndUnregulatedOperatingRevenue'},
+                         *_STATEMENT_CONCEPTS['income_statement'][1:]),
+}
 
 
 def _inline_namespaces(element, fallback=None):
@@ -1696,6 +1703,79 @@ def _cash_named_header_continuation(tree, first, table, facts, html_ids, heading
     return second
 
 
+def _page_furniture_between(tree, left, right, kind):
+    """Nothing but footnotes, page furniture and the repeated title separates two tables.
+
+    tables-v3 `extended` selection only; `_segments_adjacent` is the
+    established rule. No table with a number or with more than a page
+    footer's text, no title of another statement and no note heading may
+    stand between the two.
+    """
+    nodes = list(tree.iter())
+    positions = {node: index for index, node in enumerate(nodes)}
+    start, end = max(positions[node] for node in left.iter()) + 1, positions[right]
+    if start > end:
+        return False
+    length = 0
+    for node in nodes[start:end]:
+        if not isinstance(node.tag, str) or _hidden(node):
+            continue
+        if local(node) == 'table' and (len(text(node)) > 240 or any(local(child) == 'nonfraction' for child in node.iter())):
+            return False
+        for piece in (node.text, node.tail):
+            value = ' '.join((piece or '').split())
+            length += len(value)
+            if _statement_heading(value) not in {None, kind} or re.match(r'^(?:note\s+\d+\b|notes to\b)', value, re.I):
+                return False
+    return length <= 2000
+
+
+def _period_tables(tree, kind, candidates, complete):
+    """One statement printed as a separate table for each period length.
+
+    tables-v3 `extended` selection only. A quarterly report may print the
+    income statement once for the quarter and once for the year to date, each
+    a complete table under the same title. Every complete table must share
+    that title, the reporting entity and the dates its columns end on; each
+    must hold periods of one length, and no two tables the same length. Any
+    other candidate must carry another title and none may be a continuation.
+    """
+    first = complete[0]
+    if (len(complete) < 2 or not first['headings'] or any(candidate['continued'] for candidate in candidates)
+            or any(candidate['headings'] != first['headings'] for candidate in complete)
+            or any(candidate['headings'].intersection(first['headings']) for candidate in candidates
+                   if all(candidate is not member for member in complete))):
+        return None
+    entities = {json.dumps(json.loads(scope)['entity'], sort_keys=True) for candidate in complete for scope in candidate['scopes']}
+    if len(entities) != 1:
+        return None
+    ends, lengths = None, []
+    for candidate in complete:
+        periods = [json.loads(axis) for axis in candidate['axes']]
+        if any(set(period) != {'startDate', 'endDate'} for period in periods):
+            return None
+        days = [(date.fromisoformat(period['endDate']) - date.fromisoformat(period['startDate'])).days for period in periods]
+        if max(days) - min(days) > 7 or any(abs(min(days) - other) <= 31 for other in lengths):
+            return None
+        lengths.append(min(days))
+        table_ends = sorted(period['endDate'] for period in periods)
+        if ends is not None and table_ends != ends:
+            return None
+        ends = table_ends
+    keys = [f'{kind}.segment_{index + 1}' for index in range(len(complete))]
+    common = {'group_key': kind, 'segment_count': len(complete), 'segment_keys': keys,
+              'source_xpaths': [source_xpath(tree, candidate['table']) for candidate in complete],
+              'heading': sorted(first['headings'])[0],
+              'period_tables': {'verification_version': 'period-tables-v1', 'entity': json.loads(next(iter(entities))),
+                                'column_periods': [[json.loads(axis) for axis in candidate['axes']] for candidate in complete]},
+              'combined_concept_evidence': [
+                  {'period': json.loads(axis), 'groups': {group: sorted(set(identities))
+                   for group, identities in sorted(candidate['evidence'][axis].items())}}
+                  for candidate in complete for axis in candidate['axes']]}
+    return tuple(StatementSegment(kind, key, candidate['table'], common | {'segment_index': index + 1})
+                 for index, (key, candidate) in enumerate(zip(keys, complete)))
+
+
 def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corroborate=False, extended=False):
     """Select original physical tables; v2 currently groups cash-flow continuations.
 
@@ -1785,6 +1865,11 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
             if closing_segments is not None:
                 output.extend(closing_segments)
                 continue
+        if kind == 'income_statement' and extended and len(complete) > 1:
+            period_tables = _period_tables(tree, kind, candidates, complete)
+            if period_tables is not None:
+                output.extend(period_tables)
+                continue
         if (kind != 'cash_flow' and len(complete) == 1 and not complete[0]['continued']
                 and all(candidate is complete[0] or (not candidate['continued']
                         and not candidate['headings'].intersection(complete[0]['headings'])) for candidate in candidates)):
@@ -1813,7 +1898,9 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                             for axis in first['axes']] if is_reconciliation else first['axes'])
             if (candidate['axes'] != wanted_axes or candidate['scopes'] != first['scopes']
                     or (index and not _segments_adjacent(tree, candidates[index - 1]['table'], candidate['table'], kind,
-                                                        numbered_footer=bool(candidate.get('inherited_columns'))))):
+                                                        numbered_footer=bool(candidate.get('inherited_columns')))
+                        and not (extended and _page_furniture_between(tree, candidates[index - 1]['table'],
+                                                                      candidate['table'], kind)))):
                 raise TableExtractionError('Cash-flow segments disagree on periods, scope or adjacency')
             if is_reconciliation:
                 continue
@@ -2068,9 +2155,10 @@ def select_statement_segments(tree, facts, *, cash_followers=False, corroborated
         if selected is None and corroborated_layouts:
             # Last, so a filing the two established selections accept keeps
             # its exact segments and proof.
-            for extended in (False, True):
+            for concept_groups, extended in ((_CORROBORATED_STATEMENT_CONCEPTS, False), (_CORROBORATED_STATEMENT_CONCEPTS, True),
+                                             (_UTILITY_STATEMENT_CONCEPTS, True)):
                 try:
-                    selected = _select_statement_segments_v2(tree, facts, concept_groups=_CORROBORATED_STATEMENT_CONCEPTS,
+                    selected = _select_statement_segments_v2(tree, facts, concept_groups=concept_groups,
                                                              corroborate=True, extended=extended)
                     break
                 except TableExtractionError:

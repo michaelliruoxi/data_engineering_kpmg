@@ -9,7 +9,7 @@ from lxml import html
 from sec_pipeline import filing_adapter_v3
 from sec_pipeline.statement_headings import recover_headings, registrant_names, statement_kind
 from sec_pipeline.tables import (
-    TableExtractionError, _CORROBORATED_STATEMENT_CONCEPTS, _STATEMENT_CONCEPTS, _column_periods,
+    TableExtractionError, _CORROBORATED_STATEMENT_CONCEPTS, _STATEMENT_CONCEPTS, _UTILITY_STATEMENT_CONCEPTS, _column_periods,
     _endpoint_balance_period, _printed_period_tokens, _segment_candidate, extract_tables, layout_grid,
     select_statement_segments, validate_statement_segments,
 )
@@ -205,21 +205,27 @@ class EndpointBalanceTests(unittest.TestCase):
 
 
 HALF = duration('2025-01-01', '2025-06-30')
+QUARTER = duration('2025-04-01', '2025-06-30')
 DISPOSAL_CASH = 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalentsIncludingDisposalGroupAndDiscontinuedOperations'
 
 
 def filing(*, income_header='Six Months Ended June 30, 2025', cash_concept='CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents',
            closing_label='Cash and cash equivalents at end of period', closing_date='2025-06-30',
-           income_title='Consolidated Statements of Income', registrant=None, split_balance=None):
+           income_title='Consolidated Statements of Income', registrant=None, split_balance=None, second_income=None,
+           revenue_concept='Revenues', cash_between=None):
     """Three ordinary statements, each one table under its printed title.
 
     `split_balance` prints the balance sheet as an assets table and a
     liabilities-and-equity table: `between` is the HTML between them, `title`
     the second table's title and `total` its liabilities-and-equity total.
+    `second_income` prints a second complete income statement table after the
+    first, with its own `header`, `period` and `title`. `cash_between` prints
+    the cash flow statement as two tables, the second marked "(continued)",
+    with that HTML between them.
     """
     definitions = [
         ('income', income_title, income_header,
-         [('Revenues', 'Revenues', '100', HALF), ('Operating income', 'OperatingIncomeLoss', '10', HALF),
+         [('Revenues', revenue_concept, '100', HALF), ('Operating income', 'OperatingIncomeLoss', '10', HALF),
           ('Net income', 'NetIncomeLoss', '8', HALF)]),
         ('balance', 'Consolidated Balance Sheets', 'June 30, 2025',
          [(name, name, value, {'instant': '2025-06-30'})
@@ -231,6 +237,16 @@ def filing(*, income_header='Six Months Ended June 30, 2025', cash_concept='Cash
           ('Cash and cash equivalents at beginning of period', cash_concept, '20', {'instant': '2024-12-31'}),
           (closing_label, cash_concept, '25', {'instant': closing_date})]),
     ]
+    if cash_between is not None:
+        key, title, header, lines = definitions[2]
+        definitions[2:] = [(key, title, header, lines[:2]),
+                           ('cash-continued', f'{cash_between}</p><p>{title} (continued)', header, lines[2:])]
+    if second_income is not None:
+        period = second_income.get('period', QUARTER)
+        definitions.insert(1, ('quarter', second_income.get('title', income_title),
+                               second_income.get('header', 'Three Months Ended June 30, 2025'),
+                               [('Revenues', 'Revenues', '40', period), ('Operating income', 'OperatingIncomeLoss', '4', period),
+                                ('Net income', 'NetIncomeLoss', '3', period)]))
     if split_balance is not None:
         date = {'instant': '2025-06-30'}
         title = split_balance.get('title', 'Consolidated Balance Sheets')
@@ -455,6 +471,79 @@ class TiedBalanceSheetTests(unittest.TestCase):
         for options in refused:
             with self.subTest(options=options), self.assertRaises(TableExtractionError):
                 self.select(**options)
+
+
+class PeriodTableTests(unittest.TestCase):
+    KEYS = ['income_statement.segment_1', 'income_statement.segment_2', 'balance_sheet', 'cash_flow']
+
+    def select(self, **second_income):
+        tree, facts = filing(second_income=second_income)
+        return select_statement_segments(tree, facts, corroborated_layouts=True)
+
+    def test_a_statement_printed_once_for_the_quarter_and_once_for_the_year_to_date(self):
+        tree, facts = filing(second_income={})
+        with self.assertRaisesRegex(TableExtractionError, 'income_statement: ambiguous or incomplete'):
+            select_statement_segments(tree, facts)
+        selected = self.select()
+        self.assertEqual([part.table_key for part in selected], self.KEYS)
+        self.assertEqual([part.element.get('id') for part in selected[:2]], ['income', 'quarter'])
+        proof = selected[0].group['period_tables']
+        self.assertEqual(proof['verification_version'], 'period-tables-v1')
+        self.assertEqual(proof['column_periods'], [[HALF], [QUARTER]])
+        self.assertEqual([part.group['segment_index'] for part in selected[:2]], [1, 2])
+        self.assertEqual(selected[0].group['heading'], 'consolidated statements of income')
+
+    def test_the_same_length_another_end_date_or_another_title_is_not_a_table_per_period(self):
+        refused = (
+            # A second statement for the same period is another statement, not another period.
+            {'period': HALF, 'header': 'Six Months Ended June 30, 2025'},
+            {'period': duration('2025-01-01', '2025-03-31'), 'header': 'Three Months Ended March 31, 2025'},
+            {'title': 'Consolidated Statements of Operations'},
+        )
+        for options in refused:
+            with self.subTest(options=options), self.assertRaises(TableExtractionError):
+                self.select(**options)
+
+
+class ContinuedCashFlowTests(unittest.TestCase):
+    KEYS = ['income_statement', 'balance_sheet', 'cash_flow.segment_1', 'cash_flow.segment_2']
+    PAGE_NUMBER = '<table><tr><td>86</td></tr></table>'
+
+    def keys(self, between, *, corroborated_layouts):
+        tree, facts = filing(cash_between=between)
+        return [part.table_key for part in select_statement_segments(tree, facts, corroborated_layouts=corroborated_layouts)]
+
+    def test_a_page_number_table_between_the_two_parts_no_longer_separates_them(self):
+        # The established rule already joins the parts when only text stands between.
+        self.assertEqual(self.keys('See notes.', corroborated_layouts=False), self.KEYS)
+        with self.assertRaisesRegex(TableExtractionError, 'adjacency'):
+            self.keys(self.PAGE_NUMBER, corroborated_layouts=False)
+        self.assertEqual(self.keys(self.PAGE_NUMBER, corroborated_layouts=True), self.KEYS)
+
+    def test_a_table_with_a_number_another_title_or_a_note_still_separates_them(self):
+        numbers = '<table><tr><td>Other</td><td><ix:nonfraction name="g:OtherAssets">5</ix:nonfraction></td></tr></table>'
+        for between in (numbers, self.PAGE_NUMBER + 'Consolidated Balance Sheets', self.PAGE_NUMBER + 'Note 2. Summary',
+                        '<table><tr><td>' + 'Narrative. ' * 30 + '</td></tr></table>'):
+            with self.subTest(between=between), self.assertRaises(TableExtractionError):
+                self.keys(between, corroborated_layouts=True)
+
+
+class UtilityRevenueTests(unittest.TestCase):
+    CONCEPT = 'RegulatedAndUnregulatedOperatingRevenue'
+
+    def test_total_operating_revenue_of_a_utility_completes_an_income_statement(self):
+        tree, facts = filing(revenue_concept=self.CONCEPT)
+        with self.assertRaises(TableExtractionError):
+            select_statement_segments(tree, facts)
+        selected = select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertEqual([part.table_key for part in selected], ['income_statement', 'balance_sheet', 'cash_flow'])
+
+    def test_the_utility_catalog_adds_one_revenue_concept_and_is_tried_last(self):
+        for kind, groups in _CORROBORATED_STATEMENT_CONCEPTS.items():
+            added = [set(new) - set(old) for old, new in zip(groups, _UTILITY_STATEMENT_CONCEPTS[kind])]
+            self.assertEqual(added, ([{self.CONCEPT}, set(), set()] if kind == 'income_statement' else [set()] * len(groups)))
+        source = inspect.getsource(select_statement_segments)
+        self.assertLess(source.index('_CORROBORATED_STATEMENT_CONCEPTS, True'), source.index('_UTILITY_STATEMENT_CONCEPTS, True'))
 
 
 class SelectionTests(unittest.TestCase):
