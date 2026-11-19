@@ -570,6 +570,33 @@ outside the notes is then the statement, stored as a single table as before. A
 note table that holds a statement total, or the same table outside a note,
 still makes the statement ambiguous.
 
+**Captions read where the page displays them.** A cell styled `display:none`
+takes no room on the page. A statement usually hides the same spacer cells in
+every row, so the physical grid and the page agree. When the caption row hides
+fewer of them than the rows that carry the numbers, the grid puts each caption
+further left than the page does:
+
+| | Column 1 | Column 2 | Column 3 | Column 4 |
+| --- | --- | --- | --- | --- |
+| As displayed | Three Months Ended March 31, 2024 | Three Months Ended March 31, 2025 | Twelve Months Ended March 31, 2024 | Twelve Months Ended March 31, 2025 |
+| In the physical grid | Three Months Ended March 31, 2024 | Twelve Months Ended March 31, 2025 | Twelve Months Ended March 31, 2024 | 2025 |
+
+The second column's numbers are tagged with the three months, so the grid's
+reading contradicts every tag in it and the statement stays unresolved. Only
+then, and only when the page itself lines the rows up (every numbered row hides
+the same columns, no cell spans rows, and every header row has the displayed
+width of the numbered rows), the header rows are read where they are
+displayed. That reading is taken only when every tagged column of the table
+then gets exactly the period its tags carry; a single column that disagrees
+leaves the table as it was. The stored grid, cell identifiers and header cells
+are unchanged. `column_period_evidence` records `displayed_header_alignment`
+with the physical and the displayed headings of each column whose headings
+differ, and the numbers and `presentation_columns` carry the displayed
+headings. Measured on the 3,489 filings archived on November 18: 14 more parse
+cleanly (Aflac, Amazon, Equifax, Lockheed Martin, Microchip, Paramount
+Skydance and T-Mobile), all 14 pass the complete offline dry run, and each of
+the 2,915 that parsed cleanly before is byte-identical.
+
 **Utility revenue.** When every reading above has declined the filing,
 selection is tried a final time counting
 `RegulatedAndUnregulatedOperatingRevenue`, the total operating revenue a

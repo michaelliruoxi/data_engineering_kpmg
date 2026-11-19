@@ -1209,10 +1209,64 @@ def _endpoint_balance_period(reference, preceding_text, header):
     return None
 
 
+def _displayed_header_rows(rows, first_data):
+    """The header rows placed where the page displays them, or None.
+
+    A cell styled `display:none` takes no room on the page, so a row is
+    displayed without the grid columns its hidden cells cover. A statement
+    usually hides the same spacer cells in every row. When a header row hides
+    fewer of them than the rows that carry the numbers, its captions are
+    displayed further right than the physical grid places them: "Three Months
+    Ended" stands above the two quarter columns on the page, but above the
+    first of them and two hidden spacers in the grid.
+
+    Each visible header cell is returned at the grid columns of the numbered
+    rows it is displayed above. Nothing is returned unless the page itself
+    lines the rows up: every numbered row hides the same columns and has the
+    same width, no cell spans rows, and every header row has the displayed
+    width of the numbered rows.
+    """
+    def hides(cell):
+        style = re.sub(r'\s+', '', cell['_element'].get('style', '').lower())
+        return bool(re.search(r'(?:^|;)display:none(?:!important)?(?:;|$)', style))
+
+    def layout(row):
+        hidden = {column for cell in row if hides(cell)
+                  for column in range(cell['column'], cell['column'] + cell['colspan'])}
+        return max((cell['column'] + cell['colspan'] for cell in row), default=0), hidden
+
+    if any(cell['rowspan'] != 1 for row in rows for cell in row):
+        return None
+    numbered = [layout(row) for row in rows[first_data:]
+                if any(local(node) == 'nonfraction' for cell in row for node in cell['_element'].iter())]
+    if not numbered or any(item != numbered[0] for item in numbered):
+        return None
+    width, hidden = numbered[0]
+    visible = [column for column in range(width) if column not in hidden]
+    moved, result = False, []
+    for row in rows[:first_data]:
+        row_width, row_hidden = layout(row)
+        if not row or (row_width, row_hidden) == (width, hidden):
+            result.append(row)
+            continue
+        if row_width - len(row_hidden) != len(visible):
+            return None
+        placed = []
+        for cell in row:
+            if hides(cell):
+                continue
+            start = cell['column'] - sum(column < cell['column'] for column in row_hidden)
+            column = visible[start]
+            placed.append({**cell, 'column': column, 'colspan': visible[start + cell['colspan'] - 1] - column + 1})
+            moved = moved or (column, placed[-1]['colspan']) != (cell['column'], cell['colspan'])
+        result.append(placed)
+    return result if moved else None
+
+
 def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, tagging_defects=False,
-                    corroborate=False):
+                    corroborate=False, displayed=False):
     balance_dates, fiscal_year_offset = _fiscal_calendar_evidence(facts) if advanced else (None, None)
-    deferred = {}
+    deferred, candidates = {}, {}
     columns = {cell['column'] for row in rows[first_data:] for cell in row if cell['column'] > 0}
     headers = {column: column_headers(rows, first_data, column, advanced=advanced) for column in columns}
     # A left-hand header such as "Year ended December 31" applies to the
@@ -1254,7 +1308,7 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, ta
                     provenance[str(column)] = {'method': flagged[1], 'period': flagged[0], 'tagged_periods': flagged[2],
                                                'xml_ids': sorted({reference['xml_id'] for reference in references})}
             continue
-        candidate = dict(observed.pop())
+        candidate = candidates[column] = dict(observed.pop())
         resolved = header_period(headers[column], context_period=candidate, advanced=advanced,
                                  balance_dates=balance_dates, fiscal_year_offset=fiscal_year_offset)
         source_headers, calendar_sources = [], []
@@ -1295,6 +1349,27 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, ta
         table = next(cell for row in rows for cell in row)['_element'].xpath('ancestor::table[1]')[0]
         captions = _memo(('caption_lines', table), lambda: tuple(_caption_lines(table)))
         _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset, captions)
+    # A column whose tags all carry one period that its header, read from the
+    # physical grid, still contradicts: read the header rows where the page
+    # displays them. The reading is taken only when every tagged column of the
+    # table then gets exactly its tagged period; otherwise nothing changes.
+    if (corroborate and not displayed
+            and any(periods[column] != candidate for column, (candidate, _, _) in deferred.items())):
+        shown_rows = _displayed_header_rows(rows, first_data)
+        if shown_rows is not None:
+            shown_rows = [*shown_rows, *rows[first_data:]]
+            shown_periods, shown_provenance = _column_periods(
+                shown_rows, first_data, facts, ns, html_ids, advanced=advanced, tagging_defects=tagging_defects,
+                corroborate=True, displayed=True)
+            if all(shown_periods.get(column) == candidate for column, candidate in candidates.items()):
+                for column in sorted(candidates):
+                    physical = column_headers(rows, first_data, column, advanced=advanced)
+                    shown = column_headers(shown_rows, first_data, column, advanced=advanced)
+                    if physical != shown:
+                        evidence = shown_provenance.setdefault(
+                            str(column), {'method': 'displayed_header_alignment', 'period': shown_periods[column]})
+                        evidence.update(physical_headings=physical, displayed_headings=shown)
+                return shown_periods, shown_provenance
     return periods, provenance
 
 
@@ -2444,11 +2519,13 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                    tagging_defects=False, corroborated_layouts=False):
     """Extract the selected primary statements.
 
-    `corroborated_layouts` (tables-v3 only) accepts two layouts that are
+    `corroborated_layouts` (tables-v3 only) accepts layouts that are
     otherwise left unresolved: a column whose header cannot be parsed alone
     but agrees with the one period all its tags carry (`_corroborate_columns`),
-    and a balance dated at an endpoint of a cash-flow column
-    (`_endpoint_balance_period`). It changes no cell that resolves without it.
+    a balance dated at an endpoint of a cash-flow column
+    (`_endpoint_balance_period`), and header rows that give every tagged
+    column its period only where the page displays them
+    (`_displayed_header_rows`). It changes no cell that resolves without it.
     """
     if html_document_id == xml_document_id:
         raise TableExtractionError('HTML and XML must have distinct source IDs')
@@ -2488,6 +2565,12 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
         column_periods, period_provenance = _column_periods(
             rows, first_data, facts, ns, html_ids, advanced=advanced, tagging_defects=tagging_defects,
             corroborate=corroborated_layouts and advanced and not inherited_headers and not joint_statement)
+        # Columns whose periods were read from the header as displayed keep that
+        # reading for the headings of their numbers; header cells themselves
+        # keep the headings of their physical place.
+        heading_rows = rows
+        if any('displayed_headings' in evidence for evidence in period_provenance.values()):
+            heading_rows = [*_displayed_header_rows(rows, first_data), *rows[first_data:]]
         if inherited_headers:
             column_periods.update({int(column): value['period'] for column, value in inherited_headers['columns'].items()})
         standard_cash_alias = (segment.group or {}).get('standard_cash_alias')
@@ -2528,7 +2611,8 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                 element = cell['_element']
                 inline = [e for e in element.iter() if local(e) == 'nonfraction']
                 cell['row_heading'] = row_label
-                cell['column_headings'] = column_headers(rows, first_data, cell['column'], advanced=advanced)
+                cell['column_headings'] = column_headers(heading_rows if ri >= first_data else rows, first_data,
+                                                         cell['column'], advanced=advanced)
                 cell['column_period'] = column_periods.get(cell['column'], header_period(cell['column_headings'], advanced=advanced))
                 in_reconciliation = reconciliation is not None and ri >= reconciliation['start']
                 if in_reconciliation:
@@ -2671,10 +2755,10 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
             lines.append('\t'.join(values))
         value_columns = sorted({c['column'] for row in rows for c in row
                                 if c['classification'] in ('resolved', 'unresolved') and c['column'] > 0})
-        column_groups = (_presentation_column_groups(rows, first_data, value_columns, column_periods)
+        column_groups = (_presentation_column_groups(heading_rows, first_data, value_columns, column_periods)
                          if advanced else [[column] for column in value_columns])
         structure['presentation_columns'] = [
-            {'column': columns[0], 'headings': column_headers(rows, first_data, columns[0], advanced=advanced),
+            {'column': columns[0], 'headings': column_headers(heading_rows, first_data, columns[0], advanced=advanced),
              'period': column_periods[columns[0]], **({'source_columns': columns} if len(columns) > 1 else {})}
             for columns in column_groups]
         structure['presentation_rows'] = []
