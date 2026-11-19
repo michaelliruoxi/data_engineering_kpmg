@@ -15,7 +15,7 @@ from . import filing_adapter as base
 from . import filing_adapter_v2 as segmented
 from . import filing_adapter_v3 as full
 from .database import FactInput, ReportInput
-from .fact_extraction import check_inline_correspondence
+from .fact_extraction import check_inline_correspondence, occurrence_key_is_source_identity
 from .processing import ParseResult, ParsedReport, ProcessingError, ValidationResult, WriteResult
 from .report_cleaning import clean_report
 
@@ -58,9 +58,9 @@ def validate(context):
         fact.filing_id == context.source_ids.filing_id
         and fact.source_document_id == context.source_ids.xml_document_id
         and fact.extraction_version == context.versions["facts"]
-        and fact.source_reference.get("element_id") == fact.occurrence_key for fact in facts)
+        and occurrence_key_is_source_identity(fact, unidentified=True) for fact in facts)
     path = base._source_path(context, "main_inline_xbrl_filing")
-    correspondence = check_inline_correspondence(path, facts)
+    correspondence = check_inline_correspondence(path, facts, pair_unidentified=True)
     document = html.document_fromstring(
         path.read_bytes(), parser=html.HTMLParser(encoding="utf-8", no_network=True)).getroottree()
     sections, locators, chunks = base._report_checks(context, reports[0], outputs["chunks"].items, document, path)

@@ -998,6 +998,48 @@ and in an offline dry run 14 pass under `tables-v3` and one loads as text for
 review; the result of re-verifying every archived filing whose archive owner
 differs from the queued company is unchanged.
 
+**Tags without an id.** A fact is matched to its inline tag by the id the two
+share, and a filing with one fact that has none failed `fact_source_scope` and
+`fact_inline_correspondence`, so nothing of it was loaded, not even its text.
+Two filing agents left ids out through 2023. One (accessions `0001437749-…`:
+Corning, Generac, J.B. Hunt, Kimco Realty, Monolithic Power Systems, Union
+Pacific, Verisk) left them off the cover-page tags only, 5 to 54 per filing,
+all of them SEC document-and-entity concepts. The other (`0001193125-…`:
+Blackstone, Teradyne, US Bancorp, Waters) left them off nearly every tag.
+Under `tables-v3` only:
+
+- a fact without an id keeps the extractor's positional occurrence key
+  (`xpath:/*/*[13]`), and that key counts as its source identity
+  (`occurrence_key_is_source_identity`);
+- the facts without an id are paired with the inline tags without an id that
+  carry the same concept, `contextRef` and `unitRef`, in document order, and
+  only when there are as many facts as tags
+  (`check_inline_correspondence(..., pair_unidentified=True)`). Every pair
+  then passes the comparisons a pair matched by id passes: concept, context,
+  unit, nil, the printed number against the XML value, and the tag boundary.
+  Two facts paired in the wrong order are therefore accepted only where they
+  do not differ in anything the check compares; unequal counts leave all of
+  them unmatched;
+- the statement reader takes a fact without an id only when its concept
+  belongs to one of the SEC's own taxonomies (`http://xbrl.sec.gov/…`), and
+  reads it under the same positional key, so the selection sees the
+  registrant, form and period facts it sees in any other filing (the checks
+  on a combined filing's registrants depend on them). No inline tag carries
+  such a key, so no statement cell can name the fact. A statement cell still
+  names its fact by id, so a filing whose statement tags have no id gets no
+  statement tables and loads as text for review.
+
+A tag with an id is never paired this way, and the other profiles call the
+same functions without these options. Measured on November 19 on the 43
+filings refused for this reason: 20 pass with their statements, 21 load as
+text for review (13 because their statement tags have no id, 8 for table
+layouts that have nothing to do with ids), and 2 US Bancorp filings stay
+refused (an annual report whose statements are in an exhibit, and a quarterly
+report with a number the page and the XML cannot be compared on). The
+`tables-v3` parse of the 7,513 archived filings was fingerprinted before and
+after: all 6,786 that parsed cleanly before are byte-identical, and the 20
+are the only filings that became clean.
+
 The checkpoint's `last_run` describes the selected profile and destination.
 Completion requires the current invocation to verify every queue entry; old
 successful statuses cannot establish completion after changing the database or

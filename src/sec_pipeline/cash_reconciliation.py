@@ -256,7 +256,7 @@ def validate_cash_reconciliations(tables, tree, xml_path, *, tagging_defects=Fal
     """Recompute original source groups and compare stored bindings and facts."""
     from .tables import _column_periods, column_headers, layout_grid, xml_evidence
 
-    facts = xml_evidence(xml_path, include_entity=True)
+    facts = xml_evidence(xml_path, include_entity=True, unidentified_cover_facts=corroborated_layouts)
     ns = {key[6:]: value for key, value in tree.getroot().attrib.items() if key.startswith('xmlns:')}
     html_ids = {}
     for node in tree.iter():

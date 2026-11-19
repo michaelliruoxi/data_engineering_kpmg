@@ -899,20 +899,68 @@ def _numeric_tag_boundary(element: etree._Element, displayed: str) -> dict[str, 
     return None
 
 
-def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput]) -> dict[str, Any]:
+def occurrence_key_is_source_identity(fact: FactInput, *, unidentified: bool = False) -> bool:
+    """Whether a fact's occurrence key is its XML id.
+
+    With `unidentified` (tables-v3 only) a fact the XML gives no id may carry
+    the extractor's positional key for it instead.
+    """
+    element_id = fact.source_reference.get("element_id")
+    if element_id is not None:
+        return element_id == fact.occurrence_key
+    return unidentified and fact.occurrence_key == f"xpath:{fact.source_reference.get('xpath')}"
+
+
+def _pairing_key(fact: FactInput) -> tuple[str, str, str | None, str | None]:
+    return (fact.concept_namespace, fact.concept_name,
+            fact.source_reference.get("context_ref"), fact.source_reference.get("unit_ref"))
+
+
+def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput], *,
+                                pair_unidentified: bool = False) -> dict[str, Any]:
     """Compare extracted facts with the inline XBRL tags in the filing's HTML.
 
-    Facts are matched by id only. For each match the concept, contextRef, unitRef, and
+    Facts are matched by id. For each match the concept, contextRef, unitRef, and
     nil flag must agree, and the tagged number (after scale and sign) must equal the
     XML value. Visible digits outside a numeric tag are reported separately as a
     source-boundary issue, even when tagged/XML values agree. Text values are not
     compared, because HTML text is transformed.
+
+    `pair_unidentified` (tables-v3 only): some filing agents leave tags without
+    an id, in the page and in the XML alike. Such a fact is then matched to an
+    inline tag without an id that has its concept, contextRef and unitRef. The
+    facts and the tags that share those three are paired in document order, and
+    only when there are as many of the one as of the other; the same comparisons
+    then follow for every pair, so a pair in the wrong order is accepted only
+    where the two facts do not differ in anything this check compares.
     """
     data = Path(html_path).read_bytes()
     root = _parse(data, "Inline XBRL HTML")
     inline: dict[str | None, list[etree._Element]] = defaultdict(list)
     for element in root.iter(f"{{{IX}}}nonFraction", f"{{{IX}}}nonNumeric"):
         inline[element.get("id")].append(element)
+    paired: dict[str, etree._Element] = {}
+    unpaired: dict[str, str] = {}
+    if pair_unidentified:
+        tags: dict[tuple, list[etree._Element]] = defaultdict(list)
+        for element in inline.get(None, ()):
+            try:
+                concept = _resolve(element.get("name"), element)
+            except _Reject:
+                continue
+            tags[(*concept, element.get("contextRef"), element.get("unitRef"))].append(element)
+        groups: dict[tuple, list[FactInput]] = defaultdict(list)
+        for fact in facts:
+            if not fact.source_reference.get("element_id"):
+                groups[_pairing_key(fact)].append(fact)
+        for key, members in groups.items():
+            if len(members) == len(tags.get(key, ())):
+                members.sort(key=lambda fact: fact.source_reference.get("document_order", 0))
+                paired.update((fact.occurrence_key, tag) for fact, tag in zip(members, tags[key]))
+            else:
+                problem = (f"{len(members)} facts and {len(tags.get(key, ()))} inline elements without an id "
+                           "share this concept, context and unit")
+                unpaired.update((fact.occurrence_key, problem) for fact in members)
 
     mismatches: list[dict[str, str]] = []
     irregular: list[dict[str, str]] = []
@@ -920,7 +968,13 @@ def check_inline_correspondence(html_path: Path | str, facts: Sequence[FactInput
     matched = values_compared = values_not_compared = 0
     for fact in facts:
         element_id = fact.source_reference.get("element_id")
-        found = inline.get(element_id, []) if element_id else []
+        if fact.occurrence_key in unpaired:
+            mismatches.append({"occurrence_key": fact.occurrence_key, "problem": unpaired[fact.occurrence_key]})
+            continue
+        if fact.occurrence_key in paired:
+            found = [paired[fact.occurrence_key]]
+        else:
+            found = inline.get(element_id, []) if element_id else []
         if len(found) != 1:
             mismatches.append({"occurrence_key": fact.occurrence_key,
                                "problem": f"{len(found)} inline elements share this id"})

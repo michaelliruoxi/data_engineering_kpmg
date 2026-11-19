@@ -88,7 +88,7 @@ A fact is numeric only when it has a `unitRef`. XBRL requires that attribute on 
 
 The occurrence key is the fact element's `id` attribute, verbatim, for example `F_3d73e726-8508-4605-87a7-ae4fbcdbc622`. All 1,622 sample facts have a unique `id`.
 
-- A fact with no `id` gets `xpath:` followed by its positional path, for example `xpath:/*/*[13]`. An XML `id` cannot contain a colon, so the two forms never collide.
+- A fact with no `id` gets `xpath:` followed by its positional path, for example `xpath:/*/*[13]`. An XML `id` cannot contain a colon, so the two forms never collide. Only the `tables-v3` import accepts such a fact, after pairing it with an inline tag that has no id either (see "Tags without an id" in `docs/automated-backfill.md`).
 - An `id` used by more than one fact is reported as a failure for each of them.
 - Facts that repeat a concept, context, and value stay separate records. Quarterly revenue of 82,886,000,000 USD appears four times in the sample, under four keys.
 

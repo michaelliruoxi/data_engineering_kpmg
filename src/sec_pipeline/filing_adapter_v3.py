@@ -8,7 +8,7 @@ from uuid import UUID
 from . import filing_adapter as base
 from . import filing_adapter_v2 as segmented
 from .database import FactInput, ReportInput
-from .fact_extraction import check_inline_correspondence
+from .fact_extraction import check_inline_correspondence, occurrence_key_is_source_identity
 from .facts_bridge import fact_ids_for_tables, parse_facts
 from .processing import ParseResult, ParsedReport, PipelineContext, ProcessingError, SourceIds, ValidationResult, WriteResult
 from .report_cleaning import clean_report
@@ -18,7 +18,7 @@ from .source_cells_v3 import (
 )
 from .source_locators import inline_source_xpath, source_xpath
 from .table_cells import relational_cells
-from .tables import FactScope, layout_grid, load_tables, validate_statement_segments
+from .tables import FactScope, layout_grid, load_tables, statement_fact_records, validate_statement_segments
 from .tables_bridge import parse_tables as parse_v2_tables
 
 
@@ -42,7 +42,7 @@ def parse_tables(context):
     # document-set profiles call the extractor without them.
     parsed = parse_v2_tables(_v2_context(context), corroborated_layouts=True)
     source = base._source_path(context, "main_inline_xbrl_filing").read_bytes()
-    tables = transform_tables(parsed.items, source, base._parsed(context, "facts").items)
+    tables = transform_tables(parsed.items, source, base._parsed(context, "facts").items, unidentified=True)
     return ParseResult(tables, rejected=parsed.rejected,
                        unresolved_cells=source_cell_counts(tables)["unresolved_cells"])
 
@@ -147,16 +147,16 @@ def validate(context):
         fact.filing_id == context.source_ids.filing_id
         and fact.source_document_id == context.source_ids.xml_document_id
         and fact.extraction_version == context.versions["facts"]
-        and fact.source_reference.get("element_id") == fact.occurrence_key for fact in facts)
+        and occurrence_key_is_source_identity(fact, unidentified=True) for fact in facts)
     path = base._source_path(context, "main_inline_xbrl_filing")
     source = path.read_bytes()
-    bindings = SourceBindings(source, facts)
+    bindings = SourceBindings(source, facts, unidentified=True)
     tables = outputs["tables"].items
-    correspondence = check_inline_correspondence(path, facts)
+    correspondence = check_inline_correspondence(path, facts, pair_unidentified=True)
     references, cells = _table_checks(context, tables, by_id, bindings)
     representations_valid = True
     try:
-        counts = validate_representations(tables, source, facts)
+        counts = validate_representations(tables, source, facts, unidentified=True)
     except SourceCellError:
         representations_valid = False
         counts = source_cell_counts(tables)
@@ -171,8 +171,10 @@ def validate(context):
                        and actual_by_key == expected_by_key)
     sections, locators, chunks = base._report_checks(context, reports[0], outputs["chunks"].items, bindings.tree, path)
     try:
+        # Keyed as the extractor read them: a cover-page fact without an id has its positional key.
         segments = validate_statement_segments(
-            [replace(table, extraction_version="tables-v2") for table in tables], bindings.tree, facts,
+            [replace(table, extraction_version="tables-v2") for table in tables], bindings.tree,
+            statement_fact_records(facts),
             xml_path=base._source_path(context, "extracted_xbrl_instance"), corroborated_layouts=True) is True
     except ValueError:
         segments = False

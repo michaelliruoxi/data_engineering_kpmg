@@ -141,7 +141,9 @@ def fact_reference(fact):
 class SourceBindings:
     """A fresh binding inventory for one original primary HTML document."""
 
-    def __init__(self, source, facts):
+    def __init__(self, source, facts, *, unidentified=False):
+        # `unidentified` (tables-v3 only): a fact the XML gives no id cannot be the
+        # target of a binding, so it is left out of the inventory instead of refused.
         self.sha256 = hashlib.sha256(source).hexdigest()
         self.tree = html.document_fromstring(
             source, parser=html.HTMLParser(encoding="utf-8", no_network=True)).getroottree()
@@ -151,6 +153,8 @@ class SourceBindings:
         self.facts = {}
         for fact in facts:
             identifier = fact.source_reference.get("element_id")
+            if unidentified and identifier is None:
+                continue
             if not identifier or identifier in self.facts:
                 raise SourceCellError("Facts require unique original element IDs.")
             self.facts[identifier] = fact
@@ -284,9 +288,9 @@ def source_cell_counts(tables):
     return counts
 
 
-def transform_tables(tables, source, facts):
+def transform_tables(tables, source, facts, *, unidentified=False):
     """Create V3 records without mutating any V2 table or source node."""
-    bindings = SourceBindings(source, facts)
+    bindings = SourceBindings(source, facts, unidentified=unidentified)
     result = []
     for table in tables:
         if table.extraction_version != "tables-v2" or table.structure.get("schema_version") != 1:
@@ -314,9 +318,9 @@ def transform_tables(tables, source, facts):
     return result
 
 
-def validate_representations(tables, source, facts):
+def validate_representations(tables, source, facts, *, unidentified=False):
     """Rebuild marker bindings from source; reject omitted or invented evidence."""
-    bindings = SourceBindings(source, facts)
+    bindings = SourceBindings(source, facts, unidentified=unidentified)
     for table in tables:
         if (not isinstance(table, FinancialTableInput) or table.extraction_version != "tables-v3"
                 or table.structure.get("schema_version") != 2 or table.structure.get("source_value_policy") != POLICY):
