@@ -338,6 +338,62 @@ def combined_registrant_facts(payloads, manifest, cik):
     return xml_records[cik]["facts"]
 
 
+def unidentified_owner_name(payloads, manifest):
+    """Return the SEC index name of an archive owner the filing's XBRL never identifies.
+
+    A parent and a subsidiary can file one report that the SEC stores under the
+    subsidiary while the XBRL identifies only the parent: United Rentals, Inc.
+    files with United Rentals (North America), Inc., and FirstEnergy Corp. with
+    Jersey Central Power & Light Company, whose DEI gives a name but no CIK.
+    Such an owner has no DEI identity to verify, so it is accepted only as the
+    one index filer the XBRL leaves out:
+
+    - the index lists it as a filer and links the primary document in its
+      archive (``canonical_identity``);
+    - every other index filer is a DEI registrant proven as in any combined
+      filing, including the single undimensioned registrant whose form and
+      period equal the filing's, and the XML and inline documents agree on all
+      of them;
+    - no DEI CIK fact and no context entity in either document names the owner.
+
+    The name comes from the index because the filing states none that is tied
+    to the owner's CIK. A requested registrant is never accepted this way.
+    """
+    from .filing_sources import _xml
+
+    primary_name = manifest.get("primary_document")
+    if primary_name is None:
+        primary = next(record for record in manifest["files"] if record["role"] == "main_inline_xbrl_filing")
+        primary_name = urlsplit(primary["source_url"]).path.rsplit("/", 1)[-1]
+    discovered = {key: manifest[key] for key in (*_IDENTITY_FIELDS, "cik", "filing_index_url")}
+    discovered["primary_document"] = primary_name
+    canonical, associations = canonical_identity(payloads["filing_index"], discovered)
+    owner = manifest["cik"]
+    _require(canonical["cik"] == owner, "Manifest CIK is not the canonical archive owner.")
+    filers = {row["cik"]: row["name"] for row in associations}
+    xml = _xml(payloads["extracted_xbrl_instance"])
+    _require(xml.tag == "{http://www.xbrl.org/2003/instance}xbrl", "Source is not an XBRL instance.")
+    inline = html.document_fromstring(payloads["main_inline_xbrl_filing"], parser=html.HTMLParser(encoding="utf-8", no_network=True))
+    records = []
+    for document, is_inline in ((xml, False), (inline, True)):
+        records.append(_registrant_identities(document, set(filers), manifest, inline=is_inline))
+        for node in document.iter():
+            if _is_context_element(node, "identifier", is_inline):
+                value = "".join(node.itertext()).strip()
+                _require(not re.fullmatch(r"[0-9]{1,10}", value) or value.zfill(10) != owner,
+                         "The archive owner is a context entity without a DEI identity.")
+    xml_records, inline_records = records
+    _require(set(xml_records) == set(inline_records) == set(filers) - {owner},
+             "An archive owner without a DEI identity must be the only index filer the XBRL leaves out.")
+    for registrant, record in xml_records.items():
+        other = inline_records[registrant]
+        _require(record["scope"] == other["scope"], "XML and inline co-registrant legal identities disagree.")
+        _require({value.casefold() for value in record["facts"]["EntityRegistrantName"]}
+                 == {value.casefold() for value in other["facts"]["EntityRegistrantName"]},
+                 "XML and inline co-registrant names disagree.")
+    return filers[owner]
+
+
 def verify_document_binding(manifest, discovered_dict, payloads):
     """Prove a requested registrant binding before publishing source bytes.
 

@@ -169,6 +169,15 @@ def _dei(document, *, expected_cik, inline=False):
     return result
 
 
+def _unidentified_owner(payloads, manifest):
+    """The index name of an archive owner the XBRL never identifies, or None."""
+    from .registrants import unidentified_owner_name
+    try:
+        return unidentified_owner_name(payloads, manifest)
+    except (ValueError, KeyError, TypeError, StopIteration, etree.Error):
+        return None
+
+
 def registrant_name(xml_bytes, cik, *, payloads=None, manifest=None):
     """Return the filed registrant name belonging to the requested DEI CIK."""
     document = _xml(xml_bytes)
@@ -183,7 +192,10 @@ def registrant_name(xml_bytes, cik, *, payloads=None, manifest=None):
             require(payloads.get("extracted_xbrl_instance") == xml_bytes, "Registrant XML bytes differ from supplied sources.")
             facts = combined_registrant_facts(payloads, manifest, cik)
         except (ValueError, KeyError, TypeError, etree.Error) as exc:
-            raise SourceVerificationError(f"Combined registrant identity is invalid: {exc}") from exc
+            name = _unidentified_owner(payloads, manifest) if cik == manifest.get("cik") else None
+            if name is None:
+                raise SourceVerificationError(f"Combined registrant identity is invalid: {exc}") from exc
+            return name
     require({value.zfill(10) for value in facts.get("EntityCentralIndexKey", set())} == {cik},
             "Selected DEI context contains conflicting CIK facts.")
     names = facts.get("EntityRegistrantName", set())
@@ -258,7 +270,11 @@ def verify_documents(manifest, payloads):
         try:
             _identity(combined_registrant_facts(payloads, manifest, manifest["cik"]), manifest)
         except (ValueError, KeyError, TypeError, etree.Error) as exc:
-            raise SourceVerificationError(f"Combined filing identity is invalid: {exc}") from exc
+            # The owner may be the one index filer the XBRL never identifies;
+            # its manifest name is then the name the SEC index gives it.
+            name = _unidentified_owner(payloads, manifest)
+            if name is None or not isinstance(manifest.get("company"), str) or name.casefold() != manifest["company"].casefold():
+                raise SourceVerificationError(f"Combined filing identity is invalid: {exc}") from exc
     return manifest
 
 
