@@ -435,7 +435,10 @@ date is the column's last day and the row names no opening balance, or the day
 before the column's first day and the row names no closing balance. A balance
 on any other date stays unresolved. So does any other balance concept: a
 liability such as dividends payable on a supplemental row that reports a flow
-is a company tagging error, which only `tables-v8` records.
+is a company tagging error, which only `tables-v8` records, for a us-gaap
+concept and for a concept of the company's own schema alike
+([reviewed-layout-upgrade.md](reviewed-layout-upgrade.md), "Company tagging
+errors").
 
 **Components of a cash balance, proved by their total.** A cash flow statement
 may close with the components of its cash balance, and a component can be
