@@ -11,7 +11,7 @@ import pytest
 from sec_pipeline.database import FactInput
 from sec_pipeline.fact_extraction import check_inline_correspondence, extract_facts, occurrence_key_is_source_identity
 from sec_pipeline.source_cells_v3 import SourceBindings, SourceCellError
-from sec_pipeline.tables import TableExtractionError, without_unidentified_cover_facts, xml_evidence
+from sec_pipeline.tables import TableExtractionError, statement_fact_records, xml_evidence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -139,26 +139,37 @@ INSTANCE = f'''<xbrl xmlns="http://www.xbrl.org/2003/instance" xmlns:dei="{DEI}"
  <context id="fy"><entity><identifier scheme="http://www.sec.gov/CIK">0000000001</identifier></entity>
   <period><startDate>2023-01-01</startDate><endDate>2023-12-31</endDate></period></context>
  <unit id="usd"><measure>iso4217:USD</measure></unit>
+ <!-- a comment is no element and does not move the positions -->
  <dei:DocumentType contextRef="fy">10-K</dei:DocumentType>
  <us-gaap:Revenues {{marker}}contextRef="fy" unitRef="usd" decimals="0">100</us-gaap:Revenues>
 </xbrl>'''
 
 
-def test_statement_evidence_leaves_out_only_cover_facts_without_an_id(tmp_path):
+def test_statement_evidence_reads_a_cover_fact_without_an_id_under_its_positional_key(tmp_path):
     path = tmp_path / 'instance.xml'
     path.write_text(INSTANCE.format(marker='id="f1" '), encoding='utf-8')
     with pytest.raises(TableExtractionError, match='Missing or duplicate XML fact ID'):
         xml_evidence(path)
-    assert list(xml_evidence(path, unidentified_cover_facts=True)) == ['f1']
+    evidence = xml_evidence(path, unidentified_cover_facts=True)
+    assert list(evidence) == ['xpath:/*/*[3]', 'f1']
+    assert evidence['xpath:/*/*[3]']['xml_id'] == 'xpath:/*/*[3]' and evidence['xpath:/*/*[3]']['raw_value'] == '10-K'
+    extracted = extract_facts(path, filing_id=UUID(int=1), source_document_id=UUID(int=2), use_schema_labels=False).facts
+    assert [fact.occurrence_key for fact in extracted] == list(evidence)
+    assert list(statement_fact_records(extracted)) == list(evidence)
     path.write_text(INSTANCE.format(marker=''), encoding='utf-8')
     with pytest.raises(TableExtractionError, match='Missing or duplicate XML fact ID'):
         xml_evidence(path, unidentified_cover_facts=True)
 
 
-def test_a_statement_fact_without_an_id_is_kept_for_the_selection_to_refuse():
+def test_only_a_cover_fact_with_its_own_positional_key_gets_a_statement_record():
     cover, named = text_fact('10-K', 3), number_fact('5', 4, identifier='shares')
-    statement = number_fact('5', 5, namespace=GAAP, name='Revenues')
-    assert without_unidentified_cover_facts([cover, named, statement]) == [named, statement]
+    assert list(statement_fact_records([cover, named])) == ['xpath:/*/*[3]', 'shares']
+    with pytest.raises(TableExtractionError, match='unique source fact IDs'):
+        statement_fact_records([cover, named, number_fact('5', 5, namespace=GAAP, name='Revenues')])
+    moved = text_fact('10-K', 3)
+    moved.source_reference['xpath'] = '/*/*[9]'
+    with pytest.raises(TableExtractionError, match='unique source fact IDs'):
+        statement_fact_records([moved])
 
 
 def test_bindings_leave_out_a_fact_without_an_id_only_where_asked():
@@ -185,5 +196,6 @@ def test_archived_filing_whose_cover_tags_have_no_id():
     paired = check_inline_correspondence(files['main_inline_xbrl_filing'], facts, pair_unidentified=True)
     assert paired['mismatches'] == [] and paired['inline_ids_without_fact'] == []
     assert paired['matched'] == 714 == paired['inline_elements']
-    assert len(xml_evidence(files['extracted_xbrl_instance'], unidentified_cover_facts=True)) == 687
-    assert len(without_unidentified_cover_facts(facts)) == 687
+    keys = [fact.occurrence_key for fact in facts]
+    assert list(xml_evidence(files['extracted_xbrl_instance'], unidentified_cover_facts=True)) == keys
+    assert list(statement_fact_records(facts)) == keys

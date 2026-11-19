@@ -1020,10 +1020,14 @@ Under `tables-v3` only:
   Two facts paired in the wrong order are therefore accepted only where they
   do not differ in anything the check compares; unequal counts leave all of
   them unmatched;
-- the statement reader leaves out a fact without an id only when its concept
-  belongs to one of the SEC's own taxonomies (`http://xbrl.sec.gov/…`). A
-  statement cell still names its fact by id, so a filing whose statement tags
-  have no id gets no statement tables and loads as text for review.
+- the statement reader takes a fact without an id only when its concept
+  belongs to one of the SEC's own taxonomies (`http://xbrl.sec.gov/…`), and
+  reads it under the same positional key, so the selection sees the
+  registrant, form and period facts it sees in any other filing (the checks
+  on a combined filing's registrants depend on them). No inline tag carries
+  such a key, so no statement cell can name the fact. A statement cell still
+  names its fact by id, so a filing whose statement tags have no id gets no
+  statement tables and loads as text for review.
 
 A tag with an id is never paired this way, and the other profiles call the
 same functions without these options. Measured on November 19 on the 43

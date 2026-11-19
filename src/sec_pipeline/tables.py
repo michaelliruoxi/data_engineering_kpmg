@@ -57,10 +57,13 @@ def xml_evidence(path, *, include_entity=False, unidentified_cover_facts=False):
     """Read evidence for linking; this is not the team's FactInput extractor.
 
     Every fact needs an id, because a statement cell names its fact by it.
-    `unidentified_cover_facts` (tables-v3 only) leaves out a fact without an
-    id whose concept belongs to one of the SEC's own taxonomies (document and
-    entity information and the like): some filing agents give the cover-page
-    tags no id, and no statement line is tagged with such a concept. Any other
+    `unidentified_cover_facts` (tables-v3 only): some filing agents give the
+    cover-page tags no id. A fact without an id whose concept belongs to one
+    of the SEC's own taxonomies (document and entity information and the like)
+    is then read under the fact extractor's positional occurrence key
+    (`xpath:/*/*[13]`), so the selection sees the same registrant, form and
+    period facts as in a filing whose agent wrote the ids. No inline tag
+    carries such a key, so no statement cell can name the fact. Any other
     fact without an id is refused as before.
     """
     tree = etree.parse(str(path), etree.XMLParser(resolve_entities=False, no_network=True))
@@ -100,13 +103,17 @@ def xml_evidence(path, *, include_entity=False, unidentified_cover_facts=False):
         units[u.get('id')] = {'numerator': [expanded(text(m), m.nsmap) for m in numerator],
                              'denominator': [expanded(text(m), m.nsmap) for m in denominator]}
     facts = {}
+    position = 0
     for f in root:
+        if not isinstance(f.tag, str):
+            continue
+        position += 1  # as the fact extractor counts: every element child of the root
         if not f.get('contextRef'):
             continue
         fid = f.get('id')
-        if (unidentified_cover_facts and fid is None and isinstance(f.tag, str)
+        if (unidentified_cover_facts and fid is None
                 and (etree.QName(f).namespace or '').startswith(SEC_COVER_NAMESPACES)):
-            continue
+            fid = f'xpath:/*/*[{position}]'
         if not fid or fid in facts:
             raise TableExtractionError('Missing or duplicate XML fact ID')
         facts[fid] = {'xml_id': fid, 'concept': f.tag, 'context_ref': f.get('contextRef'),
@@ -116,10 +123,9 @@ def xml_evidence(path, *, include_entity=False, unidentified_cover_facts=False):
     return facts
 
 
-def without_unidentified_cover_facts(facts):
-    """Fact records as `xml_evidence(..., unidentified_cover_facts=True)` reads their XML."""
-    return [fact for fact in facts if fact.source_reference.get('element_id') is not None
-            or not fact.concept_namespace.startswith(SEC_COVER_NAMESPACES)]
+def statement_fact_records(facts):
+    """Fact records keyed as `xml_evidence(..., unidentified_cover_facts=True)` keys their XML."""
+    return _segment_facts(facts, unidentified_cover_facts=True)
 
 
 def layout_grid(table, tree):
@@ -1629,7 +1635,7 @@ class StatementSegment:
     group: dict | None = None
 
 
-def _segment_facts(facts):
+def _segment_facts(facts, *, unidentified_cover_facts=False):
     records = facts.values() if isinstance(facts, Mapping) else facts
     result = {}
     for record in records:
@@ -1638,7 +1644,11 @@ def _segment_facts(facts):
             period = ({'instant': record.instant_date.isoformat()} if record.period_kind == 'instant'
                       else {'startDate': record.period_start.isoformat(), 'endDate': record.period_end.isoformat()}
                       if record.period_kind == 'duration' else {'forever': ''})
-            value = {'xml_id': reference.get('element_id'),
+            identifier = reference.get('element_id')
+            if (identifier is None and unidentified_cover_facts and record.concept_namespace.startswith(SEC_COVER_NAMESPACES)
+                    and record.occurrence_key == f"xpath:{reference.get('xpath')}"):
+                identifier = record.occurrence_key
+            value = {'xml_id': identifier,
                      'concept': '{' + record.concept_namespace + '}' + record.concept_name,
                      'context_ref': reference.get('context_ref'), 'unit_ref': reference.get('unit_ref'),
                      'unit': record.unit, 'period': period, 'dimensions': record.dimensions,

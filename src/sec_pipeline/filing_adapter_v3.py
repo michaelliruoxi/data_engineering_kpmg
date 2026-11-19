@@ -18,7 +18,7 @@ from .source_cells_v3 import (
 )
 from .source_locators import inline_source_xpath, source_xpath
 from .table_cells import relational_cells
-from .tables import FactScope, layout_grid, load_tables, validate_statement_segments, without_unidentified_cover_facts
+from .tables import FactScope, layout_grid, load_tables, statement_fact_records, validate_statement_segments
 from .tables_bridge import parse_tables as parse_v2_tables
 
 
@@ -171,10 +171,10 @@ def validate(context):
                        and actual_by_key == expected_by_key)
     sections, locators, chunks = base._report_checks(context, reports[0], outputs["chunks"].items, bindings.tree, path)
     try:
-        # The same facts the extractor read: a cover-page fact without an id names no statement cell.
+        # Keyed as the extractor read them: a cover-page fact without an id has its positional key.
         segments = validate_statement_segments(
             [replace(table, extraction_version="tables-v2") for table in tables], bindings.tree,
-            without_unidentified_cover_facts(facts),
+            statement_fact_records(facts),
             xml_path=base._source_path(context, "extracted_xbrl_instance"), corroborated_layouts=True) is True
     except ValueError:
         segments = False
