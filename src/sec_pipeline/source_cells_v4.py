@@ -79,8 +79,11 @@ def _scope(fact):
 
 
 class ReviewSource:
-    def __init__(self, source, facts, *, tagging_defects=False):
+    def __init__(self, source, facts, *, tagging_defects=False, corroborated_layouts=False):
         self.tagging_defects = tagging_defects
+        # V8 only: the tables were read with the corroborated layouts of
+        # tables-v3, so their column periods are rebuilt with the same reading.
+        self.corroborated_layouts = corroborated_layouts
         self.bindings = SourceBindings(source, facts)
         self.facts = self.bindings.facts
         self.numeric = defaultdict(list)
@@ -113,9 +116,14 @@ class ReviewSource:
             evidence = {identifier:{**fact_reference(fact),'xml_id':identifier}
                         for identifier,fact in self.facts.items()}
             namespaces = {key[6:]:value for key,value in self.bindings.tree.getroot().attrib.items() if key.startswith('xmlns:')}
+            # As the extractor does: never for a segment whose periods come
+            # from inherited or joint-statement headers.
+            group = table.structure.get('statement_group') or {}
             periods,_ = _column_periods(rows,first,evidence,namespaces,
                                        {key:len(value) for key,value in self.bindings.ids.items()},advanced=True,
-                                       tagging_defects=self.tagging_defects)
+                                       tagging_defects=self.tagging_defects,
+                                       corroborate=(self.corroborated_layouts and not group.get('header_inheritance')
+                                                    and not group.get('joint_statement')))
             self.layouts[locator] = selected[0],rows,first,periods
         return self.layouts[locator]
 
@@ -254,9 +262,9 @@ def _issue(table, cell, source):
                  'expected': expected, 'observed': observed, 'evidence': evidence}
 
 
-def transform_tables(tables, source, facts, *, tagging_defects=False):
+def transform_tables(tables, source, facts, *, tagging_defects=False, corroborated_layouts=False):
     """Transform V3 layouts; unsupported source cases remain unresolved."""
-    checked = ReviewSource(source, facts, tagging_defects=tagging_defects)
+    checked = ReviewSource(source, facts, tagging_defects=tagging_defects, corroborated_layouts=corroborated_layouts)
     result = []
     for table in tables:
         if table.extraction_version != 'tables-v3' or table.structure.get('schema_version') != 2:
@@ -281,9 +289,10 @@ def transform_tables(tables, source, facts, *, tagging_defects=False):
     return result
 
 
-def validate_transformation(tables, original_tables, source, facts, *, tagging_defects=False):
+def validate_transformation(tables, original_tables, source, facts, *, tagging_defects=False, corroborated_layouts=False):
     """Compare to a fresh original source parse supplied by the V4 runner."""
-    rebuilt = transform_tables(original_tables, source, facts, tagging_defects=tagging_defects)
+    rebuilt = transform_tables(original_tables, source, facts, tagging_defects=tagging_defects,
+                               corroborated_layouts=corroborated_layouts)
     if (len(tables) != len(rebuilt) or len({table.table_key for table in tables}) != len(tables)
             or {table.table_key: table for table in tables} != {table.table_key: table for table in rebuilt}):
         raise SourceCellError('V4 source bindings or review issues differ from original source reconstruction.')

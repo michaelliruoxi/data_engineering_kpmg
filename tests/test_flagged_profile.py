@@ -259,3 +259,213 @@ def test_a_balance_tag_on_the_companys_own_concept_becomes_a_recorded_defect():
     reviewed = transform_tables([table], source, facts, tagging_defects=True)
     flagged, records = flag_table_cells(reviewed, source, facts, version='tables-v8')
     assert flagged[0].structure['rows'][4][1]['classification'] == 'unresolved' and records == ()
+
+
+def _readings(read):
+    return [call.kwargs.get('corroborated_layouts', False) for call in read.call_args_list]
+
+
+def test_a_filing_the_established_reading_rejects_is_read_once_more_with_the_corroborated_layouts():
+    from unittest.mock import patch
+    from sec_pipeline import filing_parser_v4 as parser
+    accepted = object()
+    with patch.object(parser, '_read', side_effect=[parser.FilingSetParseError('first reading'), accepted]) as read:
+        assert parser._build('manifest', 'root', profile=FLAGGED_PROFILE) is accepted
+    assert _readings(read) == [False, True]
+    # A filing the established reading accepts is never read with them, so its output cannot change.
+    with patch.object(parser, '_read', return_value=accepted) as read:
+        assert parser._build('manifest', 'root', profile=FLAGGED_PROFILE) is accepted
+    assert _readings(read) == [False]
+    # Both readings reject the filing: the first rejection is the one reported.
+    with patch.object(parser, '_read', side_effect=[parser.FilingSetParseError('first reading'),
+                                                    ValueError('second reading')]) as read:
+        with pytest.raises(parser.FilingSetParseError, match='first reading'):
+            parser._build('manifest', 'root', profile=FLAGGED_PROFILE)
+    assert _readings(read) == [False, True]
+
+
+@pytest.mark.parametrize('profile', ['document-set-v4', 'corrected-layout-v5', 'reviewed-layout-v6', AUDITED_PROFILE])
+def test_only_the_flagged_profile_reads_a_filing_a_second_time(profile):
+    from unittest.mock import patch
+    from sec_pipeline import filing_parser_v4 as parser
+    with patch.object(parser, '_read', side_effect=[parser.FilingSetParseError('first reading'), object()]) as read:
+        with pytest.raises(parser.FilingSetParseError, match='first reading'):
+            parser._build('manifest', 'root', profile=profile)
+    assert _readings(read) == [False]
+
+
+@pytest.mark.parametrize('layouts', [False, True])
+def test_the_reading_of_a_set_reaches_every_check_and_is_named_on_its_tables(tmp_path, layouts):
+    from unittest.mock import patch
+    from sec_pipeline import filing_parser_v4 as parser
+    from tests.test_source_cells_v4 import fixture
+    table, facts, source = fixture()
+    root = tmp_path.resolve()
+    (root / 'page.htm').write_bytes(source)
+    (root / 'page.xml').write_bytes(b'<xbrl/>')
+    page = {'source_url': 'https://example.test/page.htm', 'local_path': 'page.htm'}
+    instance = {'source_url': 'https://example.test/page.xml', 'local_path': 'page.xml'}
+    sources = {page['source_url']: UUID(int=2), instance['source_url']: UUID(int=3)}
+    reviewed = replace(table, extraction_version='tables-v4', structure=table.structure | {'schema_version': 3})
+    seen = {}
+
+    def step(name, result):
+        def call(*arguments, **options):
+            seen[name] = options.get('corroborated_layouts')
+            return result
+        return call
+
+    with patch.object(parser, 'extract_tables', step('extraction', [table])), \
+            patch.object(parser, 'validate_statement_segments', step('selection', True)), \
+            patch.object(parser, 'transform_v3', lambda *arguments, **options: [table]), \
+            patch.object(parser, 'validate_representations', lambda *arguments, **options: None), \
+            patch.object(parser.source_adapter, '_table_checks', lambda *arguments, **options: (True, True)), \
+            patch.object(parser, 'transform_v4', step('period review', [reviewed])), \
+            patch.object(parser, 'validate_transformation', step('review validation', True)), \
+            patch('sec_pipeline.tagging_defects.flag_table_cells', step('flagging', ((reviewed,), ()))), \
+            patch.object(parser, 'v4_relational_cells', lambda *arguments, **options: []):
+        tables, defects = parser._checked_tables(
+            {'files': []}, root, UUID(int=1), instance, page, sources, facts, (), cash_followers=True,
+            tagging_defects=True, tables_version='tables-v8', corroborated_layouts=layouts)
+    assert seen == dict.fromkeys(('extraction', 'selection', 'period review', 'review validation', 'flagging'), layouts)
+    # Only a table of the second reading says so; a table of the established reading is stored as it always was.
+    assert [stored.structure.get(parser.LAYOUT_READING) for stored in tables] == ([True] if layouts else [None])
+    assert tables == ((replace(reviewed, structure=reviewed.structure | {'corroborated_layouts': True}),) if layouts
+                      else (reviewed,))
+    assert defects == ()
+
+
+def test_flagging_checks_a_table_with_the_reading_that_produced_it(monkeypatch):
+    from sec_pipeline import source_cells_v4
+    from sec_pipeline.tagging_defects import flag_table_cells
+    from tests.test_source_cells_v4 import fixture
+    table, facts, source = fixture(heading='First Quarter 2026')
+    reviewed = source_cells_v4.transform_tables([table], source, facts, tagging_defects=True, corroborated_layouts=True)
+    seen = []
+
+    class Recorded(source_cells_v4.ReviewSource):
+        def __init__(self, *arguments, **options):
+            seen.append(options)
+            super().__init__(*arguments, **options)
+
+    monkeypatch.setattr(source_cells_v4, 'ReviewSource', Recorded)
+    flagged, records = flag_table_cells(reviewed, source, facts, version='tables-v8', corroborated_layouts=True)
+    assert seen == [{'tagging_defects': True, 'corroborated_layouts': True}]
+    assert flagged[0].structure['rows'][4][1]['classification'] == 'source_defect'
+    assert [record['code'] for record in records] == ['instant_context_under_duration_header']
+    assert validate_records(records, flagged) is True
+
+
+def period_fixture(tagged, *, heading='Year Ended December 31, 2025', balances=()):
+    """An income statement column as the extractor leaves it: one tagged amount per row, each in the period given.
+
+    A period is (start, end) or a single date. A cell whose tag carries the
+    column's printed period is resolved; any other is left unresolved for its
+    period. ``balances`` are balance-sheet dates the filing reports elsewhere.
+    """
+    from collections import Counter
+    from datetime import date
+    from decimal import Decimal
+    import hashlib
+    from sec_pipeline.database import FactInput, FinancialTableInput
+    from sec_pipeline.source_cells_v3 import fact_reference
+    from sec_pipeline.source_locators import inline_source_xpath, source_xpath
+
+    def fact(identifier, concept, period):
+        duration = isinstance(period, tuple)
+        return FactInput(
+            filing_id=UUID(int=1), source_document_id=UUID(int=3), extraction_version='facts-v1', occurrence_key=identifier,
+            concept_namespace=GAAP, concept_name=concept, numeric_value=Decimal('7'), raw_value='7',
+            period_kind='duration' if duration else 'instant', unit=deepcopy(USD),
+            period_start=date.fromisoformat(period[0]) if duration else None,
+            period_end=date.fromisoformat(period[1]) if duration else None,
+            instant_date=None if duration else date.fromisoformat(period),
+            source_reference={'element_id': identifier, 'context_ref': identifier + '-context', 'unit_ref': 'usd',
+                              'entity': deepcopy(ENTITY)})
+
+    def inline(item):
+        return (f'<ix:nonFraction id="{item.occurrence_key}" name="g:{item.concept_name}" '
+                f'contextRef="{item.occurrence_key}-context" unitRef="usd">7</ix:nonFraction>')
+
+    facts = [fact(f'row-{index}', f'Concept{index}', period) for index, period in enumerate(tagged)]
+    reported = [fact(f'assets-{index}', 'Assets', day) for index, day in enumerate(balances)]
+    source = (f'<html xmlns="http://www.w3.org/1999/xhtml" xmlns:g="{GAAP}" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL">'
+              f'<body><table><tr><td></td><td>{heading}</td></tr>'
+              + ''.join(f'<tr><td>Row {index}</td><td>{inline(item)}</td></tr>' for index, item in enumerate(facts))
+              + '</table>' + ''.join(f'<p>{inline(item)}</p>' for item in reported) + '</body></html>').encode()
+    tree = html.document_fromstring(source).getroottree()
+    element = tree.xpath('//table')[0]
+    cells, grid = layout_grid(element, tree)
+    scope = {'filing_id': str(UUID(int=1)), 'xml_document_id': str(UUID(int=3)), 'facts_version': 'facts-v1'}
+    evidence = {item.occurrence_key: {**fact_reference(item), 'xml_id': item.occurrence_key} for item in [*facts, *reported]}
+    namespaces = {key[6:]: value for key, value in tree.getroot().attrib.items() if key.startswith('xmlns:')}
+    periods, provenance = _column_periods(cells, 1, evidence, namespaces, dict.fromkeys(evidence, 1), advanced=True,
+                                          tagging_defects=True)
+    for index, row in enumerate(cells):
+        for cell in row:
+            cell.pop('_element')
+            cell.update(row_heading=f'Row {index - 1}' if index else '', column_headings=[heading],
+                        column_period=deepcopy(periods[1]), fact_references=[], unresolved_reason=None, is_total=False,
+                        classification='header' if index == 0 else 'label')
+            if index and cell['column']:
+                item = facts[index - 1]
+                if evidence[item.occurrence_key]['period'] == periods[1]:
+                    node = tree.xpath(f'//*[@id="{item.occurrence_key}"]')[0]
+                    cell.update(classification='resolved', fact_references=[{
+                        **fact_reference(item), 'xml_id': item.occurrence_key, 'method': 'inline_id',
+                        'inline_xpath': inline_source_xpath(tree, node), 'scope': deepcopy(scope)}])
+                else:
+                    cell.update(classification='unresolved', unresolved_reason='Fact period differs from column heading')
+    structure = {'schema_version': 2, 'source_value_policy': 'source-marker-v1',
+                 'html_sha256': hashlib.sha256(source).hexdigest(), 'xml_sha256': 'b' * 64,
+                 'source_xpath': source_xpath(tree, element), 'fact_scope': scope, 'rows': cells, 'grid': grid,
+                 'inventory': dict(Counter(cell['classification'] for row in cells for cell in row))}
+    if provenance:
+        structure['column_period_evidence'] = provenance
+    return FinancialTableInput(filing_id=UUID(int=1), source_document_id=UUID(int=2), extraction_version='tables-v3',
+                               table_key='income_statement', statement_type='income_statement', structure=structure,
+                               readable_text='source income statement'), [*facts, *reported], source
+
+
+def flagged_periods(table, facts, source):
+    from sec_pipeline.source_cells_v4 import transform_tables
+    from sec_pipeline.tagging_defects import flag_table_cells
+    reviewed = transform_tables([table], source, facts, tagging_defects=True)
+    flagged, records = flag_table_cells(reviewed, source, facts, version='tables-v8')
+    assert validate_records(records, flagged) is True
+    inventory = flagged[0].structure['inventory']
+    return [record['code'] for record in records], inventory.get('source_defect', 0), inventory.get('unresolved', 0)
+
+
+CALENDAR_YEAR, PRIOR_YEAR = ('2025-01-01', '2025-12-31'), ('2024-01-01', '2024-12-31')
+
+
+@pytest.mark.parametrize('agreeing,contradicting,flagged', [(9, 2, 2), (5, 1, 1), (8, 2, 0), (4, 1, 0), (13, 3, 0)])
+def test_a_tag_is_flagged_against_its_column_only_where_the_other_numbers_confirm_the_period(agreeing, contradicting, flagged):
+    # At most two contradicting cells, and more than four times as many that carry the column's period.
+    table, facts, source = period_fixture([CALENDAR_YEAR] * agreeing + [PRIOR_YEAR] * contradicting)
+    assert table.structure['rows'][1][1]['column_period'] == {'startDate': '2025-01-01', 'endDate': '2025-12-31'}
+    assert flagged_periods(table, facts, source) == (
+        ['fact_period_differs_from_column'] * flagged, flagged, contradicting - flagged)
+
+
+def test_a_header_read_as_a_date_does_not_turn_a_column_of_correct_tags_into_tagging_errors():
+    # Qualcomm's 10-K for fiscal 2024 heads two income statement columns "September 24,2023" and
+    # "September 25,2022" under a "Year Ended" caption that spans only the first column. Read alone, each is a
+    # date, and every fiscal-year amount under it contradicts that date. Nothing confirms the reading, so none
+    # of the tags is a tagging error and the cells stay unresolved.
+    table, facts, source = period_fixture([CALENDAR_YEAR] * 6, heading='December 31, 2025')
+    assert table.structure['rows'][1][1]['column_period'] == {'instant': '2025-12-31'}
+    assert flagged_periods(table, facts, source) == ([], 0, 6)
+
+
+def test_a_column_whose_every_tag_starts_one_day_early_is_still_flagged_as_a_whole():
+    early = ('2024-04-26', '2024-10-25')
+    table, facts, source = period_fixture([early] * 4, heading='Six Months Ended October 25, 2024',
+                                          balances=('2024-04-26', '2024-07-26', '2024-10-25'))
+    assert table.structure['column_period_evidence']['1']['method'] == 'fiscal_calendar_start_tagging_defects'
+    assert table.structure['rows'][1][1]['column_period'] == {'startDate': '2024-04-27', 'endDate': '2024-10-25'}
+    assert flagged_periods(table, facts, source) == (['fact_period_differs_from_column'] * 4, 4, 0)
+    # Without that evidence the same cells are an unconfirmed column.
+    del table.structure['column_period_evidence']
+    assert flagged_periods(table, facts, source) == ([], 0, 4)

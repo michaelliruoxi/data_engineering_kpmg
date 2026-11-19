@@ -210,8 +210,11 @@ def coverage_check(snapshot, sources):
                  and f["source_document_id"] == scope.get("xml_document_id") and f["extraction_version"] == scope.get("facts_version")]
         try:
             # Only V8 tables carry the cash flow followers; other versions reselect as before.
+            # A V8 set names the reading of its tables on each of them (filing_parser_v4.LAYOUT_READING).
             if any(t.get("extraction_version") == "tables-v8" for t in tables):
-                selected = select_statement_segments(tree, facts, cash_followers=True)
+                selected = select_statement_segments(
+                    tree, facts, cash_followers=True,
+                    corroborated_layouts=all(t["structure"].get("corroborated_layouts") is True for t in tables))
             else:
                 selected = select_statement_segments(tree, facts)
             expected = Counter((s.statement_type, source_xpath(tree, s.element)) for s in selected)

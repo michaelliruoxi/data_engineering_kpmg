@@ -45,6 +45,10 @@ from .v4_table_cells import v4_relational_cells
 VERSIONS = {'facts': 'facts-v1', 'tables': 'tables-v4', 'reports': 'report-v1', 'chunks': 'paragraph-v1'}
 COVERAGE = {'facts': 'complete', 'tables': 'partial', 'reports': 'unknown', 'chunks': 'complete'}
 PRIMARY_KINDS = frozenset({'balance_sheet', 'income_statement', 'cash_flow'})
+# Key of a table structure, present (and true) only on a V8 table that was read
+# with the corroborated layouts of tables-v3 because the established reading
+# rejected the filing.
+LAYOUT_READING = 'corroborated_layouts'
 REQUIRED_CHECKS = ('document_set_complete', 'union_correspondence', 'numeric_values_compared', 'numeric_tag_boundaries_verified',
                    'source_cells_complete', 'source_bindings_exact', 'reports_complete', 'chunks_complete',
                    'fact_source_scope', 'statement_member_unambiguous', 'statement_segment_coverage',
@@ -185,13 +189,13 @@ def _statement_signals(tree):
     return found
 
 
-def _choose_member(member_records, root, facts):
+def _choose_member(member_records, root, facts, *, corroborated_layouts=False):
     selected, failures, signals = [], {}, {}
     for record in member_records:
         path = _path(root, record)
         tree = html.parse(str(path), parser=html.HTMLParser(encoding='utf-8', no_network=True))
         try:
-            segments = select_statement_segments(tree, facts)
+            segments = select_statement_segments(tree, facts, corroborated_layouts=corroborated_layouts)
             _require({segment.statement_type for segment in segments} == PRIMARY_KINDS,
                      'A statement member must contain every primary statement group.')
             selected.append(record)
@@ -206,28 +210,31 @@ def _choose_member(member_records, root, facts):
 
 
 def _checked_tables(manifest, root, filing, xml_record, member, sources, facts, occurrences, *, cash_followers=False,
-                    tagging_defects=False, boundary_records=(), tables_version=None):
+                    tagging_defects=False, boundary_records=(), tables_version=None, corroborated_layouts=False):
     path, xml_path = _path(root, member), _path(root, xml_record)
     context = _context(manifest, root, filing, xml_record, member, sources)
     v2 = extract_tables(path, xml_path, filing_id=filing, html_document_id=context.source_ids.html_document_id,
                         xml_document_id=context.source_ids.xml_document_id, facts_version='facts-v1', tables_version='tables-v2',
-                        cash_followers=cash_followers, tagging_defects=tagging_defects)
+                        cash_followers=cash_followers, tagging_defects=tagging_defects,
+                        corroborated_layouts=corroborated_layouts)
     source = path.read_bytes()
     bindings = SourceBindings(source, facts)
     _require(validate_statement_segments(v2, bindings.tree, facts, xml_path=xml_path, cash_followers=cash_followers,
-                                         tagging_defects=tagging_defects) is True,
+                                         tagging_defects=tagging_defects, corroborated_layouts=corroborated_layouts) is True,
              'Primary statement grouping differs from original source evidence.')
     v3 = transform_v3(v2, source, facts)
     validate_representations(v3, source, facts)
     references, cells = source_adapter._table_checks(context, v3, {fact.occurrence_key: fact for fact in facts}, bindings)
     _require(references and cells, 'Table references, cells or original locators are inconsistent.')
-    v4 = tuple(transform_v4(v3, source, facts, tagging_defects=tagging_defects))
-    _require(validate_transformation(v4, v3, source, facts, tagging_defects=tagging_defects) is True,
+    v4 = tuple(transform_v4(v3, source, facts, tagging_defects=tagging_defects, corroborated_layouts=corroborated_layouts))
+    _require(validate_transformation(v4, v3, source, facts, tagging_defects=tagging_defects,
+                                     corroborated_layouts=corroborated_layouts) is True,
              'V4 review transformation is not source-exact.')
     defects = ()
     if tagging_defects:
         from .tagging_defects import flag_table_cells
-        v4, defects = flag_table_cells(v4, source, facts, version=tables_version, boundary_records=boundary_records)
+        v4, defects = flag_table_cells(v4, source, facts, version=tables_version, boundary_records=boundary_records,
+                                       corroborated_layouts=corroborated_layouts)
     by_occurrence = {item['inline_id']: item for item in occurrences}
     for table in v4:
         for cell, accepted, descriptor in v4_relational_cells(UUID(int=0), table):
@@ -254,10 +261,37 @@ def _checked_tables(manifest, root, filing, xml_record, member, sources, facts, 
                 _require(occurrence is not None and occurrence['inline_document_id'] == str(table.source_document_id)
                          and occurrence['evidence']['inline_xpath'] == ref['inline_xpath'],
                          'A cell reference does not belong to its original document-set occurrence.')
+    if corroborated_layouts:
+        # Each stored table says that it was read with the corroborated layouts,
+        # so an audit of the stored set rebuilds it with the same reading.
+        v4 = tuple(replace(table, structure={**table.structure, LAYOUT_READING: True}) for table in v4)
     return v4, defects
 
 
 def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None, profile=LEGACY_PROFILE):
+    """Read the set as its profile always has; the flagged profile may read it a second time.
+
+    V8 only: a filing the established reading rejects is read once more with
+    the corroborated layouts of tables-v3 (see `tables.extract_tables`). A
+    filing the established reading accepts is never read with them, so its
+    output cannot change. The second reading passes every check of the first,
+    and each of its tables is marked (`LAYOUT_READING`). When both readings
+    reject the filing, the first rejection is reported.
+    """
+    arguments = {'filing_id': filing_id, 'source_document_ids': source_document_ids, 'profile': profile}
+    if profile != FLAGGED_PROFILE:
+        return _read(manifest_path, data_root, **arguments)
+    try:
+        return _read(manifest_path, data_root, **arguments)
+    except ValueError as rejected:
+        try:
+            return _read(manifest_path, data_root, **arguments, corroborated_layouts=True)
+        except ValueError:
+            raise rejected from None
+
+
+def _read(manifest_path, data_root, *, filing_id=None, source_document_ids=None, profile=LEGACY_PROFILE,
+          corroborated_layouts=False):
     versions = versions_for(profile)
     root, manifest_path = Path(data_root).resolve(), Path(manifest_path).resolve()
     manifest = verify_document_set(manifest_path, root)
@@ -279,10 +313,11 @@ def _build(manifest_path, data_root, *, filing_id=None, source_document_ids=None
     if flagged:
         from .tagging_defects import fact_boundary_records
         boundary_records = fact_boundary_records(union.tagging_defects, facts, version=versions['tables'])
-    selected = _choose_member(members, root, facts)
+    selected = _choose_member(members, root, facts, corroborated_layouts=corroborated_layouts)
     tables, cell_defects = _checked_tables(manifest, root, filing, xml_record, selected, sources, facts, union.occurrences,
                                            cash_followers=flagged, tagging_defects=flagged,
-                                           boundary_records=boundary_records, tables_version=versions['tables'])
+                                           boundary_records=boundary_records, tables_version=versions['tables'],
+                                           corroborated_layouts=corroborated_layouts)
     if profile in CORRECTED_PROFILES:
         tables = corrected_tables(tables, profile=profile)
     if profile in AUDITED_PROFILES:

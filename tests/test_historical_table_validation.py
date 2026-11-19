@@ -425,3 +425,20 @@ def test_two_stored_cells_may_reuse_one_fact_without_losing_a_link():
     snapshot = relationship_snapshot(table, [fact])
     assert len(snapshot["cell_fact_links"]) == 2 and len(snapshot["financial_table_facts"]) == 1
     assert audit_snapshot(snapshot, {})["errors"] == []
+
+
+@pytest.mark.parametrize("marked", [False, True])
+def test_segment_coverage_of_a_v8_set_reselects_with_the_reading_its_tables_name(monkeypatch, marked):
+    source = b'<html><body><table id="a"/></body></html>'
+    structure = {"source_xpath": "/html/body/table", "fact_scope": {"xml_document_id": "xml"}}
+    if marked:
+        structure["corroborated_layouts"] = True
+    snapshot = {"tables": [{"source_document_id": "html", "statement_type": "cash_flow",
+                            "extraction_version": "tables-v8", "structure": structure}], "facts": []}
+    seen = []
+    def segments(tree, facts, **options):
+        seen.append(options)
+        return [SimpleNamespace(statement_type="cash_flow", element=tree.xpath('//table')[0])]
+    monkeypatch.setattr(batch, "select_statement_segments", segments)
+    assert batch.coverage_check(snapshot, {"html": source, "xml": b"synthetic-placeholder"})["status"] == "passed"
+    assert seen == [{"cash_followers": True, "corroborated_layouts": marked}]

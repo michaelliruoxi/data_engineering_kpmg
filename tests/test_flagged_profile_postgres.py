@@ -192,3 +192,22 @@ def test_v4_to_v8_coexist_and_a_defect_free_v8_set_publishes(local_connection): 
                               'parser_revisions': policy_metadata(filing_ingestion_v8.VERSIONS)['parser_revisions']
                               | {'facts': 'numeric-tag-boundaries-v3'}})
     conn.execute('SET CONSTRAINTS ALL IMMEDIATE')
+
+
+def test_a_v8_table_of_the_second_reading_keeps_its_marker_and_publishes(local_connection):  # noqa: F811
+    # A table read with the corroborated layouts names that reading in its structure
+    # (filing_parser_v4.LAYOUT_READING); the stored table must keep it for the audits.
+    conn = local_connection
+    item = database_fixture(conn, review=False)
+    original = seal(conn, item)
+    item.table = replace(item.table, structure=item.table.structure | {'corroborated_layouts': True})
+    flagged, table_id, _ = corrected_fixture(conn, item, key='flagged-second-reading', profile=FLAGGED_PROFILE)
+    version, marker = conn.execute(
+        "SELECT extraction_version, structure->'corroborated_layouts' FROM sec.financial_tables WHERE id=%s",
+        (table_id,)).fetchone()
+    assert (version, marker) == ('tables-v8', True)
+    status, = conn.execute('SELECT validation_status FROM sec.source_processing_sets WHERE id=%s', (flagged,)).fetchone()
+    assert status == 'passed'
+    assert publish_corrected_set(conn, item.filing, flagged, expected_current=('source', original)) == ('source', flagged)
+    assert served_selection(conn, item.filing) == ('source', flagged)
+    conn.execute('SET CONSTRAINTS ALL IMMEDIATE')

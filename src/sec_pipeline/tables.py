@@ -2868,7 +2868,8 @@ def select_statement_segments(tree, facts, *, cash_followers=False, corroborated
 
     ``cash_followers`` (V8 only) adds the closing cash reconciliation and the
     supplemental disclosures printed directly after the cash flow statement.
-    ``corroborated_layouts`` (tables-v3 only) is described at `extract_tables`.
+    ``corroborated_layouts`` (tables-v3, and the second reading of V8) is
+    described at `extract_tables`.
 
     The document is only read here, so the headings of each table and the
     visibility of each node are computed once for all attempts (`_memo`,
@@ -3106,7 +3107,9 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                    tagging_defects=False, corroborated_layouts=False):
     """Extract the selected primary statements.
 
-    `corroborated_layouts` (tables-v3 only) accepts layouts that are
+    `corroborated_layouts` (tables-v3 always; V8 only when it reads a filing
+    its own reading rejects a second time, see `filing_parser_v4._build`)
+    accepts layouts that are
     otherwise left unresolved: a column whose header cannot be parsed alone
     but agrees with the one period all its tags carry (`_corroborate_columns`),
     a balance dated at an endpoint of a cash-flow column
