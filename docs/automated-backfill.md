@@ -404,6 +404,7 @@ Saturday ("Twenty-Six Week Periods Ended March 29, 2025", tagged from October
 | `comparative_column` | "2024" or "March 30, 2024" beside a fully captioned column | Another column of the table has an established period of the same length (within seven days) ending one year earlier or later |
 | `printed_balance_date` | "Fiscal Year Ended / December 28, 2025" on a balance sheet | The tagged date is printed in full |
 | `fiscal_year_end` | "At the End of Year / 2024", "Fiscal Year End / 2025" on a balance sheet, tagged January 3 of the next year | The header prints only that year; the tagged date falls in the first seven days of the following January; and the filing itself shows a fiscal period to close on that date: an undimensioned fact covers 52 or 53 weeks or a whole year ending on it, or a period beginning the day after it |
+| `ratio_of_adjacent_column` | "Percent to Sales" beside "March 31, 2024" under "Fiscal First Quarter Ended" | The header says percent and prints no year or date; every tag in the column is a pure ratio; and the tagged period is the established period of the nearest dated column to its left |
 | `caption_duration`, `caption_balance_date` | "2025" under the line "For the quarters ended March 31, 2025 and 2024"; "March 31, 2025" under "Three months ended March 31, 2025 and 2024"; "2025" under "October 31, 2025 and 2024" on a balance sheet | A caption shared by the columns prints the period's end, as a full date or as a month and day beside that year, and for a duration its length; the column prints exactly one year, the period's end year; and the table has a column for every year the caption names |
 
 A caption is a header cell that names two or more years, or a line printed
@@ -661,28 +662,118 @@ period") or by the month and day of the column's last day, with the year if it
 prints one, and the tag's date is that day. A balance of any other day, or in
 a row that names no period end, stays unresolved.
 
-**A consolidated statement followed by pages for parts of the group.** A
-filing may print its consolidated cash flow statement and then, on pages
-marked as its continuation, the same statement for each business group. The
-established rules find two complete tables under one title and reject the
-statement. The last attempt takes the first table alone as the statement when
-all of these hold:
+**Another statement under the same title, for another scope.** A filing may
+print its consolidated cash flow statement and then, on pages marked as its
+continuation, the same statement for each business group (Textron). A real
+estate trust that files with its operating partnership prints every statement
+twice under one title, the second time with every number tagged for the
+partnership (Essex). The established rules find two tables under one title
+and reject the statement. A primary statement needs totals without any
+dimension, so a table whose every number carries a dimension can never be
+one. Where the established rules give up, such a table is left out when
+another candidate holds numbers without a dimension, and the statement is
+chosen among the rest as before (`with_own_scope`). A second table that holds
+a number of the whole entity still makes the statement ambiguous.
 
-- it is complete, not marked as a continuation, and all its numbers have the
-  registrant's own scope, without any dimension;
-- every other table under that title is marked as a continuation, shows the
-  same periods, and holds only numbers of that registrant and unit that carry
-  a dimension, never another legal entity (`LegalEntityAxis`);
+Measured on the 5,295 filings archived on November 19: the readings of this
+date up to here make 120 more parse cleanly (among them Aon, Bank of America,
+Broadridge, Centene, Chubb, CME Group, Marsh & McLennan, News Corp, NXP, S&P
+Global, Textron and Trimble), all 120 pass the complete offline dry run, and
+each of the 4,446 that parsed cleanly before is byte-identical.
+
+**Statements looked for outside the notes only.** When every attempt above
+has declined a filing, selection is tried twice more, with the standard and
+with the utility revenue concepts, reading the document in this way:
+
+- A table inside a tagged text block (`ix:nonNumeric` or `ix:continuation`)
+  is a note and no candidate, whatever title stands above it and whatever it
+  holds: a pro forma balance sheet, the statements of an acquired company,
+  condensed consolidating information, or a table whose columns no header
+  dates. In the 4,446 filings that parsed cleanly before this change, no
+  selected statement lies inside such a block.
+- Rows tagged for the parent company (`ParentCompanyMember`) are detail of a
+  table that also holds numbers without a dimension, as in a bank's balance
+  sheet that shows the loans held outside its securitization trusts. A table
+  of parent-company numbers alone is the parent's own statement and no
+  candidate, as always; and a core total tagged for the parent still stops
+  the filing ("Primary statement core facts use another registrant scope").
+- Tables of another scope are left out before the statement is chosen, as
+  above, so a statement of the registrant's own that continues on an untitled
+  next page is still found beside the partnership's.
+
+**A complete cash flow statement followed by pages that supplement it.** A
+cash flow statement often runs on to a page of supplemental disclosures or a
+reconciliation of its closing cash balance, printed under the same title or
+marked as its continuation. Such a page cannot always be joined as a
+statement page: its columns are dated differently, or it is not marked. Where
+the pages cannot be joined, the first table alone is the statement when all of
+these hold (`statement_before_supplements`):
+
+- it is complete, with the three activity totals and the closing cash
+  balance, and not marked as a continuation;
+- every other table read as a cash flow statement stands after it under the
+  same title, reports the same entity, and holds none of the three activity
+  totals;
 - nothing but footnotes and page furniture stands between the tables.
 
-A continuation page that holds a number of the whole entity, another period
-or another registrant still makes the statement ambiguous.
+The supplemental page is then not stored as part of the statement. A later
+page that holds an activity total, or a first table without the closing
+balance, still leaves the statement rejected.
 
-Measured on the 5,295 filings archived on November 19: these readings make
-120 more parse cleanly (among them Aon, Bank of America, Broadridge, Centene,
-Chubb, CME Group, Marsh & McLennan, News Corp, NXP, S&P Global, Textron and
-Trimble), all 120 pass the complete offline dry run, and each of the 4,446
-that parsed cleanly before is byte-identical.
+**A title printed after the registrant's name on one page.** The pages of a
+cash flow statement are joined only under one title. Where the titles differ
+as printed, they are compared once more without a leading registrant name:
+"Raymond James Financial, Inc. and Subsidiaries Condensed Consolidated
+Statements of Cash Flows" continues "Condensed Consolidated Statements of
+Cash Flows".
+
+**Typed dimensions.** A cell's reference now states a typed dimension as the
+stored fact does, in exclusive canonical XML. The table reader used to
+serialize the typed value with every namespace declared on the document
+root, so such a reference never matched its fact: the filing failed
+`table_fact_references` or "Stored fact differs from verified XML
+evidence/scope" under every profile, and none was ever stored with
+statements. Two archived filings have a typed dimension in a statement cell
+(AIG and GoDaddy, both 2026); both now pass.
+
+**The parent's statements in a combined filing, by the scope of their
+numbers.** The two joint readings find the reporting parent's statements by
+the registrant name printed with each title (see "Combined filings" below).
+They give up when a title prints no name they can read ("Carnival Corporation
+& plc"), when a statement runs over two pages, or when a row of the parent's
+own statement is tagged for another registrant, such as the share capital of
+a dual-listed company. Since November 19, 2026 a combined filing both joint
+readings reject is read once more from the XBRL itself:
+
+- exactly one DEI `EntityCentralIndexKey` fact carries no dimension and is
+  the entity of its own context: the reporting parent. Its consolidated
+  numbers carry no dimension, while each other registrant's are tagged with
+  that registrant's member;
+- the statements are looked for outside the notes, with tables of another
+  scope left out, exactly as in a filing of one registrant (the attempts
+  described above);
+- the selected statements' core totals carry no dimension and belong to one
+  entity, and that entity is the reporting parent;
+- no selected table is printed under the name of another registrant of the
+  filing: the names are looked for in the table's own header rows and in the
+  lines above it, up to two lines above the title.
+
+The statements are stored as in a filing of one registrant, without the
+`joint_statement` proof of a printed name. A filing the joint readings accept
+keeps its joint selection and proof. Measured on the archive of November 19,
+85 combined filings are read this way (Alliant Energy, Carnival, CMS Energy,
+Dominion, Edison International, Entergy, Eversource, Mid-America Apartment
+Communities, PG&E, PSEG, Southern Company and others); in each, every selected
+table holds the parent's own undimensioned numbers.
+
+**A balance sheet whose equity total has no standard concept.** A company may
+tag its total equity with a concept of its own (WEC Energy Group), so the
+table shows none of the standard equity totals. Where every other rule has
+given up, the one table of which this is true is the balance sheet
+(`whole_balance_sheet`): for every date its one undimensioned `Assets` fact
+equals its one undimensioned `LiabilitiesAndStockholdersEquity` fact, in one
+currency; it is not marked as a continuation; and no other candidate shares
+its title or is a continuation.
 
 **Utility revenue.** When every reading above has declined the filing,
 selection is tried a final time counting

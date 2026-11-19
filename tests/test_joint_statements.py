@@ -179,7 +179,7 @@ class JointHeaderLineTests(unittest.TestCase):
             else:
                 self.outside(tree, 'The following statement is unaudited and condensed.', wrap=change.endswith('element'))
             with self.subTest(change=change), self.assertRaises(t.TableExtractionError):
-                t.select_statement_segments(tree, facts, corroborated_layouts=True)
+                select_joint_statement_segments(tree, facts, header_lines=True)
 
     def test_a_printed_name_is_matched_to_exactly_one_registrant(self):
         from sec_pipeline.joint_statements import _company
@@ -195,6 +195,62 @@ class JointHeaderLineTests(unittest.TestCase):
         self.assertIsNone(_company('The Example Corp.', {'1': 'Example Corp', '2': 'Example Corporation'}, spellings=True))
         self.assertIsNone(_company('CARNIVAL CORPORATION & PLC', {'1': 'Carnival Corporation', '2': 'Carnival plc'}, spellings=True))
         self.assertIsNone(_company('Consolidated Statements of Income', utilities, spellings=True))
+
+
+class ParentScopeTests(unittest.TestCase):
+    """A combined filing both joint readings reject: the parent's statements by the scope of their numbers (tables-v3)."""
+    PARENT = ['1-income_statement', '1-balance_sheet', '1-cash_flow']
+
+    def combined_name(self):
+        """The parent's statements printed under a name that is neither registrant's, as a dual-listed company prints them."""
+        tree, facts = fixture()
+        for cell in tree.xpath('//table[starts-with(@id, "1-")]/tr[1]/td'):
+            cell.text = 'PRIMARY CORPORATION & AFFILIATE'
+        # The statements follow other pages, not the cover facts the fixture prints first.
+        tree.xpath('//table')[0].addprevious(html.fragment_fromstring('<table><tr><td>Table of Contents</td></tr></table>'))
+        return tree, facts
+
+    def test_the_tables_whose_numbers_carry_no_dimension_are_the_parents(self):
+        tree, facts = self.combined_name()
+        with self.assertRaises(t.TableExtractionError):
+            t.select_statement_segments(tree, facts)
+        with self.assertRaises(t.TableExtractionError):
+            select_joint_statement_segments(tree, facts, header_lines=True)
+        selected = t.select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertEqual([segment.element.get('id') for segment in selected], self.PARENT)
+        self.assertTrue(all(segment.group is None for segment in selected))
+        # A filing the joint reading accepts keeps its joint selection and proof.
+        tree, facts = fixture()
+        joint = t.select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertTrue(all(segment.group['joint_statement']['registrant_cik'] == '0000000001' for segment in joint))
+
+    def test_a_table_under_another_registrants_name_is_never_taken(self):
+        tree, facts = self.combined_name()
+        tree.xpath('//*[@id="1-balance_sheet"]/tr[1]/td')[0].text = 'Affiliate Corporation'
+        with self.assertRaises(t.TableExtractionError):
+            t.select_statement_segments(tree, facts, corroborated_layouts=True)
+        names = {'0000000001': 'Primary Corporation', '0000000002': 'Affiliate Corporation'}
+        self.assertEqual(t._printed_registrants(tree.xpath('//*[@id="1-balance_sheet"]')[0], names), {'0000000002'})
+        self.assertEqual(t._printed_registrants(tree.xpath('//*[@id="1-cash_flow"]')[0], names), set())
+        self.assertEqual(t._printed_registrants(tree.xpath('//*[@id="2-cash_flow"]')[0], names), {'0000000002'})
+
+    def test_a_subsidiarys_statement_cannot_stand_in_for_a_missing_parent_statement(self):
+        tree, facts = self.combined_name()
+        parent = tree.xpath('//*[@id="1-balance_sheet"]')[0]
+        parent.getparent().remove(parent)
+        with self.assertRaisesRegex(t.TableExtractionError, 'joint filing|Joint'):
+            t.select_statement_segments(tree, facts, corroborated_layouts=True)
+
+    def test_the_parent_is_the_one_registrant_whose_dei_facts_carry_no_dimension(self):
+        for change in ('two undimensioned registrants', 'a core total of another entity'):
+            tree, facts = self.combined_name()
+            if change.startswith('two'):
+                facts['dei-2-EntityCentralIndexKey'] = {**facts['dei-2-EntityCentralIndexKey'], 'dimensions': [],
+                                                        'entity': ENTITY | {'identifier': '0000000002'}}
+            else:
+                facts['f-1-income_statement-0'] = {**facts['f-1-income_statement-0'], 'entity': ENTITY | {'identifier': '0000000002'}}
+            with self.subTest(change=change), self.assertRaises(t.TableExtractionError):
+                t.select_statement_segments(tree, facts, corroborated_layouts=True)
 
 
 class ArchivedJointStatementTests(unittest.TestCase):

@@ -84,6 +84,54 @@ def tied_balance_segments(tree, candidates):
                  for index, (key, candidate) in enumerate(zip(keys, candidates)))
 
 
+def whole_balance_sheet(candidates):
+    """The one table that is a whole balance sheet by its own totals, or None.
+
+    tables-v3 corroborated layouts only, where every other rule has given up.
+    A company may tag its total equity with a concept of its own, so the table
+    shows no standard equity total. It is still a whole balance sheet when it
+    prints both sides and they agree: for every date, its one undimensioned
+    Assets fact equals its one undimensioned LiabilitiesAndStockholdersEquity
+    fact, in one currency, and every number belongs to that entity and date.
+    Exactly one candidate may pass; it must not be marked as a continuation,
+    and no other candidate may share its title or be a continuation.
+    """
+    from .tables import StatementSegment
+
+    def tied(candidate):
+        if (candidate['continued'] or not candidate['axes']
+                or any(set(json.loads(axis)) != {'instant'} for axis in candidate['axes'])):
+            return False
+        core_scope = None
+        for axis in candidate['axes']:
+            period, sides = json.loads(axis), []
+            for name in ('Assets', 'LiabilitiesAndStockholdersEquity'):
+                matches = [ref for ref in candidate['references'][axis] if not ref['dimensions']
+                           and re.fullmatch(_GAAP, ref['concept'][1:].split('}')[0]) and ref['concept'].split('}')[-1] == name]
+                if len(matches) != 1 or matches[0]['is_nil'] or matches[0]['period'] != period:
+                    return False
+                scope = {key: matches[0][key] for key in ('entity', 'unit')}
+                if (scope['entity'].get('scheme') not in {'http://www.sec.gov/CIK', 'https://www.sec.gov/CIK'}
+                        or not isinstance(scope['unit'], dict) or scope['unit'].get('denominator') != []
+                        or len(scope['unit'].get('numerator', [])) != 1
+                        or not re.fullmatch(r'\{http://www.xbrl.org/2003/iso4217\}[A-Z]{3}', scope['unit']['numerator'][0])
+                        or (core_scope is not None and scope != core_scope)):
+                    return False
+                core_scope = scope
+                sides.append(Decimal(matches[0]['raw_value']))
+            if (any(not amount.is_finite() for amount in sides) or sides[0] != sides[1]
+                    or any(ref['entity'] != core_scope['entity'] or ref['period'] != period
+                           for ref in candidate['references'][axis])):
+                return False
+        return True
+
+    whole = [candidate for candidate in candidates if tied(candidate)]
+    if len(whole) != 1 or any(other is not whole[0] and (other['continued'] or other['headings'].intersection(whole[0]['headings']))
+                              for other in candidates):
+        return None
+    return (StatementSegment('balance_sheet', 'balance_sheet', whole[0]['table']),)
+
+
 def verified_balance_segments(tree, candidates, facts):
     """Return two original segments only when source continuation is explicit."""
     from .tables import StatementSegment, _segments_adjacent, layout_grid, local

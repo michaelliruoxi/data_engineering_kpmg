@@ -8,9 +8,11 @@ keeps the selection it has. Two layouts are read here:
   statement's totals (`without_note_tables`);
 * a statement runs on to the next page in a table printed without a title
   (`page_continuation`);
-* a complete consolidated statement is followed by pages, marked as its
-  continuation, that print it again for parts of the group
-  (`consolidated_alone`).
+* another statement stands under the same title, every number of which
+  carries a dimension: the statement repeated for a business group, or that
+  of a second registrant (`with_own_scope`);
+* a complete cash flow statement is followed by pages that only supplement
+  it (`statement_before_supplements`).
 """
 
 from datetime import date, timedelta
@@ -255,40 +257,52 @@ def page_continuation(tree, kind, first, table, facts, html_ids, concept_groups)
             StatementSegment(kind, common['segment_keys'][1], table, common | {'segment_index': 2} | inheritance))
 
 
-def consolidated_alone(tree, kind, candidates, required):
-    """The complete statement among pages that repeat it for parts of the group, or None.
+def with_own_scope(candidates):
+    """Leave out tables none of whose numbers has the registrant's own scope.
 
-    A filing may print its consolidated statement and then, on pages marked
-    as its continuation, the same statement for each business group. The
-    first candidate must be the one complete, unmarked table whose numbers
-    all have the registrant's own scope, without any dimension. Every other
-    candidate must be marked as a continuation under the same title, show
-    the same periods and hold only numbers of that registrant and unit that
-    carry a dimension, never another legal entity; nothing but page
-    furniture may separate the tables. The statement is then the first
-    table alone: the later pages add no line of the whole entity to it.
+    A primary statement needs totals without any dimension. A table whose
+    every number carries one is another statement under the same title: the
+    statement repeated for a business group on a page marked as a
+    continuation, or the statement of a second registrant such as the
+    operating partnership of a real estate trust. It is left out when another
+    candidate holds numbers without a dimension; the statement is then chosen
+    among the rest as before.
+    """
+    own = [candidate for candidate in candidates
+           if not candidate['scopes'] or any(not json.loads(scope)['dimensions'] for scope in candidate['scopes'])]
+    return own if any(candidate['scopes'] for candidate in own) else list(candidates)
+
+
+def statement_before_supplements(tree, kind, candidates, required):
+    """A complete cash flow statement followed by pages that only supplement it, or None.
+
+    A cash flow statement often runs on to a page of supplemental disclosures
+    or a reconciliation of its closing cash balance, printed under the same
+    title or marked as its continuation, that cannot be joined to it as a
+    statement page: its columns are dated differently, or it is not marked.
+    The first candidate must be complete, with every activity total and the
+    closing cash balance, and not marked as a continuation. Every other
+    candidate must stand after it under the same title, report the same
+    entity, hold none of the three activity totals, and be separated from the
+    table before it by nothing but page furniture. The statement is then the
+    first table alone.
     """
     from .tables import _page_furniture_between
 
-    if len(candidates) < 2:
+    if kind != 'cash_flow' or len(candidates) < 2:
         return None
     main, others = candidates[0], candidates[1:]
-    if (main['continued'] or not main['axes'] or len(main['scopes']) != 1 or in_note(main['table'])
+    if (main['continued'] or not main['axes'] or not main['headings'] or in_note(main['table'])
             or any(groups != required for groups in main['coverage'].values())):
         return None
-    own = json.loads(next(iter(main['scopes'])))
-    if own['dimensions']:
-        return None
+    entities = {json.dumps(json.loads(scope)['entity'], sort_keys=True) for scope in main['scopes']}
     previous = main
     for other in others:
-        if (not other['continued'] or other['headings'] != main['headings'] or other['axes'] != main['axes']
-                or not other['scopes'] or not _page_furniture_between(tree, previous['table'], other['table'], kind)):
+        if (not other['headings'].intersection(main['headings']) or in_note(other['table'])
+                or any(groups & {0, 1, 2} for groups in other['coverage'].values())
+                or {json.dumps(json.loads(scope)['entity'], sort_keys=True) for scope in other['scopes']} - entities
+                or not _page_furniture_between(tree, previous['table'], other['table'], kind)):
             return None
-        for value in other['scopes']:
-            scope = json.loads(value)
-            if (scope['entity'] != own['entity'] or scope['unit'] != own['unit'] or not scope['dimensions']
-                    or any(dimension.get('dimension', '').endswith('}LegalEntityAxis') for dimension in scope['dimensions'])):
-                return None
         previous = other
     return main
 
@@ -296,10 +310,11 @@ def consolidated_alone(tree, kind, candidates, required):
 def recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups):
     """Select a statement the established rules leave "ambiguous or incomplete", or return None.
 
-    A complete consolidated statement followed only by pages that repeat it
-    for parts of the group is the statement (`consolidated_alone`).
-    With the note tables left out, one complete table that no other candidate
-    shares a title with is the statement, as the established rule has it.
+    Tables none of whose numbers has the registrant's own scope are left out
+    first (`with_own_scope`), then the note tables that hold none of the
+    statement's totals (`without_note_tables`). If tables were left out, one
+    complete table that no other candidate shares a title with is the
+    statement, as the established rule has it.
     Otherwise a titled table that shares its title with no other candidate
     may continue on the next page (`page_continuation`); exactly one must.
     A cash flow statement is read this way only as the single candidate left.
@@ -307,9 +322,8 @@ def recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups):
     from .tables import StatementSegment, _hidden, local
 
     required = set(range(len(concept_groups[kind])))
-    whole = consolidated_alone(tree, kind, candidates, required)
-    if whole is not None:
-        return (StatementSegment(kind, kind, whole['table']),)
+    listed = len(candidates)
+    candidates = with_own_scope(candidates)
     kept = without_note_tables(candidates)
 
     def alone(candidate):
@@ -320,7 +334,7 @@ def recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups):
     complete = [candidate for candidate in kept
                 if candidate['axes'] and all(groups == required for groups in candidate['coverage'].values())]
     if complete:
-        if (len(kept) != len(candidates) and len(complete) == 1 and alone(complete[0])
+        if (len(kept) != listed and len(complete) == 1 and alone(complete[0])
                 and not in_note(complete[0]['table'])):
             return (StatementSegment(kind, kind, complete[0]['table']),)
         return None

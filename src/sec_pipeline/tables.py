@@ -64,8 +64,14 @@ def xml_evidence(path, *, include_entity=False):
                 dims.append({'kind': 'explicit', 'dimension': expanded(d.get('dimension'), d.nsmap),
                              'member': expanded(text(d), d.nsmap)})
             elif d.tag == f'{{{XBRLDI}}}typedMember':
+                # The same exclusive canonical XML as the fact extractor, so a
+                # cell's reference states the dimension exactly as its stored
+                # fact does. A plain serialization also carries every namespace
+                # declared on the document root; such a reference never matched
+                # its fact, and no filing with one was ever accepted.
                 dims.append({'kind': 'typed', 'dimension': expanded(d.get('dimension'), d.nsmap),
-                             'value': etree.tostring(d[0], encoding='unicode', with_tail=False)})
+                             'value': ''.join(etree.tostring(child, method='c14n', exclusive=True, with_comments=False).decode('utf-8')
+                                              for child in d if isinstance(child.tag, str))})
         contexts[c.get('id')] = {'period': period, 'dimensions': dims}
         if include_entity:
             identifier = c.find(f'{{{XBRLI}}}entity/{{{XBRLI}}}identifier')
@@ -1207,6 +1213,24 @@ def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_ye
                 and candidate['instant'] in boundaries()):
             accept(column, 'fiscal_year_end', printed_year=end.year - 1)
 
+    # A column of percentages printed beside its amounts ("Percent to Sales")
+    # carries no date of its own. Every tag in it must be a pure ratio, its
+    # header must say percent and print no year or date, and the tagged
+    # period must be the established period of the nearest dated column to
+    # its left.
+    pure = {'numerator': ['{http://www.xbrl.org/2003/instance}pure'], 'denominator': []}
+    for column in sorted(deferred):
+        candidate, references, headers = deferred[column]
+        tokens = _printed_period_tokens(headers)
+        if (column in accepted or tokens is None or tokens['years'] or tokens['full_dates'] or tokens['month_days']
+                or not re.search(r'%|\bpercent', ' '.join(headers), re.I)
+                or any(reference['unit'] != pure for reference in references)):
+            continue
+        dated = [other for other in periods if other < column and periods[other] is not None
+                 and (other not in deferred or other in accepted)]
+        if dated and periods[max(dated)] == candidate:
+            accept(column, 'ratio_of_adjacent_column', amount_column=max(dated))
+
     def comparatives():
         changed = True
         while pending and changed:
@@ -1564,7 +1588,7 @@ def _segment_heading_signatures(table, kind):
 
 
 def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=None, heading_evidence=(), concept_groups=None,
-                       corroborate=False, label_columns=False):
+                       corroborate=False, label_columns=False, parent_detail=False):
     concept_groups = _STATEMENT_CONCEPTS if concept_groups is None else concept_groups
     rows, _ = layout_grid(table, tree)
     first = next((index for index, row in enumerate(rows) if any(
@@ -1580,6 +1604,7 @@ def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=
     # `label_columns` (tables-v3 `extended` selection only): the numbers a row
     # label carries are no statement column, as in the first grid column.
     labels = _label_columns(rows, first, periods) if label_columns else frozenset()
+    parent_rows = False
     axes, coverage, evidence, scopes, references = [], {}, {}, set(), {}
     for row in rows[first:]:
         for cell in row:
@@ -1606,7 +1631,9 @@ def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=
                 if not isinstance(entity, dict) or not entity.get('scheme') or not entity.get('identifier'):
                     raise TableExtractionError('Statement segment lacks source entity identity')
                 if any(dimension.get('member', '').endswith('}ParentCompanyMember') for dimension in ref['dimensions']):
-                    return None
+                    if not parent_detail:
+                        return None
+                    parent_rows = True
                 scopes.add(json.dumps({'entity': entity, 'unit': ref['unit'], 'dimensions': ref['dimensions']}, sort_keys=True))
                 concept = ref['concept'].split('}', 1)[-1]
                 if not re.fullmatch(r'\{https?://(?:fasb\.org|xbrl\.us)/us-gaap/[^}]+\}[^}]+', ref['concept']):
@@ -1618,6 +1645,12 @@ def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=
                     if concept in group and matching_period and not ref['is_nil']:
                         coverage[axis].add(index)
                         evidence[axis].setdefault(str(index), []).append(ref['xml_id'])
+    # `parent_detail` (the last tables-v3 selection attempts only): rows of the
+    # parent company are detail of a statement that also holds numbers without
+    # any dimension. A table of parent-company numbers alone is the parent's
+    # own statement and no candidate, as always.
+    if parent_rows and all(json.loads(scope)['dimensions'] for scope in scopes):
+        return None
     # Scope matching for split cash-flow segments is deliberately strict. It
     # must not join a parent, subsidiary, currency or dimensional statement.
     candidate = {'table': table, 'axes': axes, 'coverage': coverage, 'evidence': evidence, 'references': references,
@@ -2217,7 +2250,115 @@ def _period_tables(tree, kind, candidates, complete):
                  for index, (key, candidate) in enumerate(zip(keys, complete)))
 
 
-def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corroborate=False, extended=False):
+def _bare_titles(headings, registrants):
+    """Title signatures without a leading registrant name.
+
+    "raymond james financial inc and subsidiaries condensed consolidated
+    statements of cash flows" is the title "condensed consolidated statements
+    of cash flows". A signature that is only the name is kept as it is.
+    """
+    from .statement_headings import _registrant_prefix
+
+    return {heading[_registrant_prefix(heading, registrants, spaced=True):].strip() or heading for heading in headings}
+
+
+def _joined_cash_segments(tree, kind, candidates, facts, html_ids, required, extended, registrants):
+    """Join the pages of one cash flow statement, or raise.
+
+    The established rule, with the `extended` additions documented where they
+    apply. `registrants` (the filing's own names) lets `extended` compare the
+    titles of two pages when one prints the registrant's name before it.
+    """
+    candidates = _include_cash_reconciliations(tree, candidates, facts, html_ids)
+    first = candidates[0]
+    if first['continued'] or not first['axes'] or len(first['scopes']) != 1:
+        raise TableExtractionError('Cash-flow segments lack a unique initial statement scope')
+    if any(set(json.loads(axis)) != {'startDate', 'endDate'} for axis in first['axes']):
+        raise TableExtractionError('Cash-flow statement segments require duration column headers')
+    headings = set(first['headings'])
+    bare_headings = _bare_titles(first['headings'], registrants) if extended else set()
+    previous_groups = set()
+    detail_scopes = set()
+    combined = {axis: set() for axis in first['axes']}
+    combined_evidence = {axis: {} for axis in first['axes']}
+    for index, candidate in enumerate(candidates):
+        is_reconciliation = candidate.get('role') == 'cash_reconciliation'
+        if not is_reconciliation:
+            headings &= candidate['headings']
+            if extended:
+                bare_headings &= _bare_titles(candidate['headings'], registrants)
+        wanted_axes = ([json.dumps({'instant': json.loads(axis)['endDate']}, sort_keys=True)
+                        for axis in first['axes']] if is_reconciliation else first['axes'])
+        same_scopes = candidate['scopes'] == first['scopes']
+        if not same_scopes and extended and index and not is_reconciliation:
+            # A later page may add dimensional detail to the statement's own scope.
+            added = _continuation_detail_scopes(first, candidate, facts)
+            if added is not None:
+                same_scopes = True
+                detail_scopes.update(added)
+        if (candidate['axes'] != wanted_axes or not same_scopes
+                or (index and not _segments_adjacent(tree, candidates[index - 1]['table'], candidate['table'], kind,
+                                                    numbered_footer=bool(candidate.get('inherited_columns')))
+                    and not (extended and _page_furniture_between(tree, candidates[index - 1]['table'],
+                                                                  candidate['table'], kind)))):
+            raise TableExtractionError('Cash-flow segments disagree on periods, scope or adjacency')
+        if is_reconciliation:
+            continue
+        groups = set().union(*candidate['coverage'].values())
+        if index and not candidate['continued'] and (not groups or previous_groups & groups
+                                                    or max(previous_groups, default=-1) >= min(groups)):
+            raise TableExtractionError('Unmarked cash-flow segments do not establish ordered continuation')
+        previous_groups |= groups
+        for axis in combined:
+            combined[axis] |= candidate['coverage'][axis]
+            for group, identities in candidate['evidence'][axis].items():
+                combined_evidence[axis].setdefault(group, []).extend(identities)
+    if not headings:
+        # `extended` only, where the titles differ as printed: one page may
+        # print the registrant's name before the same title.
+        headings = bare_headings
+    if not headings or any(groups != required for groups in combined.values()):
+        raise TableExtractionError('Cash-flow segments lack matching headings or complete combined evidence')
+    for candidate in candidates:
+        if candidate.get('role') != 'cash_reconciliation':
+            continue
+        for main_axis, reconciliation_axis in zip(first['axes'], candidate['axes']):
+            total = [ref for ref in candidate['references'][reconciliation_axis]
+                     if ref['concept'].endswith('}CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents')]
+            main_ids = combined_evidence[main_axis]['3']
+            if (len(total) != 1 or not any(facts[key]['concept'] == total[0]['concept'] for key in main_ids)
+                    or any(Decimal(facts[key]['raw_value']) != Decimal(total[0]['raw_value']) for key in main_ids
+                           if facts[key]['concept'] == total[0]['concept'])):
+                raise TableExtractionError('Cash reconciliation total differs from the source cash-flow closing balance')
+    keys = [f'{kind}.segment_{index + 1}' for index in range(len(candidates))]
+    common = {'group_key': kind, 'segment_count': len(candidates), 'segment_keys': keys,
+              'source_xpaths': [source_xpath(tree, candidate['table']) for candidate in candidates],
+              'heading': sorted(headings)[0], 'column_periods': [json.loads(axis) for axis in first['axes']],
+              'scope': json.loads(next(iter(first['scopes']))),
+              'combined_concept_evidence': [
+                  {'period': json.loads(axis), 'groups': {group: sorted(set(identities))
+                   for group, identities in sorted(combined_evidence[axis].items())}}
+                  for axis in first['axes']]}
+    if detail_scopes:
+        common['detail_scopes'] = sorted(detail_scopes)
+    has_reconciliation = any(candidate.get('role') == 'cash_reconciliation' for candidate in candidates)
+    if has_reconciliation:
+        common['segment_roles'] = [candidate.get('role', 'statement') for candidate in candidates]
+        common['segment_column_periods'] = [[json.loads(axis) for axis in candidate['axes']] for candidate in candidates]
+    inherited_candidates = [candidate for candidate in candidates if candidate.get('inherited_columns')]
+    if inherited_candidates:
+        if len(candidates) != 2 or len(inherited_candidates) != 1:
+            raise TableExtractionError('Inherited cash headers require exactly two physical segments')
+        common['closure_evidence'] = inherited_candidates[0]['closure_evidence']
+    return [StatementSegment(kind, key, candidate['table'], common | {'segment_index': index + 1}
+            | ({'segment_role': candidate.get('role', 'statement')} if has_reconciliation else {})
+            | ({'header_inheritance': {'source_table_key': keys[0], 'source_xpath': source_xpath(tree, first['table']),
+                                      'columns': candidate['inherited_columns']}} if candidate.get('inherited_columns') else {}))
+            for index, (key, candidate) in enumerate(zip(keys, candidates))]
+
+
+def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corroborate=False, extended=False,
+                                  outside_notes=False):
     """Select original physical tables; v2 currently groups cash-flow continuations.
 
     Complete v1 selections are preserved. Split statements need matching exact
@@ -2229,6 +2370,10 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
     no title the `header_lines` reading of `statement_headings.recover_headings`
     and accepts a balance sheet printed as two tables whose totals tie
     (`balance_segments.tied_balance_segments`).
+    `outside_notes` (with `extended`, tried after it) looks for the statements
+    outside the notes only: a table inside a tagged text block is no
+    candidate, whatever title stands above it, and rows of the parent company
+    are detail of a table that also holds numbers without a dimension.
     """
     concept_groups = _STATEMENT_CONCEPTS if concept_groups is None else concept_groups
     try:
@@ -2251,8 +2396,12 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                  if re.fullmatch(r'\{https?://xbrl\.sec\.gov/dei/[^}]+\}EntityRegistrantName', record.get('concept') or '')]
         registrants = registrant_names(names)
         spelled_registrants = registrant_names(names, spellings=True) if extended else ()
+    if outside_notes:
+        from .page_continuation import in_note
     for table in tree.xpath('//table'):
         if _hidden(table) or table.xpath('.//table'):
+            continue
+        if outside_notes and in_note(table):
             continue
         kinds = _statement_headings(table) | _statement_headings(table, continued=True)
         heading_evidence = ()
@@ -2276,7 +2425,7 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
             try:
                 candidate = _segment_candidate(tree, table, kind, facts, html_ids, heading_evidence=heading_evidence,
                                                concept_groups=concept_groups, corroborate=corroborate,
-                                               label_columns=extended)
+                                               label_columns=extended, parent_detail=outside_notes)
             except TableExtractionError as exc:
                 if kind != 'cash_flow' or len(choices[kind]) != 1 or str(exc) != 'Statement segment has an unresolved column period':
                     raise
@@ -2294,6 +2443,10 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
         consolidated = [candidate for candidate in candidates if candidate.get('consolidated',
                         any('consolidated' in heading.split() for heading in candidate['headings']))]
         candidates = consolidated or candidates
+        if outside_notes:
+            # Another registrant's or a business group's statement is no candidate either.
+            from .page_continuation import with_own_scope
+            candidates = with_own_scope(candidates)
         required = set(range(len(concept_groups[kind])))
         complete = [candidate for candidate in candidates if candidate['axes']
                     and all(groups == required for groups in candidate['coverage'].values())]
@@ -2332,89 +2485,26 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                 # under the statement's title, or an untitled next page.
                 from .page_continuation import recover
                 recovered = recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups)
+                if recovered is None and kind == 'balance_sheet':
+                    from .balance_segments import whole_balance_sheet
+                    recovered = whole_balance_sheet(candidates)
             if recovered is None:
                 raise TableExtractionError(f'{kind}: ambiguous or incomplete physical statement segments')
             output.extend(recovered)
             continue
-        candidates = _include_cash_reconciliations(tree, candidates, facts, html_ids)
-        first = candidates[0]
-        if first['continued'] or not first['axes'] or len(first['scopes']) != 1:
-            raise TableExtractionError('Cash-flow segments lack a unique initial statement scope')
-        if any(set(json.loads(axis)) != {'startDate', 'endDate'} for axis in first['axes']):
-            raise TableExtractionError('Cash-flow statement segments require duration column headers')
-        headings = set(first['headings'])
-        previous_groups = set()
-        detail_scopes = set()
-        combined = {axis: set() for axis in first['axes']}
-        combined_evidence = {axis: {} for axis in first['axes']}
-        for index, candidate in enumerate(candidates):
-            is_reconciliation = candidate.get('role') == 'cash_reconciliation'
-            if not is_reconciliation:
-                headings &= candidate['headings']
-            wanted_axes = ([json.dumps({'instant': json.loads(axis)['endDate']}, sort_keys=True)
-                            for axis in first['axes']] if is_reconciliation else first['axes'])
-            same_scopes = candidate['scopes'] == first['scopes']
-            if not same_scopes and extended and index and not is_reconciliation:
-                # A later page may add dimensional detail to the statement's own scope.
-                added = _continuation_detail_scopes(first, candidate, facts)
-                if added is not None:
-                    same_scopes = True
-                    detail_scopes.update(added)
-            if (candidate['axes'] != wanted_axes or not same_scopes
-                    or (index and not _segments_adjacent(tree, candidates[index - 1]['table'], candidate['table'], kind,
-                                                        numbered_footer=bool(candidate.get('inherited_columns')))
-                        and not (extended and _page_furniture_between(tree, candidates[index - 1]['table'],
-                                                                      candidate['table'], kind)))):
-                raise TableExtractionError('Cash-flow segments disagree on periods, scope or adjacency')
-            if is_reconciliation:
-                continue
-            groups = set().union(*candidate['coverage'].values())
-            if index and not candidate['continued'] and (not groups or previous_groups & groups
-                                                        or max(previous_groups, default=-1) >= min(groups)):
-                raise TableExtractionError('Unmarked cash-flow segments do not establish ordered continuation')
-            previous_groups |= groups
-            for axis in combined:
-                combined[axis] |= candidate['coverage'][axis]
-                for group, identities in candidate['evidence'][axis].items():
-                    combined_evidence[axis].setdefault(group, []).extend(identities)
-        if not headings or any(groups != required for groups in combined.values()):
-            raise TableExtractionError('Cash-flow segments lack matching headings or complete combined evidence')
-        for candidate in candidates:
-            if candidate.get('role') != 'cash_reconciliation':
-                continue
-            for main_axis, reconciliation_axis in zip(first['axes'], candidate['axes']):
-                total = [ref for ref in candidate['references'][reconciliation_axis]
-                         if ref['concept'].endswith('}CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents')]
-                main_ids = combined_evidence[main_axis]['3']
-                if (len(total) != 1 or not any(facts[key]['concept'] == total[0]['concept'] for key in main_ids)
-                        or any(Decimal(facts[key]['raw_value']) != Decimal(total[0]['raw_value']) for key in main_ids
-                               if facts[key]['concept'] == total[0]['concept'])):
-                    raise TableExtractionError('Cash reconciliation total differs from the source cash-flow closing balance')
-        keys = [f'{kind}.segment_{index + 1}' for index in range(len(candidates))]
-        common = {'group_key': kind, 'segment_count': len(candidates), 'segment_keys': keys,
-                  'source_xpaths': [source_xpath(tree, candidate['table']) for candidate in candidates],
-                  'heading': sorted(headings)[0], 'column_periods': [json.loads(axis) for axis in first['axes']],
-                  'scope': json.loads(next(iter(first['scopes']))),
-                  'combined_concept_evidence': [
-                      {'period': json.loads(axis), 'groups': {group: sorted(set(identities))
-                       for group, identities in sorted(combined_evidence[axis].items())}}
-                      for axis in first['axes']]}
-        if detail_scopes:
-            common['detail_scopes'] = sorted(detail_scopes)
-        has_reconciliation = any(candidate.get('role') == 'cash_reconciliation' for candidate in candidates)
-        if has_reconciliation:
-            common['segment_roles'] = [candidate.get('role', 'statement') for candidate in candidates]
-            common['segment_column_periods'] = [[json.loads(axis) for axis in candidate['axes']] for candidate in candidates]
-        inherited_candidates = [candidate for candidate in candidates if candidate.get('inherited_columns')]
-        if inherited_candidates:
-            if len(candidates) != 2 or len(inherited_candidates) != 1:
-                raise TableExtractionError('Inherited cash headers require exactly two physical segments')
-            common['closure_evidence'] = inherited_candidates[0]['closure_evidence']
-        output.extend(StatementSegment(kind, key, candidate['table'], common | {'segment_index': index + 1}
-                      | ({'segment_role': candidate.get('role', 'statement')} if has_reconciliation else {})
-                      | ({'header_inheritance': {'source_table_key': keys[0], 'source_xpath': source_xpath(tree, first['table']),
-                                                'columns': candidate['inherited_columns']}} if candidate.get('inherited_columns') else {}))
-                      for index, (key, candidate) in enumerate(zip(keys, candidates)))
+        try:
+            output.extend(_joined_cash_segments(tree, kind, candidates, facts, html_ids, required, extended,
+                                                spelled_registrants))
+        except TableExtractionError:
+            # Only where the pages cannot be joined: a complete statement
+            # followed by pages that supplement it.
+            whole = None
+            if extended:
+                from .page_continuation import statement_before_supplements
+                whole = statement_before_supplements(tree, kind, candidates, required)
+            if whole is None:
+                raise
+            output.append(StatementSegment(kind, kind, whole['table']))
     if len({segment.element for segment in output}) != len(output):
         raise TableExtractionError('Different statements cannot reuse the same physical table')
     return tuple(output)
@@ -2625,6 +2715,110 @@ def select_statement_segments(tree, facts, *, cash_followers=False, corroborated
         _SELECTION_MEMO = outer
 
 
+def _printed_registrants(table, names):
+    """The registrants named in a table's own header rows or in the lines printed directly above it.
+
+    `names` maps each registrant's CIK to its DEI name. A line counts when
+    the whole of it is that name, in any spelling `joint_statements._company`
+    reads. The search ends at the first table or number above, two lines
+    above the statement's title, or after twelve lines.
+    """
+    from .joint_statements import _company, _text_leaves
+    from .statement_headings import statement_kind
+
+    found, titled = set(), False
+
+    def read(node):
+        nonlocal titled
+        for element in (node, *(_text_leaves(node) or ())):
+            value = text(element)
+            registrant = _company(value, names, spellings=True)
+            if registrant:
+                found.add(registrant)
+            titled = titled or statement_kind(value, wide=True, header_lines=True) is not None
+
+    for row in table.xpath('./tr|./thead/tr|./tbody/tr|./tfoot/tr')[:24]:
+        if any(local(node) == 'nonfraction' for node in row.iter()):
+            break
+        for cell in row.xpath('./td|./th'):
+            if text(cell):
+                read(cell)
+    node, blocks, beyond = table, 0, 0
+    for _ in range(4):
+        sibling = node.getprevious()
+        while sibling is not None and blocks < 12 and beyond < 2:
+            if text(sibling):
+                if (local(sibling) == 'table' or sibling.xpath('.//table')
+                        or any(local(child) == 'nonfraction' for child in sibling.iter())):
+                    return found
+                beyond += titled
+                read(sibling)
+                blocks += 1
+            sibling = sibling.getprevious()
+        node = node.getparent()
+        if node is None or blocks >= 12 or beyond >= 2 or local(node) in {'body', 'html', 'td', 'th', 'table'}:
+            break
+    return found
+
+
+def _parent_scope_segments(tree, facts, source_facts):
+    """The reporting parent's statements in a combined filing, by the scope of their numbers, or None.
+
+    tables-v3 corroborated layouts only, for a combined filing both joint
+    readings reject. Those readings find the parent's statements by the
+    registrant name printed with each title, and give up when a title prints
+    no name they can read, when a statement runs over two pages, or when a row
+    of the parent's own statement is tagged for another registrant (the share
+    capital of a dual-listed company).
+
+    The XBRL itself says which numbers are the parent's. Exactly one DEI
+    `EntityCentralIndexKey` fact must carry no dimension and be the entity of
+    its own context: the reporting parent. Its consolidated numbers carry no
+    dimension, while each other registrant's are tagged with that
+    registrant's member. The statements are then looked for outside the notes
+    with tables of another scope left out (`outside_notes`), as in a filing
+    of one registrant, and are accepted only if their core totals carry no
+    dimension, belong to one entity (`_validate_primary_scope`) and that
+    entity is the reporting parent. A table printed under the name of
+    another registrant of the filing is never taken.
+    """
+    dei = r'\{https?://xbrl\.sec\.gov/dei/[0-9]{4}\}'
+    registrants = [record for record in source_facts.values()
+                   if re.fullmatch(dei + 'EntityCentralIndexKey', record.get('concept') or '')
+                   and isinstance(record.get('entity'), dict) and re.fullmatch(r'[0-9]{1,10}', (record.get('raw_value') or '').strip())]
+    parents = {(record['entity'].get('scheme'), record['entity'].get('identifier')) for record in registrants
+               if not record['dimensions']
+               and (record['entity'].get('identifier') or '').zfill(10) == record['raw_value'].strip().zfill(10)}
+    if len(parents) != 1:
+        return None
+    parent = next(iter(parents))
+    names = {}
+    for record in registrants:
+        printed = {' '.join(other['raw_value'].split()) for other in source_facts.values()
+                   if other['context_ref'] == record['context_ref'] and re.fullmatch(dei + 'EntityRegistrantName', other.get('concept') or '')}
+        if len(printed) == 1:
+            names[record['raw_value'].strip().zfill(10)] = next(iter(printed))
+    parent_cik = (parent[1] or '').zfill(10)
+    for concept_groups in (_CORROBORATED_STATEMENT_CONCEPTS, _UTILITY_STATEMENT_CONCEPTS):
+        try:
+            selected = _validate_primary_scope(
+                _select_statement_segments_v2(tree, facts, concept_groups=concept_groups, corroborate=True, extended=True,
+                                              outside_notes=True), source_facts)
+        except TableExtractionError:
+            continue
+        for segment in selected:
+            if _printed_registrants(segment.element, names) - {parent_cik}:
+                return None
+            concepts = set().union(*_STATEMENT_CONCEPTS[segment.statement_type])
+            for element in segment.element.iter():
+                reference = source_facts.get(element.get('id')) if local(element) == 'nonfraction' and not _hidden(element) else None
+                if (reference is not None and reference['concept'].split('}', 1)[-1] in concepts
+                        and (reference['entity'].get('scheme'), reference['entity'].get('identifier')) != parent):
+                    return None
+        return selected
+    return None
+
+
 def _select_statement_segments(tree, facts, *, cash_followers, corroborated_layouts):
     from .joint_statements import select_joint_statement_segments
     source_facts = _segment_facts(facts)
@@ -2640,7 +2834,10 @@ def _select_statement_segments(tree, facts, *, cash_followers, corroborated_layo
         except TableExtractionError:
             selected = None
         if selected is None:
-            raise
+            # Last, the reporting parent's statements by the scope of their numbers.
+            selected = _parent_scope_segments(tree, facts, source_facts)
+            if selected is None:
+                raise
     if selected is not None:
         return selected
     try:
@@ -2651,11 +2848,14 @@ def _select_statement_segments(tree, facts, *, cash_followers, corroborated_layo
         if selected is None and corroborated_layouts:
             # Last, so a filing the two established selections accept keeps
             # its exact segments and proof.
-            for concept_groups, extended in ((_CORROBORATED_STATEMENT_CONCEPTS, False), (_CORROBORATED_STATEMENT_CONCEPTS, True),
-                                             (_UTILITY_STATEMENT_CONCEPTS, True)):
+            # Each later attempt reads more; the last two look outside the notes only.
+            for concept_groups, extended, outside_notes in (
+                    (_CORROBORATED_STATEMENT_CONCEPTS, False, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, False),
+                    (_UTILITY_STATEMENT_CONCEPTS, True, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, True),
+                    (_UTILITY_STATEMENT_CONCEPTS, True, True)):
                 try:
-                    selected = _select_statement_segments_v2(tree, facts, concept_groups=concept_groups,
-                                                             corroborate=True, extended=extended)
+                    selected = _select_statement_segments_v2(tree, facts, concept_groups=concept_groups, corroborate=True,
+                                                             extended=extended, outside_notes=outside_notes)
                     break
                 except TableExtractionError:
                     selected = None
