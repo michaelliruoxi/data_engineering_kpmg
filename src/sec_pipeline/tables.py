@@ -50,8 +50,19 @@ def expanded(name, ns):
     return '{' + ns[prefix] + '}' + value
 
 
-def xml_evidence(path, *, include_entity=False):
-    """Read evidence for linking; this is not the team's FactInput extractor."""
+SEC_COVER_NAMESPACES = 'http://xbrl.sec.gov/'
+
+
+def xml_evidence(path, *, include_entity=False, unidentified_cover_facts=False):
+    """Read evidence for linking; this is not the team's FactInput extractor.
+
+    Every fact needs an id, because a statement cell names its fact by it.
+    `unidentified_cover_facts` (tables-v3 only) leaves out a fact without an
+    id whose concept belongs to one of the SEC's own taxonomies (document and
+    entity information and the like): some filing agents give the cover-page
+    tags no id, and no statement line is tagged with such a concept. Any other
+    fact without an id is refused as before.
+    """
     tree = etree.parse(str(path), etree.XMLParser(resolve_entities=False, no_network=True))
     root = tree.getroot()
     contexts = {}
@@ -93,6 +104,9 @@ def xml_evidence(path, *, include_entity=False):
         if not f.get('contextRef'):
             continue
         fid = f.get('id')
+        if (unidentified_cover_facts and fid is None and isinstance(f.tag, str)
+                and (etree.QName(f).namespace or '').startswith(SEC_COVER_NAMESPACES)):
+            continue
         if not fid or fid in facts:
             raise TableExtractionError('Missing or duplicate XML fact ID')
         facts[fid] = {'xml_id': fid, 'concept': f.tag, 'context_ref': f.get('contextRef'),
@@ -100,6 +114,12 @@ def xml_evidence(path, *, include_entity=False):
                       'raw_value': text(f), 'is_nil': f.get(f'{{{XSI}}}nil') in ('true', '1'),
                       **contexts[f.get('contextRef')]}
     return facts
+
+
+def without_unidentified_cover_facts(facts):
+    """Fact records as `xml_evidence(..., unidentified_cover_facts=True)` reads their XML."""
+    return [fact for fact in facts if fact.source_reference.get('element_id') is not None
+            or not fact.concept_namespace.startswith(SEC_COVER_NAMESPACES)]
 
 
 def layout_grid(table, tree):
@@ -3095,7 +3115,7 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
     if tables_version not in {'tables-v1', 'tables-v2'}:
         raise TableExtractionError('Unsupported statement extraction version')
     advanced = tables_version == 'tables-v2'
-    facts = xml_evidence(xml_path, include_entity=advanced)
+    facts = xml_evidence(xml_path, include_entity=advanced, unidentified_cover_facts=corroborated_layouts)
     source_facts = facts
     if cash_followers and not advanced:
         raise TableExtractionError('Cash flow followers require the advanced statement selector')

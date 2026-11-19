@@ -119,8 +119,8 @@ def test_numeric_boundary_review_blocks_every_legacy_profile_without_faking_xml_
     checker_owner = adapter if profile is filing_adapter_v2 else profile
     original = checker_owner.check_inline_correspondence
 
-    def split_number(path, facts):
-        result = original(path, facts)
+    def split_number(path, facts, **options):
+        result = original(path, facts, **options)
         result["numeric_tag_boundary_issues"] = [{"occurrence_key": facts[0].occurrence_key,
                                                   "tagged_display": "206,376,66", "visible_display": "206,376,661"}]
         return result
