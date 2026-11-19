@@ -501,18 +501,25 @@ its table. The whole line must be made of these:
 
 | Line | Example |
 | --- | --- |
-| Units | "(Millions of Dollars, Except Share Data)", "(Unaudited; in millions, except per share amounts)" |
+| Units | "(Millions of Dollars, Except Share Data)", "(Unaudited; in millions, except per share amounts)", "(Dollar amounts in thousands)", "($ and shares in millions, except per share amounts)", "(Dollars in millions, shares in thousands)" |
 | Units naming the currency first | "(In US$ and in thousands, except share and per share data)" |
-| Periods and dates | "March 31, 2025 and December 31, 2024", "For the Three- and Nine-Months Ended September 30, 2025 and 2024", "For the Three Months Ended March 30, 2024 and April 1, 2023, respectively" |
+| Periods and dates | "March 31, 2025 and December 31, 2024", "For the Three- and Nine-Months Ended September 30, 2025 and 2024", "For the Three Months Ended March 30, 2024 and April 1, 2023, respectively", "Fiscal Years Ended in December" |
 | The registrant's name, in either spelling of its legal form | "W. R. Berkley Corporation and Subsidiaries" for the DEI name "W. R. BERKLEY CORP"; "Emerson Electric Co. & Subsidiaries" |
-| Running page headers, rules and page numbers | "Table of Contents", "Item 1. Financial Statements", "36" |
+| Running page headers, rules and page numbers | "Table of Contents", "Index to Consolidated Financial Statements and Schedules", "Item 1. Financial Statements", "36" |
+| A reference to a note, in parentheses of its own | "(Note 1)" after the units of Johnson & Johnson's statements, "(Notes 1 and 2)" |
 
-A line with any other word still ends the search. The same reading accepts a
-title in the table's own header row beside such text; a title whose words are
-printed without a space ("CONSOLIDATEDBALANCE SHEETS"); one carrying a footnote
-marker ("Statements of Cash Flows(1)"); a title printed over two lines where
-the break falls inside it ("... Statements of Operations" / "and Comprehensive
-Income (Loss)"); and the cash flow statement titled "Consolidated Cash Flows".
+A line with any other word still ends the search: "Note 1" without the
+parentheses, or "(See Note 1)", is the heading or the text of a note. The same
+reading accepts a title in the table's own header row beside such text; a
+title whose words are printed without a space ("CONSOLIDATEDBALANCE SHEETS");
+one carrying a footnote marker ("Statements of Cash Flows(1)"); a title printed
+over two lines where the break falls inside it ("... Statements of Operations"
+/ "and Comprehensive Income (Loss)"); the cash flow statement titled
+"Consolidated Cash Flows"; a title that ends with its period ("Consolidated
+Balance Sheets, as of December 31", "Consolidated Results of Operations for the
+Years Ended December 31"), where the words dropped are period words and
+numbers that name a month and what remains is itself a complete title; and the
+balance sheet titled "Consolidated Financial Position" (Caterpillar).
 
 **A balance sheet printed as two tables.** The established rules join an
 assets table and a liabilities-and-equity table only when the second has no
@@ -522,7 +529,10 @@ on the next page". The last attempt also accepts the pair
 
 - both tables carry the same title and the same dates, for one entity;
 - nothing but footnotes, page furniture and the repeated title stands between
-  them: no table with a number, no other statement's title, no note heading;
+  them: no table with a number, no other statement's title, no note heading.
+  "Note 3." is a note heading where it begins a line (a paragraph, a cell, or
+  the text after a table or a line break); inside a footnote's sentence ("For
+  further details, see Note 3.") it is a reference and may stand between;
 - the first holds the assets (and at most the liabilities), the second the
   liabilities and equity;
 - for every date, the one undimensioned `Assets` fact of the first equals the
