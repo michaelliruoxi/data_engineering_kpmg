@@ -17,7 +17,7 @@ import re
 
 from lxml import etree
 
-from .fact_extraction import XBRLI, _Reject, _context, _inline_number, _is_nil, _parse, _resolve, _unit
+from .fact_extraction import LINK, XBRLI, XLINK, _Reject, _context, _inline_number, _is_nil, _parse, _resolve, _unit
 from .source_cells_v3 import (
     INLINE_NAMESPACES, SourceBindings, SourceCellError, _visible_marker, fact_reference,
 )
@@ -49,6 +49,23 @@ def _gaap(fact, names=None):
             and (names is None or fact.concept_name in names))
 
 
+_OWN_SCHEMA = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*-((?:19|20)\d{6})\.xsd')
+_OWN_NAMESPACE = re.compile(r'https?://[^/\s]+/((?:19|20)\d{6})')
+
+
+def _company_defined(fact, source):
+    """The concept's namespace is the filer's own, by its form and its date.
+
+    A filer's own namespace is ``http://<company>/<date>`` and its schema the
+    file ``<name>-<date>.xsd``; no standard taxonomy has that form. The date
+    must be that of the one schema the page references. A concept named like
+    a cash balance is left out, as the us-gaap cash totals are.
+    """
+    own = _OWN_NAMESPACE.fullmatch(fact.concept_namespace)
+    return (bool(own) and own.group(1) == source.own_schema_date
+            and not fact.concept_name.startswith(('Cash', 'RestrictedCash')))
+
+
 def _scope(fact):
     entity = fact.source_reference.get('entity')
     unit = fact.unit
@@ -71,6 +88,9 @@ class ReviewSource:
         # Parse unchanged original XHTML separately to use namespace-aware,
         # exact transformation arithmetic; do not construct a synthetic DOM.
         root = _parse(source, 'V4 inline period-review source')
+        schemas = [node.get(f'{{{XLINK}}}href') or '' for node in root.iter(f'{{{LINK}}}schemaRef')]
+        own = _OWN_SCHEMA.fullmatch(schemas[0]) if len(schemas) == 1 else None
+        self.own_schema_date = own.group(1) if own else None
         for node in root.iter():
             if not isinstance(node.tag, str):
                 continue
@@ -187,7 +207,11 @@ def _issue(table, cell, source):
     if start >= end:
         return None
     fact, ref, numeric_xpath = source.direct(table, cell)
-    if fact.period_kind != 'instant' or not _gaap(fact):
+    # A balance tag on a concept of the company's own is a tagging error like
+    # one on a us-gaap concept. Only the flagged profile records it; the review
+    # profiles and the database's review scope stay with us-gaap.
+    if fact.period_kind != 'instant' or not (
+            _gaap(fact) or (source.tagging_defects and _company_defined(fact, source))):
         return None
     scope = _scope(fact)
     proof, endings = _core_proof(table, column, scope, source)

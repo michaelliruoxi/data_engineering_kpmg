@@ -463,6 +463,22 @@ HTML and XML:
 | `instant_context_under_duration_header` | A flow under a duration column | A date instead of a period |
 | `printed_number_outside_tag` | A number such as `16.7` or `206,376,661` | Only part of it, such as `16` or `206,376,66` (cover page or notes, never a statement cell) |
 
+`instant_context_under_duration_header` needs one visible tag in the cell, dated
+the column's last day, in one currency and without a dimension, on a row that
+names neither an opening nor a closing balance, in a table that itself holds the
+three activity totals and the closing cash balance of that column for the same
+entity and currency. The tag's concept is a us-gaap concept other than the cash
+totals, or a concept the company defined itself, such as Nucor's
+`nue:ChangeInAccruedPlantAndEquipmentPurchases` or Keurig Dr Pepper's
+`kdp:AccruedExciseTaxOnNetShareRepurchases`. A concept counts as the company's
+own only when its namespace has the form `http://<company>/<date>` and the page
+references exactly one schema, a local file `<name>-<date>.xsd` with the same
+date; no standard taxonomy has that form. Its name must not begin with `Cash`
+or `RestrictedCash`. A concept of any other taxonomy, a page with no or several
+schema references, a tag with a dimension or on another date, and a cell with
+two tags still reject the filing. The review profiles V4 to V7 keep to us-gaap
+concepts, as does the database's review scope, so their output is unchanged.
+
 A column's period is established from its printed header and the fiscal calendar
 as before, with two additions that only V8 makes: all but one or two tags agree
 (outliers must stay under a quarter of the agreeing tags), or every tag starts

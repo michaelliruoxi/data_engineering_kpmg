@@ -236,3 +236,26 @@ def test_period_conflicts_convert_to_flagged_cells_unless_the_number_is_partiall
     assert not {'source_fact_references', 'quality_issues', 'quality_issue_keys'} & set(cell)
     with pytest.raises(TaggingDefectError, match='partially tagged'):
         flag_table_cells([table], source, [fact], version='tables-v8', boundary_records=[{'inline_id': 'F1'}])
+
+
+def test_a_balance_tag_on_the_companys_own_concept_becomes_a_recorded_defect():
+    from sec_pipeline.source_cells_v4 import transform_tables
+    from sec_pipeline.tagging_defects import flag_table_cells
+    from tests.test_source_cells_v4 import OWN, fixture
+    table, facts, source = fixture(own=OWN)
+    reviewed = transform_tables([table], source, facts, tagging_defects=True)
+    flagged, records = flag_table_cells(reviewed, source, facts, version='tables-v8')
+    cell = flagged[0].structure['rows'][4][1]
+    assert cell['classification'] == 'source_defect' and cell['fact_references'] == []
+    assert cell['display_text'] == '24' and cell['tagging_defect']['inline_id'] == 'review'
+    [record] = records
+    assert record['code'] == 'instant_context_under_duration_header'
+    assert record['observed']['concept'] == '{' + OWN + '}ChangeInAccruedPlantAndEquipmentPurchases'
+    assert record['observed']['period'] == {'instant': '2026-03-31'}
+    assert record['expected'] == {'period': {'startDate': '2026-01-01', 'endDate': '2026-03-31'}, 'row_period_kind': 'duration'}
+    assert validate_records(records, flagged) is True
+    # Without the page's own schema reference the cell stays unresolved and the filing is rejected.
+    table, facts, source = fixture(own=OWN, schemas=())
+    reviewed = transform_tables([table], source, facts, tagging_defects=True)
+    flagged, records = flag_table_cells(reviewed, source, facts, version='tables-v8')
+    assert flagged[0].structure['rows'][4][1]['classification'] == 'unresolved' and records == ()
