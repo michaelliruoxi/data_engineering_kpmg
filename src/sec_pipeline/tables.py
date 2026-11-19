@@ -955,6 +955,8 @@ def _printed_period_tokens(headers):
     value = _period_text(re.sub(r'([a-z])([A-Z])', r'\1 \2', ' '.join(headers)))
     # "March 30,2025": a date printed without a space after its comma.
     value = re.sub(r'\b(\d{1,2}),(?=(?:19|20)\d\d\b)', r'\1, ', value)
+    # "2024As Adjusted": a year printed without a space before the next word.
+    value = re.sub(r'\b((?:19|20)\d\d)(?=[a-z])', r'\1 ', value)
     value = re.sub(r'\b(years?|months?|quarters?|weeks?|periods?)-(ended|ending)\b', r'\1 \2', value)
     value = re.sub(r'\b(\d+)[-\s]+(months?|weeks?|quarters?)\b', r'\1 \2', value)
     if re.search(r'\b\d{1,2}\s*(?:and|or|&|/)\s*\d{1,2} (?:months?|weeks?|quarters?)\b', value):
@@ -987,11 +989,46 @@ def _printed_period_tokens(headers):
             'months': next(iter(months), None), 'weeks': next(iter(weeks), None), 'year_to_date': year_to_date}
 
 
+def _labelled_years(end, fiscal_year_offset):
+    """The years a header may print for a period that ends on `end`.
+
+    The end year; the year before it when the filing's own DEI facts name the
+    fiscal year that way; and the year before it for a period that ends in
+    the first week of January, which lies in that earlier year but for those
+    days ("fiscal 2022" of a 52-week year that ended on January 1, 2023).
+    """
+    years = {end.year, end.year - 1} if fiscal_year_offset == 1 else {end.year}
+    if end.month == 1 and end.day <= 7:
+        years.add(end.year - 1)
+    return years
+
+
+def _fiscal_year_boundaries(facts):
+    """The days on which this filing itself shows a fiscal period to close.
+
+    A day is one when an undimensioned fact covers 52 or 53 weeks or a whole
+    year ending on it, or covers a period that begins on the day after it.
+    """
+    days = set()
+    for record in facts.values():
+        period = record.get('period') or {}
+        if record.get('dimensions') or set(period) != {'startDate', 'endDate'}:
+            continue
+        try:
+            start, end = date.fromisoformat(period['startDate']), date.fromisoformat(period['endDate'])
+        except (TypeError, ValueError):
+            continue
+        days.add((start - timedelta(days=1)).isoformat())
+        if 363 <= (end - start).days + 1 <= 372:
+            days.add(end.isoformat())
+    return days
+
+
 def _printed_tokens_agree(tokens, period, fiscal_year_offset):
     """Whether everything the header prints is true of the tagged period.
 
-    The year must be printed and be the period's end year (or the fiscal year
-    the filing's own DEI facts name for it). A printed date must be the end
+    The year must be printed and be one `_labelled_years` allows: the period's
+    end year, or the fiscal year the filing names for it. A printed date must be the end
     date, a printed month the end month, and a printed duration the period's
     length: within ten days for months, which admits 13- and 14-week quarters,
     and within four days for weeks. A fiscal period that starts on a fixed
@@ -1001,7 +1038,7 @@ def _printed_tokens_agree(tokens, period, fiscal_year_offset):
     if tokens is None or not tokens['years']:
         return False
     end = date.fromisoformat(period.get('endDate', period.get('instant')))
-    labelled = {end.year, end.year - 1} if fiscal_year_offset == 1 else {end.year}
+    labelled = _labelled_years(end, fiscal_year_offset)
     if tokens['full_dates']:
         if tokens['full_dates'] != {end} or not tokens['years'] <= labelled:
             return False
@@ -1064,7 +1101,7 @@ def _caption_agrees(own, caption, period, fiscal_year_offset):
     if own is None or caption is None or len(own['years']) != 1:
         return False
     end = date.fromisoformat(period.get('endDate', period.get('instant')))
-    labelled = {end.year, end.year - 1} if fiscal_year_offset == 1 else {end.year}
+    labelled = _labelled_years(end, fiscal_year_offset)
     if (not own['years'] <= labelled or not own['full_dates'] <= {end}
             or not own['month_days'] <= {(end.month, end.day)} or own['month_only'] - {end.month}):
         return False
@@ -1089,7 +1126,24 @@ def _caption_agrees(own, caption, period, fiscal_year_offset):
             and all(abs(days - 7 * value) <= 4 for value in weeks))
 
 
-def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset, captions=()):
+def _without_markers(cells, values):
+    """Header texts without superscript footnote markers ("2026" with a raised "1" reads "20261")."""
+    def pieces(node):
+        if local(node) == 'sup':
+            return
+        if node.text:
+            yield node.text
+        for child in node:
+            yield from pieces(child)
+            if child.tail:
+                yield child.tail
+
+    plain = {cell['display_text']: ' '.join(''.join(pieces(cell['_element'])).split())
+             for cell in cells if any(local(node) == 'sup' for node in cell['_element'].iter())}
+    return [plain.get(value, value) for value in values] if plain else values
+
+
+def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset, captions=(), boundaries=None):
     """Accept the tagged period of columns whose printed header cannot be parsed alone.
 
     Every tagged number in such a column already carries one period, shared by
@@ -1104,6 +1158,10 @@ def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_ye
       length ending one year earlier or later: the comparative column of a
       caption that physically spans only its neighbour.
     - A balance column prints the tagged date in full.
+    - A balance column prints only a fiscal year, the tagged date falls in
+      the first week of the January after it, and the filing itself shows a
+      fiscal period to close on that date (`boundaries`, a callable giving
+      `_fiscal_year_boundaries`).
     - A caption shared by the columns prints the period's end and length and
       the column prints its year (`_caption_agrees`). A caption is a header
       cell naming two or more years, or one of `captions`, the lines printed
@@ -1137,6 +1195,18 @@ def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_ye
               and (date.fromisoformat(candidate['startDate']) - timedelta(days=1)).isoformat() in balance_dates):
             accept(column, 'year_to_date_from_reported_balance')
 
+    for column in sorted(deferred):
+        candidate, _, headers = deferred[column]
+        if column in accepted or set(candidate) != {'instant'} or boundaries is None:
+            continue
+        tokens = _printed_period_tokens(headers)
+        end = date.fromisoformat(candidate['instant'])
+        if (tokens is not None and tokens['years'] == {end.year - 1} and end.month == 1 and end.day <= 7
+                and not (tokens['full_dates'] or tokens['month_days'] or tokens['month_only'] or tokens['year_to_date'])
+                and tokens['months'] in (None, 12) and tokens['weeks'] is None
+                and candidate['instant'] in boundaries()):
+            accept(column, 'fiscal_year_end', printed_year=end.year - 1)
+
     def comparatives():
         changed = True
         while pending and changed:
@@ -1167,6 +1237,9 @@ def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_ye
     column_years = {year for tokens in own.values() if tokens is not None for year in tokens['years']}
     column_years.update(date.fromisoformat(period.get('endDate', period.get('instant'))).year
                         for period in periods.values() if period is not None)
+    # A column headed by its fiscal year alone still shows the year its tags end in.
+    column_years.update(date.fromisoformat(candidate.get('endDate', candidate.get('instant'))).year
+                        for candidate, _, _ in deferred.values())
     for column in sorted(deferred):
         if column in accepted:
             continue
@@ -1207,6 +1280,32 @@ def _endpoint_balance_period(reference, preceding_text, header):
     if instant == opening and not re.search(r'\b(?:end|ending|closing)\b', words):
         return {'instant': instant}
     return None
+
+
+_PERIOD_END_LABEL = re.compile(
+    r'\b(?:at|as of) (?:the )?(?:(?:period|year|quarter)[- ]end|end of (?:the )?(?:fiscal )?(?:period|year|quarter))\b')
+
+
+def _labelled_period_end(row_label, column_period):
+    """Whether a row label dates its number at the last day of the column's period.
+
+    tables-v3 corroborated layouts only. An income statement may close with
+    a balance, usually the shares outstanding, in a row that says so:
+    "Shares outstanding at March 31," or "Actual shares outstanding at period
+    end". The label must name the period's end in those words or by the month
+    and day of the column's last day, and the year too if it prints one. The
+    caller still requires the tag's own date to be that day.
+    """
+    if set(column_period) != {'startDate', 'endDate'} or not isinstance(row_label, str):
+        return False
+    label = ' '.join(row_label.lower().split())
+    if _PERIOD_END_LABEL.search(label):
+        return True
+    match = re.search(r'\b(?:at|as of) (' + _MONTH_NAMES + r')\.? (\d{1,2})(?:, ?((?:19|20)\d\d))?,?$', label)
+    if match is None:
+        return False
+    end = date.fromisoformat(column_period['endDate'])
+    return (_MONTH_NUMBERS[match[1]], int(match[2])) == (end.month, end.day) and match[3] in (None, str(end.year))
 
 
 def _displayed_header_rows(rows, first_data):
@@ -1261,6 +1360,51 @@ def _displayed_header_rows(rows, first_data):
             moved = moved or (column, placed[-1]['colspan']) != (cell['column'], cell['colspan'])
         result.append(placed)
     return result if moved else None
+
+
+_PRINTED = '​﻿\xa0 \t\r\n'
+_NOTE_NUMBERS = r'[0-9]{1,2}[A-Za-z]?(?:\s*(?:,|&|and)\s*[0-9]{1,2}[A-Za-z]?)*'
+
+
+def _label_columns(rows, first_data, periods):
+    """Columns right of the first that hold the rows' labels (tables-v3 corroborated layouts only).
+
+    A statement may leave its first grid column empty and print every row
+    label in the next one. A label such as "Property, plant and equipment,
+    net of accumulated depreciation of $5,909 and $5,788" then carries the
+    tagged amounts of both balance dates in a column that has no period.
+
+    A column qualifies when the header gives it no period and every cell
+    printed in it below the header is the first printed cell of its row and
+    reads as words. A column that prints a bare number anywhere, or anything
+    after another printed cell, is not a label column.
+    """
+    printed = {}
+    for row in rows[first_data:]:
+        first = next((cell for cell in row if cell['display_text'].strip(_PRINTED)), None)
+        for cell in row:
+            if cell['column'] > 0 and cell['display_text'].strip(_PRINTED):
+                printed.setdefault(cell['column'], []).append(
+                    cell is first and bool(re.search(r'[A-Za-z]{3}', cell['display_text'])))
+    return frozenset(column for column, labels in printed.items() if periods.get(column) is None and all(labels))
+
+
+def _note_reference(cell, tagged_columns):
+    """An untagged cell that only points to a note (tables-v3 corroborated layouts only).
+
+    The cell stands in a column that the header gives no period and that
+    holds no tagged number anywhere. It prints either the reference in words
+    ("(Note 3)", "Notes 6 and 7") or, under a heading that is exactly "Note"
+    or "Notes", the note numbers alone ("13", "4, 5").
+    """
+    if cell['column_period'] is not None or cell['column'] in tagged_columns:
+        return False
+    value = cell['display_text'].strip(_PRINTED)
+    if re.fullmatch(r'\(?\s*(?:see\s+)?notes?\s+' + _NOTE_NUMBERS + r'\s*\)?', value, re.I):
+        return True
+    headings = [heading.strip(_PRINTED) for heading in cell['column_headings'] if heading.strip(_PRINTED)]
+    return (bool(headings) and all(re.fullmatch(r'notes?', heading, re.I) for heading in headings)
+            and bool(re.fullmatch(_NOTE_NUMBERS, value)))
 
 
 def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, tagging_defects=False,
@@ -1324,7 +1468,8 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, ta
             # A column whose printed header already gives the tagged period
             # needs nothing, and must keep its recorded evidence unchanged.
             if corroborate and candidate not in (resolved, periods[column]):
-                deferred[column] = (candidate, references, revised)
+                deferred[column] = (candidate, references, _without_markers(
+                    _column_header_cells(rows, first_data, column, advanced=advanced), revised))
         if resolved is None and tagging_defects and advanced:
             flagged = _tagging_defect_candidate(references, balance_dates, headers[column], advanced=advanced,
                                                 fiscal_year_offset=fiscal_year_offset)
@@ -1348,7 +1493,8 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, ta
     if deferred:
         table = next(cell for row in rows for cell in row)['_element'].xpath('ancestor::table[1]')[0]
         captions = _memo(('caption_lines', table), lambda: tuple(_caption_lines(table)))
-        _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset, captions)
+        _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset, captions,
+                             boundaries=lambda: _fiscal_year_boundaries(facts))
     # A column whose tags all carry one period that its header, read from the
     # physical grid, still contradicts: read the header rows where the page
     # displays them. The reading is taken only when every tagged column of the
@@ -1418,7 +1564,7 @@ def _segment_heading_signatures(table, kind):
 
 
 def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=None, heading_evidence=(), concept_groups=None,
-                       corroborate=False):
+                       corroborate=False, label_columns=False):
     concept_groups = _STATEMENT_CONCEPTS if concept_groups is None else concept_groups
     rows, _ = layout_grid(table, tree)
     first = next((index for index, row in enumerate(rows) if any(
@@ -1431,10 +1577,13 @@ def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=
             if periods.get(column) is not None:
                 raise TableExtractionError('Inherited headers must not replace a displayed column period')
             periods[column] = period
+    # `label_columns` (tables-v3 `extended` selection only): the numbers a row
+    # label carries are no statement column, as in the first grid column.
+    labels = _label_columns(rows, first, periods) if label_columns else frozenset()
     axes, coverage, evidence, scopes, references = [], {}, {}, set(), {}
     for row in rows[first:]:
         for cell in row:
-            if cell['column'] == 0:
+            if cell['column'] == 0 or cell['column'] in labels:
                 continue
             period = periods.get(cell['column'])
             elements = [element for element in cell['_element'].iter()
@@ -1526,6 +1675,71 @@ def _named_cash_endpoint(concept, row_label, column_period):
     if named == (end.month, end.day) and year in (None, end.year):
         candidates.append(end.isoformat())
     return {'instant': candidates[0]} if len(candidates) == 1 else None
+
+
+def _summed_cash_components(rows, first_data, facts, html_ids):
+    """Balances that add up to a total cash balance printed directly below them.
+
+    tables-v3 corroborated layouts only. A cash flow statement may close with
+    the components of its cash balance: "Cash and cash equivalents", "Funds
+    held on behalf of clients", then the total. Such a component can be
+    tagged with a concept whose name does not say cash. It is proved here by
+    the page's own arithmetic instead: the rows directly above a row tagged
+    with a total cash concept, each holding one balance per date of that
+    row, add up exactly to the total for every date. A row of other dates, a
+    flow, a heading or a second number in a cell ends the block, and fewer
+    than two component rows prove nothing.
+
+    Returns {component xml_id: total xml_id}.
+    """
+    def balances(row):
+        """One balance per date in the row, as {date: (fact, xml ids)}; {} without numbers; None otherwise."""
+        found = {}
+        for cell in row:
+            nodes = [node for node in cell['_element'].iter() if local(node) == 'nonfraction' and not _hidden(node)]
+            if not nodes:
+                continue
+            if cell['column'] == 0:
+                return None
+            cell_facts = [facts.get(node.get('id')) for node in nodes]
+            if any(fact is None or html_ids.get(fact['xml_id']) != 1 or fact['is_nil'] or set(fact['period']) != {'instant'}
+                   for fact in cell_facts):
+                return None
+            first = cell_facts[0]
+            # A cell may tag its one printed number twice; both tags must then say the same.
+            if any(any(fact[key] != first[key] for key in ('concept', 'period', 'unit', 'dimensions', 'raw_value'))
+                   for fact in cell_facts[1:]) or first['period']['instant'] in found:
+                return None
+            try:
+                amount = Decimal(first['raw_value'])
+            except (InvalidOperation, TypeError):
+                return None
+            if not amount.is_finite():
+                return None
+            found[first['period']['instant']] = (first, amount, [fact['xml_id'] for fact in cell_facts])
+        return found
+
+    proven = {}
+    for index in range(first_data, len(rows)):
+        totals = balances(rows[index])
+        if not totals or any(fact['dimensions'] or not re.fullmatch(
+                r'\{https?://fasb\.org/us-gaap/[^}]+\}(?:' + '|'.join(_CASH_TOTAL_CONCEPTS) + ')', fact['concept'])
+                for fact, _, _ in totals.values()):
+            continue
+        parts = []
+        for row in reversed(rows[first_data:index]):
+            found = balances(row)
+            if found == {} and not any(cell['display_text'].strip(_PRINTED) for cell in row):
+                continue
+            if (not found or set(found) != set(totals)
+                    or any(fact['unit'] != totals[day][0]['unit'] or fact['dimensions'] for day, (fact, _, _) in found.items())):
+                break
+            parts.append(found)
+        if len(parts) >= 2 and all(sum(part[day][1] for part in parts) == total for day, (_, total, _) in totals.items()):
+            for part in parts:
+                for day, (_, _, identities) in part.items():
+                    proven.update({identity: totals[day][2][0] for identity in identities})
+    return proven
 
 
 def _cash_reconciliation_candidate(tree, table, facts, html_ids):
@@ -2061,7 +2275,8 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                 continue
             try:
                 candidate = _segment_candidate(tree, table, kind, facts, html_ids, heading_evidence=heading_evidence,
-                                               concept_groups=concept_groups, corroborate=corroborate)
+                                               concept_groups=concept_groups, corroborate=corroborate,
+                                               label_columns=extended)
             except TableExtractionError as exc:
                 if kind != 'cash_flow' or len(choices[kind]) != 1 or str(exc) != 'Statement segment has an unresolved column period':
                     raise
@@ -2525,7 +2740,12 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
     a balance dated at an endpoint of a cash-flow column
     (`_endpoint_balance_period`), and header rows that give every tagged
     column its period only where the page displays them
-    (`_displayed_header_rows`). It changes no cell that resolves without it.
+    (`_displayed_header_rows`). It also reads row labels printed right of an
+    empty first column (`_label_columns`), cells that only point to a note
+    (`_note_reference`), a balance an income statement row dates at the
+    period's end (`_labelled_period_end`), and the components of a cash
+    balance that add up to the total printed below them
+    (`_summed_cash_components`). It changes no cell that resolves without it.
     """
     if html_document_id == xml_document_id:
         raise TableExtractionError('HTML and XML must have distinct source IDs')
@@ -2576,6 +2796,18 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
         standard_cash_alias = (segment.group or {}).get('standard_cash_alias')
         if joint_statement:
             column_periods.update({int(column): period for column, period in joint_statement['column_periods'].items()})
+        # tables-v3 corroborated layouts only: row labels printed right of an
+        # empty first column, and the columns that hold a tagged number.
+        label_columns = tagged_columns = frozenset()
+        if corroborated_layouts and advanced:
+            label_columns = _label_columns(rows, first_data, column_periods)
+            tagged_columns = frozenset(cell['column'] for row in rows[first_data:] for cell in row
+                                       if any(local(node) == 'nonfraction' for node in cell['_element'].iter()))
+        # tables-v3 corroborated layouts only: components of a cash balance
+        # proved by the total printed below them, and those a cell relied on.
+        summed_cash = (_summed_cash_components(rows, first_data, facts, html_ids)
+                       if corroborated_layouts and advanced and kind == 'cash_flow' else {})
+        summed_used = {}
         cash_bindings, cash_reconciliations = {}, []
         if advanced and kind == 'cash_flow' and not reconciliation_segment and not closing_reconciliation:
             from .cash_reconciliation import bind_cash_reconciliations
@@ -2643,7 +2875,7 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                                 'method': 'inline_id', 'inline_xpath': inline_source_xpath(tree, f),
                                 'scale': f.get('scale', '0'), 'inline_sign': f.get('sign'),
                                 'format': f.get('format')})
-                        if cell['column'] > 0:
+                        if cell['column'] > 0 and cell['column'] not in label_columns:
                             header = cell['column_period']
                             if header is None:
                                 raise TableExtractionError('Unresolved column period')
@@ -2694,11 +2926,19 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                                             ref, ' '.join(other['display_text'] for other in row
                                                           if other['column'] < cell['column']), header) is not None:
                                         wanted = dict(ref['period'])
+                                    elif (ref['xml_id'] in summed_cash and ref['period'] == {
+                                            'instant': header.get('endDate', header.get('instant'))}):
+                                        wanted = dict(ref['period'])
+                                        summed_used.setdefault(summed_cash[ref['xml_id']], []).append(ref['xml_id'])
                                     else:
                                         raise TableExtractionError('Unexpected instant in cash-flow row')
+                                elif (corroborated_layouts and kind == 'income_statement' and 'instant' in ref['period']
+                                      and _labelled_period_end(row_label, header)):
+                                    wanted = {'instant': header['endDate']}
                                 if ref['period'] != wanted:
                                     raise TableExtractionError('Fact period differs from column heading')
-                        cell['classification'] = 'resolved_label' if cell['column'] == 0 else 'resolved'
+                        cell['classification'] = ('resolved_label' if cell['column'] == 0 or cell['column'] in label_columns
+                                                  else 'resolved')
                         row_refs.extend(cell['fact_references'])
                     except TableExtractionError as exc:
                         cell['fact_references'] = []
@@ -2707,6 +2947,11 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                         or re.fullmatch(r'[-–—]', value)):
                     if any(re.fullmatch(r'notereferencenumbers?', re.sub(r'\s+', '', heading), re.I)
                            for heading in cell['column_headings']):
+                        cell['classification'] = 'label'
+                    elif cell['column'] in label_columns or (corroborated_layouts and _note_reference(cell, tagged_columns)):
+                        # A row label that prints a digit ("... (Note 12)"), or a
+                        # reference to a note. A label without a digit keeps the
+                        # classification it always had in such a column.
                         cell['classification'] = 'label'
                     else:
                         cell['classification'], cell['unresolved_reason'] = 'unresolved', 'untagged_financial_cell'
@@ -2744,6 +2989,10 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
             structure['cash_reconciliation_evidence'] = cash_reconciliations
         if reconciliation_sections:
             structure['cash_reconciliation_sections'] = reconciliation_sections
+        if summed_used:
+            structure['cash_component_sums'] = [
+                {'verification_version': 'cash-component-sum-v1', 'total_xml_id': total, 'component_xml_ids': sorted(identities)}
+                for total, identities in sorted(summed_used.items())]
         if segment.group is not None:
             structure['statement_group'] = segment.group
         # Keep physical columns, parentheses, dollars and empty cells in TSV.

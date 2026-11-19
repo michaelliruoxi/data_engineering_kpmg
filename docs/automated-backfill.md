@@ -403,12 +403,21 @@ Saturday ("Twenty-Six Week Periods Ended March 29, 2025", tagged from October
 | `year_to_date_from_reported_balance` | "Year to Date / 2025" | The period starts the day after a balance date the filing reports |
 | `comparative_column` | "2024" or "March 30, 2024" beside a fully captioned column | Another column of the table has an established period of the same length (within seven days) ending one year earlier or later |
 | `printed_balance_date` | "Fiscal Year Ended / December 28, 2025" on a balance sheet | The tagged date is printed in full |
+| `fiscal_year_end` | "At the End of Year / 2024", "Fiscal Year End / 2025" on a balance sheet, tagged January 3 of the next year | The header prints only that year; the tagged date falls in the first seven days of the following January; and the filing itself shows a fiscal period to close on that date: an undimensioned fact covers 52 or 53 weeks or a whole year ending on it, or a period beginning the day after it |
 | `caption_duration`, `caption_balance_date` | "2025" under the line "For the quarters ended March 31, 2025 and 2024"; "March 31, 2025" under "Three months ended March 31, 2025 and 2024"; "2025" under "October 31, 2025 and 2024" on a balance sheet | A caption shared by the columns prints the period's end, as a full date or as a month and day beside that year, and for a duration its length; the column prints exactly one year, the period's end year; and the table has a column for every year the caption names |
 
 A caption is a header cell that names two or more years, or a line printed
 between the statement's title and the table (the lines listed under "Lines
 around a title" below; any other text ends the search). A caption for a
 balance column must print no length.
+
+Since November 19, 2026 three printed forms of a year are also read. A period
+that ends in the first seven days of January may be headed by the year before:
+"Fiscal Year / 2022" for the 52 weeks ended January 1, 2023. A year printed
+without a space before the next word is that year ("2024As Adjusted"). And a
+footnote marker raised beside a year (`2026<sup>1</sup>`, which reads "20261")
+is left out when the header is compared with the tags; the header cell itself
+keeps the text the page prints.
 
 The accepted period is the tagged one, and the proof is stored in the table's
 `column_period_evidence` with method `corroborated_printed_header`. A header
@@ -424,6 +433,30 @@ before the column's first day and the row names no closing balance. A balance
 on any other date stays unresolved. So does any other balance concept: a
 liability such as dividends payable on a supplemental row that reports a flow
 is a company tagging error, which only `tables-v8` records.
+
+**Components of a cash balance, proved by their total.** A cash flow statement
+may close with the components of its cash balance, and a component can be
+tagged with a concept whose name does not say cash: "Funds held on behalf of
+clients" (`FundsHeldForClients`), or performance bonds held as restricted cash
+(`GoodFaithAndMarginDepositsWithBrokerDealers`). Since November 19, 2026 such
+a balance is accepted when the page's own arithmetic proves it
+(`cash-component-sum-v1`):
+
+- a row is tagged with a total cash concept
+  (`CashAndCashEquivalentsAtCarryingValue`,
+  `CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents` or its
+  disposal-group form), without a dimension;
+- the rows directly above it each hold exactly one balance for every date of
+  that row, in the same unit and without a dimension; a row of other dates, a
+  flow, a heading or a cell with two different tags ends the block;
+- there are at least two such rows, and for every date they add up exactly to
+  the total;
+- the component's date is the last day of its column's period, or the date of
+  a dated column in a reconciliation section.
+
+The components a cell relied on are recorded with the total in the table's
+`cash_component_sums`. A block that does not add up proves nothing, and a
+liability on a supplemental row stays unresolved as before.
 
 **Statement selection.** The same header reading applies when candidate
 statement tables are examined, so a statement whose columns need corroboration
@@ -466,7 +499,8 @@ its table. The whole line must be made of these:
 | Line | Example |
 | --- | --- |
 | Units | "(Millions of Dollars, Except Share Data)", "(Unaudited; in millions, except per share amounts)" |
-| Periods and dates | "March 31, 2025 and December 31, 2024", "For the Three- and Nine-Months Ended September 30, 2025 and 2024" |
+| Units naming the currency first | "(In US$ and in thousands, except share and per share data)" |
+| Periods and dates | "March 31, 2025 and December 31, 2024", "For the Three- and Nine-Months Ended September 30, 2025 and 2024", "For the Three Months Ended March 30, 2024 and April 1, 2023, respectively" |
 | The registrant's name, in either spelling of its legal form | "W. R. Berkley Corporation and Subsidiaries" for the DEI name "W. R. BERKLEY CORP"; "Emerson Electric Co. & Subsidiaries" |
 | Running page headers, rules and page numbers | "Table of Contents", "Item 1. Financial Statements", "36" |
 
@@ -596,6 +630,59 @@ headings. Measured on the 3,489 filings archived on November 18: 14 more parse
 cleanly (Aflac, Amazon, Equifax, Lockheed Martin, Microchip, Paramount
 Skydance and T-Mobile), all 14 pass the complete offline dry run, and each of
 the 2,915 that parsed cleanly before is byte-identical.
+
+**Row labels right of an empty first column.** A statement may leave its first
+grid column empty and print every row label in the next one. A label such as
+"Property, plant and equipment, net of accumulated depreciation of $5,909 and
+$5,788" then carries the tagged amounts of both balance dates in a column that
+has no period, and those cells used to stay unresolved ("Unresolved column
+period"). Since November 19, 2026 a column counts as a label column when the
+header gives it no period and every cell printed in it below the header is
+the first printed cell of its row and reads as words. A column that prints a
+bare number anywhere, or anything after another printed cell, is not one.
+Tagged amounts in such a label are linked as they are in the first column
+(`resolved_label`), and a label that prints a digit without a tag ("Other
+commitments and contingencies (Note 12)") is a label. The last selection
+attempt reads candidate tables the same way.
+
+**References to notes.** A column that only points to the notes is not a
+column of amounts. An untagged cell is a label when its column has no period
+and holds no tagged number anywhere, and it prints the reference in words
+("(Note 3)", "Notes 6 and 7") or, under a heading that is exactly "Note" or
+"Notes", the note numbers alone ("13", "4, 5"). The heading "Note Reference
+Number" was already read this way.
+
+**A balance dated at the period's end in an income statement.** An income
+statement may close with a balance, usually the shares outstanding, in a row
+that says so: "Shares outstanding at March 31," or "Actual shares outstanding
+at period end". Such a tag is accepted when the row label names the period's
+end in those words ("at period end", "at year-end", "as of the end of the
+period") or by the month and day of the column's last day, with the year if it
+prints one, and the tag's date is that day. A balance of any other day, or in
+a row that names no period end, stays unresolved.
+
+**A consolidated statement followed by pages for parts of the group.** A
+filing may print its consolidated cash flow statement and then, on pages
+marked as its continuation, the same statement for each business group. The
+established rules find two complete tables under one title and reject the
+statement. The last attempt takes the first table alone as the statement when
+all of these hold:
+
+- it is complete, not marked as a continuation, and all its numbers have the
+  registrant's own scope, without any dimension;
+- every other table under that title is marked as a continuation, shows the
+  same periods, and holds only numbers of that registrant and unit that carry
+  a dimension, never another legal entity (`LegalEntityAxis`);
+- nothing but footnotes and page furniture stands between the tables.
+
+A continuation page that holds a number of the whole entity, another period
+or another registrant still makes the statement ambiguous.
+
+Measured on the 5,295 filings archived on November 19: these readings make
+120 more parse cleanly (among them Aon, Bank of America, Broadridge, Centene,
+Chubb, CME Group, Marsh & McLennan, News Corp, NXP, S&P Global, Textron and
+Trimble), all 120 pass the complete offline dry run, and each of the 4,446
+that parsed cleanly before is byte-identical.
 
 **Utility revenue.** When every reading above has declined the filing,
 selection is tried a final time counting
