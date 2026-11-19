@@ -367,6 +367,78 @@ class FiscalYearColumnTests(unittest.TestCase):
         self.assertIsNone(self.periods(header.replace('<sup>1</sup>', '1'), HALF, concepts=income)[0])
 
 
+class RatioColumnTests(unittest.TestCase):
+    """A column of percentages printed beside its amounts takes the period of those amounts."""
+
+    QUARTER = {'startDate': '2024-01-01', 'endDate': '2024-03-31'}
+    PURE = {'numerator': ['{http://www.xbrl.org/2003/instance}pure'], 'denominator': []}
+
+    def periods(self, *, caption='Percent to Sales', unit=None, ratio_period=None):
+        facts, rows = {}, []
+        for index, concept in enumerate(('Revenues', 'CostOfRevenue', 'NetIncomeLoss')):
+            amount, ratio = f'a{index}', f'r{index}'
+            facts[amount] = fact(amount, concept, self.QUARTER)
+            facts[ratio] = {**fact(ratio, concept + 'PercentToSales', ratio_period or self.QUARTER), 'unit': unit or self.PURE,
+                            'unit_ref': 'pure'}
+            rows.append(f'<tr><td>{concept}</td>'
+                        f'<td><ix:nonfraction id="{amount}" name="g:{concept}" contextref="{amount}" unitref="usd">1</ix:nonfraction></td>'
+                        f'<td><ix:nonfraction id="{ratio}" name="g:{concept}PercentToSales" contextref="{ratio}" unitref="pure">1'
+                        f'</ix:nonfraction></td></tr>')
+        tree = html.document_fromstring(
+            f'<html xmlns:g="{GAAP}" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL"><body><table>'
+            '<tr><td></td><td colspan="2">Fiscal First Quarter Ended</td></tr>'
+            f'<tr><td></td><td>March 31, 2024</td><td>{caption}</td></tr>{"".join(rows)}</table></body></html>').getroottree()
+        grid, _ = layout_grid(tree.xpath('//table')[0], tree)
+        periods, provenance = _column_periods(grid, 2, facts, {'g': GAAP}, {key: 1 for key in facts}, advanced=True, corroborate=True)
+        return periods, provenance
+
+    def test_percentages_beside_a_dated_column_take_its_period(self):
+        for caption in ('Percent to Sales', 'Percentto Sales', '% of Sales'):
+            with self.subTest(caption=caption):
+                periods, provenance = self.periods(caption=caption)
+                self.assertEqual((periods[1], periods[2]), (self.QUARTER, self.QUARTER))
+                self.assertEqual((provenance['2']['anchor'], provenance['2']['amount_column']), ('ratio_of_adjacent_column', 1))
+
+    def test_amounts_another_period_or_a_caption_that_says_no_percent_are_refused(self):
+        usd = {'numerator': ['{http://www.xbrl.org/2003/iso4217}USD'], 'denominator': []}
+        for options in ({'unit': usd}, {'ratio_period': {'startDate': '2023-01-01', 'endDate': '2023-03-31'}}, {'caption': 'Pro Forma'}):
+            with self.subTest(options=options):
+                self.assertIsNone(self.periods(**options)[0][2])
+
+
+class TypedDimensionTests(unittest.TestCase):
+    """A cell's reference states a typed dimension exactly as the stored fact does (all profiles)."""
+
+    INSTANCE = """<?xml version="1.0" encoding="utf-8"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:xbrldi="http://xbrl.org/2006/xbrldi"
+    xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:xlink="http://www.w3.org/1999/xlink"
+    xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:us-gaap="http://fasb.org/us-gaap/2026" xmlns:ex="http://example.com/2026">
+  <link:schemaRef xlink:type="simple" xlink:href="https://example.com/ex.xsd"/>
+  <xbrli:context id="location">
+    <xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000000001</xbrli:identifier><xbrli:segment>
+      <xbrldi:typedMember dimension="us-gaap:StatementOfFinancialPositionLocationBalanceAxis"><us-gaap:QName.domain>us-gaap:OtherAssets</us-gaap:QName.domain></xbrldi:typedMember>
+    </xbrli:segment></xbrli:entity>
+    <xbrli:period><xbrli:instant>2026-06-30</xbrli:instant></xbrli:period></xbrli:context>
+  <xbrli:unit id="usd"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>
+  <us-gaap:RestrictedCash id="restricted" contextRef="location" unitRef="usd" decimals="-6">5000000</us-gaap:RestrictedCash>
+</xbrli:xbrl>"""
+
+    def test_the_table_reader_and_the_fact_extractor_give_one_value(self):
+        from sec_pipeline.fact_extraction import extract_facts
+        from sec_pipeline.source_cells_v3 import fact_reference
+        from sec_pipeline.tables import xml_evidence
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'instance.xml'
+            path.write_text(self.INSTANCE, encoding='utf-8')
+            evidence = xml_evidence(path)['restricted']
+            stored, = extract_facts(path, filing_id=UUID(int=1), source_document_id=UUID(int=2)).facts
+        value = '<us-gaap:QName.domain xmlns:us-gaap="http://fasb.org/us-gaap/2026">us-gaap:OtherAssets</us-gaap:QName.domain>'
+        self.assertEqual(evidence['dimensions'], [{
+            'kind': 'typed', 'dimension': '{http://fasb.org/us-gaap/2026}StatementOfFinancialPositionLocationBalanceAxis', 'value': value}])
+        self.assertEqual(evidence['dimensions'], fact_reference(stored)['dimensions'])
+
+
 class HeaderLineTests(unittest.TestCase):
     def test_period_lines_and_units_lines_printed_between_a_title_and_its_table(self):
         for line in ('For the Three Months Ended March 30, 2024 and April 1, 2023, respectively',

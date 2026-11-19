@@ -1,11 +1,15 @@
 """Statements that run on to an untitled next page, and note tables under a statement's title (tables-v3)."""
 
+import json
 import unittest
 
 from lxml import html
 
-from sec_pipeline.page_continuation import VERIFICATION_VERSION, in_note, without_note_tables
-from sec_pipeline.tables import TableExtractionError, select_statement_segments
+from sec_pipeline.balance_segments import whole_balance_sheet
+from sec_pipeline.page_continuation import (
+    VERIFICATION_VERSION, in_note, statement_before_supplements, with_own_scope, without_note_tables,
+)
+from sec_pipeline.tables import TableExtractionError, _bare_titles, select_statement_segments
 
 
 GAAP = 'http://fasb.org/us-gaap/2026'
@@ -239,10 +243,24 @@ class NoteTableTests(unittest.TestCase):
         self.assertEqual(selected[1].element.get('id'), 'balance')
         self.assertIsNone(selected[1].group)
 
-    def test_the_same_table_outside_a_note_or_one_that_holds_a_total_still_makes_the_statement_ambiguous(self):
-        for options in ({'note': False}, {'lines': [('Total assets', 'Assets', '100', DATE)]}, {'lines': BALANCE}):
+    def test_the_same_table_outside_a_note_still_makes_the_statement_ambiguous(self):
+        for options in ({'note': False}, {'note': False, 'lines': BALANCE}):
             with self.subTest(options=options), self.assertRaises(TableExtractionError):
                 select(*self.parts(**options))
+
+    def test_the_last_attempt_looks_for_the_statements_outside_the_notes_only(self):
+        # A table inside a tagged text block is a note whatever it holds: a statement total,
+        # a whole second balance sheet, or columns no header dates.
+        unreadable = table('detail', [('Total assets', 'Assets', '100', DATE)], title=TITLES['balance'], header='Real Estate', note=True)
+        for parts in (self.parts(lines=[('Total assets', 'Assets', '100', DATE)]), self.parts(lines=BALANCE),
+                      (*self.parts()[:4], unreadable)):
+            with self.subTest(detail=parts[4]['lines']):
+                selected = select(*parts)
+                self.assertEqual([part.table_key for part in selected], self.KEYS)
+                self.assertEqual(selected[1].element.get('id'), 'balance')
+                self.assertIsNone(selected[1].group)
+        with self.assertRaisesRegex(TableExtractionError, 'unresolved column period'):
+            select(*self.parts()[:4], {**unreadable, 'note': False})
 
     def test_only_tables_inside_a_tagged_text_block_count_as_note_tables(self):
         tree, _ = document(*self.parts())
@@ -255,41 +273,168 @@ class NoteTableTests(unittest.TestCase):
         self.assertEqual(without_note_tables([empty, total, continued, printed]), [total, continued, printed])
 
 
-class GroupPagesTests(unittest.TestCase):
-    """A complete consolidated cash flow statement, then the same statement for each business group."""
+class OtherScopeTests(unittest.TestCase):
+    """A second statement under the same title, every number of which carries a dimension."""
 
     KEYS = ['income_statement', 'balance_sheet', 'cash_flow']
     GROUP = {'kind': 'explicit', 'dimension': '{' + GAAP + '}ConsolidationItemsAxis', 'member': '{http://example.com}ManufacturingGroupMember'}
+    PARTNERSHIP = {'kind': 'explicit', 'dimension': '{http://xbrl.sec.gov/dei/2026}LegalEntityAxis',
+                   'member': '{http://example.com}OperatingPartnershipMember'}
 
     def parts(self, *, dimension=GROUP, title=TITLES['cash'] + ' (Continued)', header=DURATION_HEADER, before=PAGE, lines=None,
               first=None):
         lines = FLOWS + BALANCES if lines is None else lines
         page = [(*line, dimension) if dimension else line for line in lines]
         return (whole('income'), whole('balance'), first or whole('cash'),
-                table('groups', page, title=title, header=header, before=before))
+                table('other', page, title=title, header=header, before=before))
 
-    def test_the_consolidated_table_is_the_statement(self):
+    def test_the_table_with_the_registrants_own_numbers_is_the_statement(self):
         with self.assertRaises(TableExtractionError):
             select(*self.parts(), corroborated_layouts=False)
-        selected = select(*self.parts())
-        self.assertEqual([part.table_key for part in selected], self.KEYS)
-        self.assertEqual(selected[2].element.get('id'), 'cash')
-        self.assertIsNone(selected[2].group)
+        cases = ({},                                                        # the statement again for a business group
+                 {'dimension': self.PARTNERSHIP, 'title': TITLES['cash']},  # the statement of a second registrant
+                 {'header': 'Three Months Ended June 30, 2025'})
+        for options in cases:
+            with self.subTest(options=options):
+                selected = select(*self.parts(**options))
+                self.assertEqual([part.table_key for part in selected], self.KEYS)
+                self.assertEqual(selected[2].element.get('id'), 'cash')
+                self.assertIsNone(selected[2].group)
 
-    def test_a_page_that_is_not_only_detail_of_the_same_statement_is_refused(self):
-        other = {**self.GROUP, 'dimension': '{http://xbrl.sec.gov/dei/2026}LegalEntityAxis'}
+    def test_a_second_table_of_the_whole_entity_or_an_incomplete_first_table_is_refused(self):
         incomplete = table('cash', FLOWS + BALANCES[:1], title=TITLES['cash'], header=DURATION_HEADER)
-        refused = (
-            {'dimension': None},                                # numbers of the whole entity again
-            {'dimension': other},                               # another registrant's statement
-            {'title': TITLES['cash']},                          # not marked as a continuation
-            {'header': 'Three Months Ended June 30, 2025'},     # other periods
-            {'before': '<p>Note 2. Summary of significant accounting policies</p>'},
-            {'first': incomplete},                              # the first table is not the whole statement
-        )
+        for options in ({'dimension': None}, {'dimension': None, 'title': TITLES['cash']}, {'first': incomplete}):
+            with self.subTest(options=options), self.assertRaises(TableExtractionError):
+                select(*self.parts(**options))
+
+    def test_only_tables_without_a_number_of_the_registrants_own_scope_are_left_out(self):
+        own = {'scopes': {json.dumps({'entity': 'e', 'unit': 'u', 'dimensions': []})}}
+        detail = {'scopes': {json.dumps({'entity': 'e', 'unit': 'u', 'dimensions': [self.GROUP]})}}
+        mixed = {'scopes': own['scopes'] | detail['scopes']}
+        empty = {'scopes': set()}
+        self.assertEqual(with_own_scope([own, detail, mixed, empty]), [own, mixed, empty])
+        # Nothing is left out when no table holds a number without a dimension.
+        self.assertEqual(with_own_scope([detail, empty]), [detail, empty])
+
+
+class SupplementPagesTests(unittest.TestCase):
+    """A complete cash flow statement, then pages under its title that only supplement it."""
+
+    KEYS = ['income_statement', 'balance_sheet', 'cash_flow']
+    INTEREST = ('Cash paid for interest', 'InterestPaidNet', '3', HALF)
+    RESTRICTED = ('Restricted cash', 'RestrictedCash', '5', DATE)
+
+    def parts(self, *, lines=(RESTRICTED,), title=TITLES['cash'] + ' (continued)', header=DATE_HEADER, before=PAGE, first=None,
+              note=False):
+        return (whole('income'), whole('balance'), first or whole('cash'),
+                table('supplement', list(lines), title=title, header=header, before=before, note=note))
+
+    def test_the_complete_table_is_the_statement(self):
+        with self.assertRaises(TableExtractionError):
+            select(*self.parts(), corroborated_layouts=False)
+        cases = ({},                                                                                # a continuation dated differently
+                 {'lines': (self.INTEREST,), 'title': TITLES['cash'], 'header': DURATION_HEADER},   # the title repeated, unmarked
+                 {'lines': (self.RESTRICTED, BALANCES[1])})                                         # the closing balance once more
+        for options in cases:
+            with self.subTest(options=options):
+                selected = select(*self.parts(**options))
+                self.assertEqual([part.table_key for part in selected], self.KEYS)
+                self.assertEqual(selected[2].element.get('id'), 'cash')
+                self.assertIsNone(selected[2].group)
+
+    def test_a_page_with_an_activity_total_or_an_incomplete_statement_is_refused(self):
+        incomplete = table('cash', FLOWS + BALANCES[:1], title=TITLES['cash'], header=DURATION_HEADER)
+        quarter = (FLOWS[2][0], FLOWS[2][1], '-1', {'startDate': '2025-04-01', 'endDate': '2025-06-30'})
+        refused = ({'lines': (quarter,), 'header': 'Three Months Ended June 30, 2025'},   # financing activities of another period
+                   {'first': incomplete},                                  # the first table lacks the closing balance
+                   {'before': '<p>Note 2. Summary of significant accounting policies</p>'},
+                   {'before': PAGE + '<table><tr><td>Other</td><td><ix:nonfraction name="g:OtherAssets">5</ix:nonfraction></td></tr></table>'})
         for options in refused:
             with self.subTest(options=options), self.assertRaises(TableExtractionError):
                 select(*self.parts(**options))
+
+    def test_the_rule_reads_only_cash_flow_candidates(self):
+        tree, _ = document(*self.parts())
+        main = {'continued': False, 'axes': ['a'], 'headings': {'t'}, 'coverage': {'a': {0, 1, 2, 3}}, 'scopes': set(),
+                'table': tree.xpath('//table[@id="cash"]')[0]}
+        other = {'continued': True, 'axes': [], 'headings': {'t'}, 'coverage': {}, 'scopes': set(),
+                 'table': tree.xpath('//table[@id="supplement"]')[0]}
+        self.assertIs(statement_before_supplements(tree, 'cash_flow', [main, other], {0, 1, 2, 3}), main)
+        self.assertIsNone(statement_before_supplements(tree, 'balance_sheet', [main, other], {0, 1, 2, 3}))
+        self.assertIsNone(statement_before_supplements(tree, 'cash_flow', [main], {0, 1, 2, 3}))
+        self.assertIsNone(statement_before_supplements(tree, 'cash_flow', [main, {**other, 'headings': {'another'}}], {0, 1, 2, 3}))
+
+
+class LastAttemptTests(unittest.TestCase):
+    """Readings only the last selection attempts take."""
+
+    SPLIT = ['income_statement', 'balance_sheet', 'cash_flow.segment_1', 'cash_flow.segment_2']
+    PARENT = {'kind': 'explicit', 'dimension': '{' + GAAP + '}ConsolidatedEntitiesAxis', 'member': '{' + GAAP + '}ParentCompanyMember'}
+
+    def split_cash(self):
+        # A cash flow statement marked "(continued)" sends every kind through the selection of physical segments.
+        return (table('cash', FLOWS[:2], title=TITLES['cash'], header=DURATION_HEADER),
+                table('cash-continued', FLOWS[2:] + BALANCES, title=TITLES['cash'] + ' (continued)', header=DURATION_HEADER,
+                      before='<p>See notes.</p>'))
+
+    def test_rows_of_the_parent_company_are_detail_of_a_consolidated_statement(self):
+        loans = ('Loans held by the parent', 'LoansAndLeasesReceivableNetReportedAmount', '5', DATE, self.PARENT)
+        balance = table('balance', [loans, *BALANCE], title=TITLES['balance'], header=DATE_HEADER)
+        with self.assertRaisesRegex(TableExtractionError, 'balance_sheet: ambiguous or incomplete'):
+            select(whole('income'), balance, *self.split_cash(), corroborated_layouts=False)
+        selected = select(whole('income'), balance, *self.split_cash())
+        self.assertEqual([part.table_key for part in selected], self.SPLIT)
+        self.assertEqual(selected[1].element.get('id'), 'balance')
+        # A table of parent-company numbers alone is the parent's own statement and no candidate.
+        parent_only = table('balance', [(*line, self.PARENT) for line in BALANCE], title=TITLES['balance'], header=DATE_HEADER)
+        with self.assertRaises(TableExtractionError):
+            select(whole('income'), parent_only, *self.split_cash())
+
+    def test_a_balance_sheet_whose_two_sides_agree_needs_no_standard_equity_total(self):
+        def parts(total):
+            lines = [BALANCE[0], BALANCE[1], ('Total common shareholders equity', 'CommonShareholdersEquityOfTheCompany', '60', DATE),
+                     ('Total liabilities and equity', 'LiabilitiesAndStockholdersEquity', total, DATE)]
+            return whole('income'), table('balance', lines, title=TITLES['balance'], header=DATE_HEADER), whole('cash')
+
+        with self.assertRaisesRegex(TableExtractionError, 'balance_sheet: ambiguous or incomplete'):
+            select(*parts('100'), corroborated_layouts=False)
+        selected = select(*parts('100'))
+        self.assertEqual([part.table_key for part in selected], ['income_statement', 'balance_sheet', 'cash_flow'])
+        self.assertIsNone(selected[1].group)
+        with self.assertRaisesRegex(TableExtractionError, 'balance_sheet: ambiguous or incomplete'):
+            select(*parts('99'))
+
+    def test_whole_balance_sheet_needs_one_unmarked_table_alone_under_its_title(self):
+        def candidate(total='100', continued=False, headings=('consolidated balance sheets',)):
+            reference = {'dimensions': [], 'is_nil': False, 'period': DATE, 'unit': {'numerator': ['{http://www.xbrl.org/2003/iso4217}USD'], 'denominator': []},
+                         'entity': {'scheme': 'http://www.sec.gov/CIK', 'identifier': '1'}}
+            axis = json.dumps(DATE, sort_keys=True)
+            return {'continued': continued, 'axes': [axis], 'headings': set(headings), 'table': object(), 'references': {axis: [
+                {**reference, 'concept': '{' + GAAP + '}Assets', 'raw_value': '100'},
+                {**reference, 'concept': '{' + GAAP + '}LiabilitiesAndStockholdersEquity', 'raw_value': total}]}}
+
+        whole_table = candidate()
+        self.assertIs(whole_balance_sheet([whole_table])[0].element, whole_table['table'])
+        self.assertIsNone(whole_balance_sheet([candidate(total='99')]))
+        self.assertIsNone(whole_balance_sheet([candidate(continued=True)]))
+        self.assertIsNone(whole_balance_sheet([whole_table, candidate()]))
+        self.assertIsNone(whole_balance_sheet([whole_table, candidate(total='99')]))
+        self.assertIsNotNone(whole_balance_sheet([whole_table, candidate(total='99', headings=('statement of net assets',))]))
+
+    def test_a_title_printed_after_the_registrants_name_is_the_same_title(self):
+        second = table('cash-2', FLOWS[2:] + BALANCES, title='Example Corp and Subsidiaries ' + TITLES['cash'], header=DURATION_HEADER,
+                       before='<p>See notes.</p>')
+        tables = (whole('income'), whole('balance'), table('cash', FLOWS[:2], title=TITLES['cash'], header=DURATION_HEADER), second)
+        tree, facts = document(*tables)
+        facts['name'] = {**facts['cash-0'], 'xml_id': 'name', 'concept': '{http://xbrl.sec.gov/dei/2026}EntityRegistrantName',
+                         'raw_value': 'Example Corp', 'unit': None, 'unit_ref': None}
+        with self.assertRaises(TableExtractionError):
+            select_statement_segments(tree, facts)
+        selected = select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertEqual([part.table_key for part in selected], self.SPLIT)
+        self.assertEqual(selected[2].group['heading'], 'consolidated statements of cash flows')
+        self.assertEqual(_bare_titles({'example corp and subsidiaries consolidated statements of cash flows', 'example corp'},
+                                      ('example corp',)), {'consolidated statements of cash flows', 'example corp'})
 
 
 if __name__ == '__main__':
