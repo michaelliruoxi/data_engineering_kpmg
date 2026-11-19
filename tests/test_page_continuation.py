@@ -255,5 +255,42 @@ class NoteTableTests(unittest.TestCase):
         self.assertEqual(without_note_tables([empty, total, continued, printed]), [total, continued, printed])
 
 
+class GroupPagesTests(unittest.TestCase):
+    """A complete consolidated cash flow statement, then the same statement for each business group."""
+
+    KEYS = ['income_statement', 'balance_sheet', 'cash_flow']
+    GROUP = {'kind': 'explicit', 'dimension': '{' + GAAP + '}ConsolidationItemsAxis', 'member': '{http://example.com}ManufacturingGroupMember'}
+
+    def parts(self, *, dimension=GROUP, title=TITLES['cash'] + ' (Continued)', header=DURATION_HEADER, before=PAGE, lines=None,
+              first=None):
+        lines = FLOWS + BALANCES if lines is None else lines
+        page = [(*line, dimension) if dimension else line for line in lines]
+        return (whole('income'), whole('balance'), first or whole('cash'),
+                table('groups', page, title=title, header=header, before=before))
+
+    def test_the_consolidated_table_is_the_statement(self):
+        with self.assertRaises(TableExtractionError):
+            select(*self.parts(), corroborated_layouts=False)
+        selected = select(*self.parts())
+        self.assertEqual([part.table_key for part in selected], self.KEYS)
+        self.assertEqual(selected[2].element.get('id'), 'cash')
+        self.assertIsNone(selected[2].group)
+
+    def test_a_page_that_is_not_only_detail_of_the_same_statement_is_refused(self):
+        other = {**self.GROUP, 'dimension': '{http://xbrl.sec.gov/dei/2026}LegalEntityAxis'}
+        incomplete = table('cash', FLOWS + BALANCES[:1], title=TITLES['cash'], header=DURATION_HEADER)
+        refused = (
+            {'dimension': None},                                # numbers of the whole entity again
+            {'dimension': other},                               # another registrant's statement
+            {'title': TITLES['cash']},                          # not marked as a continuation
+            {'header': 'Three Months Ended June 30, 2025'},     # other periods
+            {'before': '<p>Note 2. Summary of significant accounting policies</p>'},
+            {'first': incomplete},                              # the first table is not the whole statement
+        )
+        for options in refused:
+            with self.subTest(options=options), self.assertRaises(TableExtractionError):
+                select(*self.parts(**options))
+
+
 if __name__ == '__main__':
     unittest.main()

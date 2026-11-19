@@ -7,7 +7,10 @@ keeps the selection it has. Two layouts are read here:
 * a note repeats a statement's title above a table that holds none of the
   statement's totals (`without_note_tables`);
 * a statement runs on to the next page in a table printed without a title
-  (`page_continuation`).
+  (`page_continuation`);
+* a complete consolidated statement is followed by pages, marked as its
+  continuation, that print it again for parts of the group
+  (`consolidated_alone`).
 """
 
 from datetime import date, timedelta
@@ -252,9 +255,49 @@ def page_continuation(tree, kind, first, table, facts, html_ids, concept_groups)
             StatementSegment(kind, common['segment_keys'][1], table, common | {'segment_index': 2} | inheritance))
 
 
+def consolidated_alone(tree, kind, candidates, required):
+    """The complete statement among pages that repeat it for parts of the group, or None.
+
+    A filing may print its consolidated statement and then, on pages marked
+    as its continuation, the same statement for each business group. The
+    first candidate must be the one complete, unmarked table whose numbers
+    all have the registrant's own scope, without any dimension. Every other
+    candidate must be marked as a continuation under the same title, show
+    the same periods and hold only numbers of that registrant and unit that
+    carry a dimension, never another legal entity; nothing but page
+    furniture may separate the tables. The statement is then the first
+    table alone: the later pages add no line of the whole entity to it.
+    """
+    from .tables import _page_furniture_between
+
+    if len(candidates) < 2:
+        return None
+    main, others = candidates[0], candidates[1:]
+    if (main['continued'] or not main['axes'] or len(main['scopes']) != 1 or in_note(main['table'])
+            or any(groups != required for groups in main['coverage'].values())):
+        return None
+    own = json.loads(next(iter(main['scopes'])))
+    if own['dimensions']:
+        return None
+    previous = main
+    for other in others:
+        if (not other['continued'] or other['headings'] != main['headings'] or other['axes'] != main['axes']
+                or not other['scopes'] or not _page_furniture_between(tree, previous['table'], other['table'], kind)):
+            return None
+        for value in other['scopes']:
+            scope = json.loads(value)
+            if (scope['entity'] != own['entity'] or scope['unit'] != own['unit'] or not scope['dimensions']
+                    or any(dimension.get('dimension', '').endswith('}LegalEntityAxis') for dimension in scope['dimensions'])):
+                return None
+        previous = other
+    return main
+
+
 def recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups):
     """Select a statement the established rules leave "ambiguous or incomplete", or return None.
 
+    A complete consolidated statement followed only by pages that repeat it
+    for parts of the group is the statement (`consolidated_alone`).
     With the note tables left out, one complete table that no other candidate
     shares a title with is the statement, as the established rule has it.
     Otherwise a titled table that shares its title with no other candidate
@@ -264,6 +307,9 @@ def recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups):
     from .tables import StatementSegment, _hidden, local
 
     required = set(range(len(concept_groups[kind])))
+    whole = consolidated_alone(tree, kind, candidates, required)
+    if whole is not None:
+        return (StatementSegment(kind, kind, whole['table']),)
     kept = without_note_tables(candidates)
 
     def alone(candidate):

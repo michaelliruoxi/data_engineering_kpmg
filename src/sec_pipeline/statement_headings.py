@@ -123,14 +123,15 @@ _MONTH_WORDS = frozenset(_MONTH[3:-1].split("|"))
 _PERIOD_WORDS = _MONTH_WORDS | frozenset((
     "for the fiscal as of at and to through ended ending end month months quarter quarters week weeks year years "
     "period periods first second third fourth one two three four five six seven eight nine ten eleven twelve "
-    "thirteen twenty thirty forty fifty unaudited audited").split())
+    "thirteen twenty thirty forty fifty unaudited audited respectively").split())
 _RUNNING_HEADERS = re.compile(
     r"\b(?:(?:financial )?table of contents|index to (?:consolidated )?financial statements"
     r"|part i{1,3}(?: financial information)?"
     r"|item [0-9]{1,2}[ab]? (?:unaudited )?(?:condensed )?(?:consolidated )?financial statements"
     r"(?: and supplementary data)?(?: unaudited)?|continued)\b")
 _LINE_UNITS = re.compile(
-    r"(?:(?:un)?audited )?(?:(?:(?:amounts?|dollars?|u s dollars|us dollars)(?: (?:and )?shares)? )?in )?"
+    r"(?:(?:un)?audited )?(?:in (?:us|u s)(?: dollars)? and )?"
+    r"(?:(?:(?:amounts?|dollars?|u s dollars|us dollars)(?: (?:and )?shares)? )?in )?"
     r"(?:thousands|millions|billions)(?: of (?:u s |us )?dollars)?"
     r"(?: (?:except|and|per share)(?: (?:per|share|shares|par|value|values|data|amounts?|numbers?|and|or|of|in|for|as|where"
     r"|otherwise|noted|indicated|stated|ratios|percentages|percent|units?|common|stock|dollars|related|information))+)?"
