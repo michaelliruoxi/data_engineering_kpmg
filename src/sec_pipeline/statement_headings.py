@@ -113,6 +113,9 @@ def normalized_heading(value):
 
 _LEGAL_FORMS = (("inc", "incorporated"), ("corp", "corporation"), ("co", "company"), ("ltd", "limited"))
 _SUBSIDIARIES = r"(?: and (?:its )?(?:consolidated )?(?:subsidiaries|subsidiary companies))?"
+# The `header_lines` reading also takes the name joined by "&", which the
+# normalized text no longer shows ("EMERSON ELECTRIC CO. & SUBSIDIARIES").
+_LINE_SUBSIDIARIES = r"(?: (?:and )?(?:its )?(?:consolidated )?(?:subsidiaries|subsidiary companies))?"
 _TITLE_WORDS = frozenset((
     "condensed consolidated combined interim unaudited audited statement statements of and balance sheet sheets "
     "income operations earnings comprehensive loss total net cash flow flows financial position condition results").split())
@@ -165,7 +168,8 @@ def _spaced(name):
 def _registrant_prefix(value, registrants, *, spaced=False):
     """The length of a leading registrant name, with "and subsidiaries", or 0."""
     for name in registrants:
-        match = re.match((_spaced(name) if spaced else re.escape(name)) + _SUBSIDIARIES + r"(?: |$)", value)
+        match = re.match((_spaced(name) + _LINE_SUBSIDIARIES if spaced else re.escape(name) + _SUBSIDIARIES)
+                         + r"(?: |$)", value)
         if match:
             return match.end()
     return 0
@@ -208,7 +212,7 @@ def _line_metadata(value, registrants):
     text = _tokens(re.sub(r"\(([^()]*)\)", units, value))
     text = _RUNNING_HEADERS.sub(" ", text)
     for name in registrants:
-        text = re.sub(r"\b" + _spaced(name) + r"\b" + _SUBSIDIARIES, " ", text)
+        text = re.sub(r"\b" + _spaced(name) + r"\b" + _LINE_SUBSIDIARIES, " ", text)
     text = _split_glued(" ".join(text.split()), _PERIOD_WORDS)
     if not text or _LINE_UNITS.fullmatch(text):
         return True
