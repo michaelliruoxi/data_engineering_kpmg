@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, unquote, urljoin, urlsplit
 
 from lxml import etree, html
 
+from .dei_namespaces import is_dei_namespace
 from .filing_sources import (
     ROLES, _inline_namespace, _inline_text, _is_context_element,
     normalized_date, verify_documents,
@@ -182,9 +183,9 @@ def _expanded(value, node, inline):
 
 
 def _dei_namespace(namespace):
-    # The 2019 and 2020 DEI taxonomies are dated (dei/2020-01-31); later ones use the year.
-    return bool(namespace and re.fullmatch(
-        r"https?://xbrl\.sec\.gov/dei/[0-9]{4}(?:-[0-9]{2}-[0-9]{2})?", namespace))
+    # The 2019 and 2020 DEI taxonomies are dated (dei/2020-01-31), the release
+    # filings used through 2022 is dei/2021q4, and the others carry the year.
+    return is_dei_namespace(namespace)
 
 
 def _registrant_identities(document, filers, manifest, *, inline):

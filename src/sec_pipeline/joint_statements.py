@@ -4,6 +4,7 @@ from collections import Counter
 import json
 import re
 
+from .dei_namespaces import is_dei_concept
 from .filing_sources import _dei, normalized_date
 from .source_locators import source_xpath
 from .statement_headings import statement_kind, normalized_heading
@@ -20,7 +21,9 @@ def _words(value):
 
 
 def _dei_namespace(concept):
-    return bool(re.fullmatch(r'\{https?://xbrl\.sec\.gov/dei/[0-9]{4}\}[A-Za-z]+', concept))
+    # Every release form: a pattern for the year alone took a combined filing on
+    # dei/2021q4 or dei/2020-01-31 for a filing of one registrant.
+    return is_dei_concept(concept)
 
 
 def _dei_value(fact):
@@ -69,7 +72,7 @@ def _primary_identity(tree, facts):
             dimensions = fact['dimensions']
             _require(fact.get('entity', {}).get('identifier', '').zfill(10) == cik and len(dimensions) == 1
                      and dimensions[0]['kind'] == 'explicit'
-                     and re.fullmatch(r'\{https?://xbrl\.sec\.gov/dei/[0-9]{4}\}LegalEntityAxis', dimensions[0]['dimension']),
+                     and is_dei_concept(dimensions[0]['dimension'], 'LegalEntityAxis'),
                      'A combined-filing subsidiary lacks its original DEI legal entity scope.')
             secondary_members.add(dimensions[0]['member'])
     return {'cik': cik, 'name': names[cik], 'entity': dict(primary[0]['entity']), 'names': names,

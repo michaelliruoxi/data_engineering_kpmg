@@ -20,6 +20,7 @@ from uuid import UUID
 from lxml import etree, html
 
 from .database import FactInput, FinancialTableInput, store_financial_table, link_table_fact
+from .dei_namespaces import DEI_NAMESPACE
 from .table_cells import TableCellError, relational_cells, store_table_cells
 from .source_locators import inline_source_xpath, source_xpath
 
@@ -2953,7 +2954,7 @@ def _parent_scope_segments(tree, facts, source_facts):
     entity is the reporting parent. A table printed under the name of
     another registrant of the filing is never taken.
     """
-    dei = r'\{https?://xbrl\.sec\.gov/dei/[0-9]{4}\}'
+    dei = r'\{' + DEI_NAMESPACE + r'\}'
     registrants = [record for record in source_facts.values()
                    if re.fullmatch(dei + 'EntityCentralIndexKey', record.get('concept') or '')
                    and isinstance(record.get('entity'), dict) and re.fullmatch(r'[0-9]{1,10}', (record.get('raw_value') or '').strip())]
