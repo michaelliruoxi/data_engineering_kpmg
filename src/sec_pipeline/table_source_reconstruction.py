@@ -33,7 +33,15 @@ def reconstruct_original_tables(snapshot, sources):
                   "facts_version": facts_version, "status": "unverified", "cells_compared": 0}
         source, instance = sources.get(html_id), sources.get(xml_id)
         structure = stored[0]["structure"]
-        if source is None or instance is None:
+        # A V8 set says on each of its tables whether it was read with the
+        # corroborated layouts (filing_parser_v4.LAYOUT_READING); the tables are
+        # rebuilt with the reading they name.
+        readings = [table["structure"].get("corroborated_layouts", False) for table in stored]
+        layouts = readings[0] is True
+        if (any(not isinstance(value, bool) or value is not readings[0] for value in readings)
+                or (layouts and version != "tables-v8")):
+            record["reason"] = "unsupported_layout_reading"
+        elif source is None or instance is None:
             record["reason"] = "original_HTML_or_XML_missing"
         elif (hashlib.sha256(source).hexdigest() != structure.get("html_sha256")
               or hashlib.sha256(instance).hexdigest() != structure.get("xml_sha256")):
@@ -49,7 +57,8 @@ def reconstruct_original_tables(snapshot, sources):
                     ids = {"filing_id": UUID(stored[0]["filing_id"]), "html_document_id": UUID(html_id), "xml_document_id": UUID(xml_id)}
                     rebuilt = extract_tables(html_path, xml_path, **ids, facts_version=facts_version,
                                              tables_version=version if version in {"tables-v1", "tables-v2"} else "tables-v2",
-                                             cash_followers=version == "tables-v8", tagging_defects=version == "tables-v8")
+                                             cash_followers=version == "tables-v8", tagging_defects=version == "tables-v8",
+                                             corroborated_layouts=layouts)
                     if version in {"tables-v3", "tables-v4", "tables-v5", "tables-v6", "tables-v7", "tables-v8"}:
                         facts = extract_facts(xml_path, filing_id=ids["filing_id"], source_document_id=ids["xml_document_id"],
                                               extraction_version=facts_version).require_complete().facts
@@ -57,10 +66,11 @@ def reconstruct_original_tables(snapshot, sources):
                         rebuilt = transform_v3(rebuilt, source, facts)
                         if version != "tables-v3":
                             from .source_cells_v4 import transform_tables as transform_v4
-                            rebuilt = transform_v4(rebuilt, source, facts, tagging_defects=version == "tables-v8")
+                            rebuilt = transform_v4(rebuilt, source, facts, tagging_defects=version == "tables-v8",
+                                                   corroborated_layouts=layouts)
                         if version == "tables-v8":
                             from .tagging_defects import flag_table_cells
-                            rebuilt, _ = flag_table_cells(rebuilt, source, facts, version=version)
+                            rebuilt, _ = flag_table_cells(rebuilt, source, facts, version=version, corroborated_layouts=layouts)
                         if version in {"tables-v5", "tables-v6", "tables-v7", "tables-v8"}:
                             from .extraction_profiles import PROFILE_BY_TABLES, corrected_tables
                             rebuilt = corrected_tables(rebuilt, profile=PROFILE_BY_TABLES[version])

@@ -479,12 +479,47 @@ schema references, a tag with a dimension or on another date, and a cell with
 two tags still reject the filing. The review profiles V4 to V7 keep to us-gaap
 concepts, as does the database's review scope, so their output is unchanged.
 
+`fact_period_differs_from_column` needs a column whose printed period its other
+numbers confirm: at most two cells of the column may contradict it, and more
+than four times as many must be resolved to a fact of exactly that period. That
+is the proportion V8 demands when it reads a column's period from its tags (next
+paragraph); a column whose every tag starts one day early is flagged as a whole
+under that rule and is not counted. A column that fails this stays unresolved and
+the filing is rejected. Before November 19, 2026 this was not checked, and a
+header that was read wrongly turned every correct tag under it into a recorded
+error. Qualcomm's 10-K for fiscal 2024 (`0000804328-24-000075`) heads two income
+statement columns with a date alone, "September 24,2023" and "September 25,2022",
+under a "Year Ended" caption that spans only the first column. Read as dates,
+they made all 48 fiscal-year amounts of 2023 and 2022 contradict their column.
+That filing no longer validates under V8.
+
 A column's period is established from its printed header and the fiscal calendar
 as before, with two additions that only V8 makes: all but one or two tags agree
 (outliers must stay under a quarter of the agreeing tags), or every tag starts
 on a balance-sheet date, the last day of the prior period, and the period
 starting one day later is confirmed by the header. Anything else still rejects
 the filing.
+
+**A second reading with the corroborated layouts.** Since November 19, 2026 a
+filing that V8 rejects is read once more with the layouts `tables-v3` accepts on
+corroboration (see
+[Layouts accepted on corroboration](automated-backfill.md#layouts-accepted-on-corroboration)):
+headers that agree with the one period all their tags carry, the later statement
+selections, row labels right of an empty first column and the other readings
+listed there. Statement selection, extraction, the period review and the
+flagging of tagging errors all use the same reading, and the second reading
+passes every check the first one passes: no check is skipped or relaxed. When
+both readings reject the filing, the rejection of the first is reported.
+
+A filing the first reading accepts is never read a second time, so the second
+reading cannot change a stored V8 set. Each table of a second reading carries
+`"corroborated_layouts": true` in its structure; a table of the first reading has
+no such key. The audits that rebuild a stored set from its original sources
+(`table_source_reconstruction`, the segment coverage check of
+`historical_table_validation`) rebuild it with the reading its tables name. A
+set whose tables disagree, name anything but `true`, or name the reading under
+another table version is reported as `unsupported_layout_reading` and does not
+pass. V4 to V7 are never read a second time.
 
 A flagged cell keeps its printed text, is linked to no fact (status
 `source_defect`) and names its defect. The defect is stored in

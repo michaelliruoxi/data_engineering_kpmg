@@ -68,3 +68,72 @@ def test_versioned_review_evidence_is_compared_against_reconstruction(monkeypatc
     result = reconstruct_original_tables(snapshot, sources)
     assert result['status'] == 'failed'
     assert any(field in diff.get('fields', []) for diff in result['groups'][0]['differences'])
+
+
+def _flagged_set(layouts, monkeypatch):
+    """A stored tables-v8 table of the synthetic cash flow statement, and its original sources.
+
+    With ``layouts`` its column is headed "First Quarter 2026", which only the
+    corroborated layouts read, and the table is built and marked as the parser's
+    second reading builds and marks it.
+    """
+    from sec_pipeline import fact_extraction, tables, source_cells_v3
+    from sec_pipeline.extraction_profiles import FLAGGED_PROFILE
+    from sec_pipeline.statement_continuations import with_omitted_continuations
+    from sec_pipeline.tagging_defects import flag_table_cells
+    from tests.test_source_cells_v4 import fixture
+    v3, facts, source = fixture(heading='First Quarter 2026' if layouts else 'Three months ended March 31, 2026')
+    instance = b'<original-instance/>'
+    v3 = replace(v3, structure=v3.structure | {'xml_sha256': hashlib.sha256(instance).hexdigest()})
+    reviewed = transform_v4([v3], source, facts, tagging_defects=True, corroborated_layouts=layouts)
+    flagged, records = flag_table_cells(reviewed, source, facts, version='tables-v8', corroborated_layouts=layouts)
+    assert [record['code'] for record in records] == ['instant_context_under_duration_header']
+    if layouts:
+        flagged = [replace(table, structure=table.structure | {'corroborated_layouts': True}) for table in flagged]
+    stored = with_omitted_continuations(corrected_tables(flagged, profile=FLAGGED_PROFILE), source)
+    readings = []
+    monkeypatch.setattr(tables, 'extract_tables',
+                        lambda *a, **kw: readings.append(kw['corroborated_layouts']) or [v3])
+    monkeypatch.setattr(source_cells_v3, 'transform_tables', lambda *a, **kw: [v3])
+    monkeypatch.setattr(fact_extraction, 'extract_facts', lambda *a, **kw: SimpleNamespace(
+        require_complete=lambda: SimpleNamespace(facts=facts)))
+    return ({'tables': [canonical(asdict(table)) for table in stored]},
+            {str(UUID(int=2)): source, str(UUID(int=3)): instance}, readings)
+
+
+@pytest.mark.parametrize('layouts', [False, True])
+def test_a_v8_set_is_rebuilt_with_the_reading_its_tables_name(monkeypatch, layouts):
+    snapshot, sources, readings = _flagged_set(layouts, monkeypatch)
+    assert ('corroborated_layouts' in snapshot['tables'][0]['structure']) is layouts
+    result = reconstruct_original_tables(snapshot, sources)
+    assert result['status'] == 'passed', result
+    assert readings == [layouts]
+
+
+def test_the_established_reading_does_not_rebuild_a_table_of_the_second_reading(monkeypatch):
+    snapshot, sources, readings = _flagged_set(True, monkeypatch)
+    del snapshot['tables'][0]['structure']['corroborated_layouts']
+    result = reconstruct_original_tables(snapshot, sources)
+    assert result['status'] == 'failed' and readings == [False]
+    [difference] = result['groups'][0]['differences']
+    assert difference['cell_key'] == 'r004c001' and 'classification' in difference['fields']
+    assert difference['stored']['classification'] == 'source_defect'
+    assert difference['reconstructed']['classification'] == 'unresolved'
+
+
+@pytest.mark.parametrize('claim', ['not_a_boolean', 'tables_disagree', 'another_version'])
+def test_a_layout_reading_must_be_named_alike_by_every_table_and_only_by_v8(monkeypatch, claim):
+    snapshot, sources, readings = _flagged_set(True, monkeypatch)
+    table = snapshot['tables'][0]
+    if claim == 'not_a_boolean':
+        table['structure']['corroborated_layouts'] = 'yes'
+    elif claim == 'tables_disagree':
+        other = deepcopy(table)
+        other['table_key'] = other['structure']['table_key'] = 'cash_flow.other'
+        del other['structure']['corroborated_layouts']
+        snapshot['tables'].append(other)
+    else:
+        table['extraction_version'] = 'tables-v7'
+    result = reconstruct_original_tables(snapshot, sources)
+    assert result['status'] == 'unverified' and readings == []
+    assert result['groups'][0]['reason'] == 'unsupported_layout_reading'

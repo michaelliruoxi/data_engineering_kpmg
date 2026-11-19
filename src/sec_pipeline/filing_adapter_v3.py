@@ -38,8 +38,10 @@ def _v2_context(context):
 
 
 def parse_tables(context):
-    # Only this profile accepts the corroborated layouts; tables-v2 and the
-    # document-set profiles call the extractor without them.
+    # This profile always accepts the corroborated layouts. tables-v2 and the
+    # document-set profiles call the extractor without them; the flagged profile
+    # (tables-v8) uses them only to read a filing its own reading rejects a
+    # second time (filing_parser_v4._build).
     parsed = parse_v2_tables(_v2_context(context), corroborated_layouts=True)
     source = base._source_path(context, "main_inline_xbrl_filing").read_bytes()
     tables = transform_tables(parsed.items, source, base._parsed(context, "facts").items, unidentified=True)

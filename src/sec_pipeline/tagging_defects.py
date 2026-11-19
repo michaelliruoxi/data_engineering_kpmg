@@ -108,6 +108,42 @@ def _cell_tags(checked, table, cell):
     return tags
 
 
+def _column(cell):
+    return cell['column'], json.dumps(cell.get('column_period'), sort_keys=True)
+
+
+def _unconfirmed_columns(structure, contradicted):
+    """Columns whose printed period too few of their own numbers confirm.
+
+    ``contradicted`` holds the cells whose one tag contradicts their column.
+    Such a cell is flagged only where the column's period is not itself in
+    doubt: at most two cells of the column are contradicted, and more than
+    four times as many of its cells are resolved to a fact of exactly the
+    column's period. That is the proportion `tables._tagging_defect_candidate`
+    demands when it reads a column's period from its tags. A column whose
+    every tag starts one day early (`fiscal_calendar_start_tagging_defects`)
+    is established and flagged as a whole by that rule and is not counted
+    here.
+
+    Without this a header that was read wrongly turns every correct tag under
+    it into a recorded tagging error: an income statement column headed only
+    "September 24, 2023" under a caption that spans other columns reads as a
+    date, and each of its fiscal-year amounts then contradicts it.
+    """
+    evidence = structure.get('column_period_evidence') or {}
+    flagged, agreeing = Counter(), Counter()
+    for row in structure['rows']:
+        for cell in row:
+            if cell['cell_id'] in contradicted:
+                flagged[_column(cell)] += 1
+            elif cell.get('classification') == 'resolved' and any(
+                    ref['period'] == cell.get('column_period') for ref in cell.get('fact_references') or []):
+                agreeing[_column(cell)] += 1
+    return {column for column, count in flagged.items()
+            if (evidence.get(str(column[0])) or {}).get('method') != 'fiscal_calendar_start_tagging_defects'
+            and (count > 2 or count * 4 >= agreeing[column])}
+
+
 def _convert(cell, record):
     cell.update(classification='source_defect', fact_references=[], unresolved_reason=None,
                 tagging_defect=_cell_marker(record))
@@ -115,25 +151,28 @@ def _convert(cell, record):
         cell.pop(name, None)
 
 
-def flag_table_cells(tables, source, facts, *, version, boundary_records=()):
+def flag_table_cells(tables, source, facts, *, version, boundary_records=(), corroborated_layouts=False):
     """Return (tables, defect records) with every provable tagging error flagged on its cell.
 
     Converted: an unresolved cell whose visible tags passed every value check
-    but exactly one of which contradicts the printed column; a V4 period-review
-    conflict (opening cash dated the first day, instant under a duration
-    header). A partially tagged number is only ever a fact-level defect.
+    but exactly one of which contradicts the printed column, in a column whose
+    other numbers confirm its period (`_unconfirmed_columns`); a V4
+    period-review conflict (opening cash dated the first day, instant under a
+    duration header). A partially tagged number is only ever a fact-level defect.
+    `corroborated_layouts` says the tables were read with those layouts.
     """
     from .source_cells_v4 import ReviewSource
     from .source_cells_v4 import SourceCellError
 
-    checked = ReviewSource(source, facts, tagging_defects=True)
+    checked = ReviewSource(source, facts, tagging_defects=True, corroborated_layouts=corroborated_layouts)
     boundary = {record['inline_id']: record for record in boundary_records}
     records, result = [], []
     for table in tables:
         structure = deepcopy(table.structure)
+        # A column is judged as a whole before any of its cells is flagged.
+        contradicted = {}
         for row in structure['rows']:
             for cell in row:
-                record = None
                 if cell.get('classification') == 'unresolved' and cell.get('unresolved_reason') == PERIOD_REASON:
                     try:
                         tags = _cell_tags(checked, table, cell)
@@ -148,9 +187,16 @@ def flag_table_cells(tables, source, facts, *, version, boundary_records=()):
                         expected = _expected_period(cell, fact)
                         if ref['period'] not in (expected['period'], {'instant': expected.get('instant')}):
                             contradicting.append((fact, ref, numeric_xpath, expected))
-                    if len(contradicting) != 1:
+                    if len(contradicting) == 1:
+                        contradicted[cell['cell_id']] = (tags, contradicting[0])
+        unconfirmed = _unconfirmed_columns(structure, contradicted)
+        for row in structure['rows']:
+            for cell in row:
+                record = None
+                if cell['cell_id'] in contradicted:
+                    if _column(cell) in unconfirmed:
                         continue
-                    fact, ref, numeric_xpath, expected = contradicting[0]
+                    tags, (fact, ref, numeric_xpath, expected) = contradicted[cell['cell_id']]
                     observed = {name: deepcopy(ref[name]) for name in _OBSERVED}
                     evidence = {'html_document_id': str(table.source_document_id),
                                 'html_sha256': checked.bindings.sha256, 'xml_sha256': table.structure['xml_sha256'],

@@ -31,8 +31,11 @@ OWN_SCHEMA = 'ex-20260331.xsd'
 
 
 def fixture(*, opening=False, shown='24', value='24', own=None, schemas=(OWN_SCHEMA,),
-            own_concept='ChangeInAccruedPlantAndEquipmentPurchases'):
-    """``own``: the review row is tagged with a concept in this namespace, on a page that references ``schemas``."""
+            own_concept='ChangeInAccruedPlantAndEquipmentPurchases', heading='Three months ended March 31, 2026'):
+    """``own``: the review row is tagged with a concept in this namespace, on a page that references ``schemas``.
+
+    ``heading``: the text printed above the one column of numbers.
+    """
     definitions = [
         ('operating', 'Operating activities', 'NetCashProvidedByUsedInOperatingActivities', '10', 'duration'),
         ('investing', 'Investing activities', 'NetCashProvidedByUsedInInvestingActivities', '5', 'duration'),
@@ -42,7 +45,7 @@ def fixture(*, opening=False, shown='24', value='24', own=None, schemas=(OWN_SCH
          else 'DividendsPayableCurrentAndNoncurrent', value, 'instant'),
         ('closing', 'Cash, end of period', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents', '30', 'instant'),
     ]
-    rows, facts = ['<tr><td></td><td>Three months ended March 31, 2026</td></tr>'], []
+    rows, facts = [f'<tr><td></td><td>{heading}</td></tr>'], []
     for identifier, label, concept, raw, period in definitions:
         display = shown if identifier == 'review' else raw
         prefix, namespace = ('x', own) if own and identifier == 'review' else ('g', GAAP)
@@ -67,7 +70,7 @@ def fixture(*, opening=False, shown='24', value='24', own=None, schemas=(OWN_SCH
     for index, row in enumerate(cells):
         for cell in row:
             cell.pop('_element')
-            cell.update(row_heading=definitions[index-1][1] if index else '', column_headings=['Three months ended March 31, 2026'],
+            cell.update(row_heading=definitions[index-1][1] if index else '', column_headings=[heading],
                         column_period=deepcopy(PERIOD), fact_references=[], unresolved_reason=None, is_total=False)
             if index == 0:
                 cell['classification'] = 'header'
@@ -176,6 +179,35 @@ def test_the_flagged_profile_reads_only_a_concept_of_the_pages_own_schema(change
     [result] = transform_tables([table], source, facts, tagging_defects=True)
     assert result.structure['rows'][4][1]['classification'] == 'unresolved'
     assert not result.structure['rows'][4][1].get('quality_issues')
+
+
+def test_a_table_read_with_the_corroborated_layouts_is_checked_with_the_same_reading():
+    # "First Quarter 2026" names no dates; only the corroborated layouts give the
+    # column the one period all its tags carry, as the extractor then did.
+    table, facts, source = fixture(heading='First Quarter 2026')
+    [plain] = transform_tables([table], source, facts, tagging_defects=True)
+    assert plain.structure['rows'][4][1]['classification'] == 'unresolved'
+    [read] = transform_tables([table], source, facts, tagging_defects=True, corroborated_layouts=True)
+    cell = read.structure['rows'][4][1]
+    assert cell['classification'] == 'source_conflict' and cell['column_period'] == PERIOD
+    assert cell['quality_issues'][0]['code'] == 'instant_context_under_duration_header'
+    assert validate_transformation([read], [table], source, facts, tagging_defects=True, corroborated_layouts=True)
+    with pytest.raises(SourceCellError):
+        validate_transformation([read], [table], source, facts, tagging_defects=True)
+    # A header the established reading resolves gives the same result under both.
+    table, facts, source = fixture()
+    assert (transform_tables([table], source, facts, tagging_defects=True, corroborated_layouts=True)
+            == transform_tables([table], source, facts, tagging_defects=True))
+
+
+@pytest.mark.parametrize('headers', ['header_inheritance', 'joint_statement'])
+def test_periods_from_inherited_or_joint_headers_are_never_corroborated(headers):
+    # The extractor takes such a segment's periods from its group, never from
+    # corroboration; the check of its cells must not either.
+    table, facts, source = fixture(heading='First Quarter 2026')
+    table = replace(table, structure=table.structure | {'statement_group': {headers: {'columns': {}}}})
+    [result] = transform_tables([table], source, facts, tagging_defects=True, corroborated_layouts=True)
+    assert result.structure['rows'][4][1]['classification'] == 'unresolved'
 
 
 @pytest.mark.parametrize('change', ['table_xpath','xml_as_html','row_label','header','period','coordinates','span'])

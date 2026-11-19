@@ -384,7 +384,11 @@ text-only check; the remaining filing failed a fact correspondence check.
 Since November 18, 2026 `tables-v3` resolves two layouts that used to leave
 statement cells unresolved and send the filing to the text-only fallback. Only
 the `tables-v3` adapter turns them on (`corroborated_layouts`), so `tables-v2`
-and `tables-v4` to `tables-v8` produce what they produced before.
+and `tables-v4` to `tables-v7` produce what they produced before. `tables-v8`
+uses them only for a filing its own reading rejects, in a second reading that
+marks each of its tables (see
+[Flagged profile (V8)](reviewed-layout-upgrade.md#flagged-profile-v8)); a filing
+`tables-v8` accepted before is read as before.
 
 **A column header that cannot be read alone.** Every tagged number in the
 column must already carry one period, shared by at least two concepts, and the
