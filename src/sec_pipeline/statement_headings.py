@@ -16,6 +16,8 @@ _BLOCKS = {"div", "p", "tr", "td", "th", "caption", "h1", "h2", "h3", "h4", "br"
 _MONTH = r"(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)"
 _FORBIDDEN = re.compile(r"\b(?:notes?\s+(?:to|[0-9])|supplemental|consolidating|parent\s+(?:company|only)|segment\s+(?:reporting|information)|selected\s+(?:financial|data))\b", re.I)
 _CONTINUATION = re.compile(r"[\s:–—-]*(?:(?:\(\s*)?continued(?:\s*\))?|\(\s*cont\.\s*\))\s*$", re.I)
+# A title block may point to a note in parentheses ("(Note 1)"); `header_lines` only.
+_NOTE_REFERENCE = re.compile(r"\(\s*notes?\s+[0-9]{1,2}(?:\s*(?:,|and|&)\s*[0-9]{1,2})*\s*\)", re.I)
 
 
 @dataclass(frozen=True)
@@ -125,14 +127,14 @@ _PERIOD_WORDS = _MONTH_WORDS | frozenset((
     "period periods first second third fourth one two three four five six seven eight nine ten eleven twelve "
     "thirteen twenty thirty forty fifty unaudited audited respectively").split())
 _RUNNING_HEADERS = re.compile(
-    r"\b(?:(?:financial )?table of contents|index to (?:consolidated )?financial statements"
+    r"\b(?:(?:financial )?table of contents|index to (?:consolidated )?financial statements(?: and schedules?)?"
     r"|part i{1,3}(?: financial information)?"
     r"|item [0-9]{1,2}[ab]? (?:unaudited )?(?:condensed )?(?:consolidated )?financial statements"
     r"(?: and supplementary data)?(?: unaudited)?|continued)\b")
 _LINE_UNITS = re.compile(
     r"(?:(?:un)?audited )?(?:in (?:us|u s)(?: dollars)? and )?"
-    r"(?:(?:(?:amounts?|dollars?|u s dollars|us dollars)(?: (?:and )?shares)? )?in )?"
-    r"(?:thousands|millions|billions)(?: of (?:u s |us )?dollars)?"
+    r"(?:(?:(?:(?:dollar )?amounts?|dollars?|u s dollars|us dollars)(?: (?:and )?shares)? |and shares )?in )?"
+    r"(?:thousands|millions|billions)(?: of (?:u s |us )?dollars)?(?: shares in (?:thousands|millions|billions))?"
     r"(?: (?:except|and|per share)(?: (?:per|share|shares|par|value|values|data|amounts?|numbers?|and|or|of|in|for|as|where"
     r"|otherwise|noted|indicated|stated|ratios|percentages|percent|units?|common|stock|dollars|related|information))+)?"
     r"(?: (?:un)?audited)?")
@@ -181,6 +183,21 @@ def _tokens(value):
     return re.sub(r"[^a-z0-9]+", " ", re.sub(r"([a-z])([A-Z])", r"\1 \2", value).lower()).strip()
 
 
+def _without_trailing_period(value):
+    """Drop the period a title line ends with ("Consolidated Balance Sheets, as of December 31").
+
+    Only period words and numbers are dropped, they must name a month, and a
+    title must remain; `statement_kind` still has to recognize what is left.
+    """
+    tokens = value.split()
+    cut = len(tokens)
+    while cut and (tokens[cut - 1] in _PERIOD_WORDS or re.fullmatch(r"[0-9]{1,2}|(?:19|20)[0-9]{2}", tokens[cut - 1])):
+        cut -= 1
+    if 0 < cut < len(tokens) and _MONTH_WORDS.intersection(tokens[cut:]):
+        return " ".join(tokens[:cut])
+    return value
+
+
 def _split_glued(value, words):
     """Separate words printed without a space ("CONSOLIDATEDBALANCE SHEETS").
 
@@ -217,7 +234,10 @@ def _line_metadata(value, registrants):
     text = _split_glued(" ".join(text.split()), _PERIOD_WORDS)
     if not text or _LINE_UNITS.fullmatch(text):
         return True
-    return all(token in _PERIOD_WORDS or re.fullmatch(r"[0-9]{1,3}|(?:19|20)[0-9]{2}", token) for token in text.split())
+    # "in" joins period words ("Fiscal Years Ended in December") but is no part of a glued word.
+    tokens = text.split()
+    return all(token in _PERIOD_WORDS or (token == "in" and len(tokens) > 1)
+               or re.fullmatch(r"[0-9]{1,3}|(?:19|20)[0-9]{2}", token) for token in tokens)
 
 
 def statement_kind(value, *, wide=False, registrants=(), header_lines=False):
@@ -241,7 +261,7 @@ def statement_kind(value, *, wide=False, registrants=(), header_lines=False):
         value = re.sub(r"\(\s*[0-9]\s*\)", " ", value)
     value = normalized_heading(value)
     if header_lines:
-        value = _split_glued(value, _TITLE_WORDS)
+        value = _without_trailing_period(_split_glued(value, _TITLE_WORDS))
     if wide:
         value = value[_registrant_prefix(value, registrants, spaced=header_lines):]
         value = re.sub(r"\s+(?:(?:amounts|dollars|u s dollars)\s+)?in (?:thousands|millions|billions)\b.*$", "", value)
@@ -263,13 +283,15 @@ def statement_kind(value, *, wide=False, registrants=(), header_lines=False):
                         r"|statements? of comprehensive (?:income|loss|earnings)(?: (?:loss|income))?"
                         r"|(?:statements? of )?results of operations)", value):
             return "income_statement"
-        if re.fullmatch(r"statements? of condition", value):
+        if re.fullmatch(r"statements? of condition", value) or (header_lines and value == "financial position"):
             return "balance_sheet"
     return None
 
 
 def _metadata(value, registrants=(), header_lines=False):
     value = _clean(value)
+    if header_lines:
+        value = _NOTE_REFERENCE.sub(" ", value).strip()
     if not value:
         return True
     if _FORBIDDEN.search(value):
@@ -302,7 +324,7 @@ def _block_headings(node, *, wide=False, registrants=(), header_lines=False):
     if _numeric(node):
         return ()
     visible = _visible_text(node)
-    if not visible or len(visible) > 640 or _FORBIDDEN.search(visible):
+    if not visible or len(visible) > 640 or _FORBIDDEN.search(_NOTE_REFERENCE.sub(" ", visible) if header_lines else visible):
         return ()
     kind = (lambda text: statement_kind(text, wide=True, registrants=registrants, header_lines=header_lines)) if wide else statement_kind
     candidates = []

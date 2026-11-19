@@ -504,6 +504,39 @@ class HeaderLineTests(unittest.TestCase):
             with self.subTest(title=title):
                 self.assertEqual(self.headings(title), [])
 
+    def test_more_units_wordings_a_running_header_and_a_reference_to_a_note_are_header_lines(self):
+        lines = ('(Dollar amounts in thousands)', '(Dollar amounts in thousands, except per share data)',
+                 '($ and shares in millions, except per share amounts)', '(Dollars in millions, shares in thousands)',
+                 'Fiscal Years Ended in December', 'Index to Consolidated Financial Statements and Schedules',
+                 '(Dollars and Shares in Millions Except Per Share Amounts) (Note 1)', '(Notes 1 and 2)')
+        for line in lines:
+            with self.subTest(line=line):
+                self.assertEqual(self.headings('Consolidated Balance Sheets', line), self.BALANCE)
+                self.assertEqual(self.headings('Consolidated Balance Sheets', line, header_lines=False), [])
+        for line in ('in', 'Dollars in shares', '(Note 1 describes the basis of presentation)', 'Note 1', '(See Note 1)',
+                     'Index to Consolidated Financial Statements and Schedules of Investments'):
+            with self.subTest(line=line):
+                self.assertEqual(self.headings('Consolidated Balance Sheets', line), [])
+
+    def test_a_title_that_ends_with_its_period_and_the_title_financial_position(self):
+        titles = {
+            'Consolidated Balance Sheets, as of December 31': 'balance_sheet',
+            'Consolidated Financial Position at December 31,': 'balance_sheet',
+            'Consolidated Financial Position': 'balance_sheet',
+            'Consolidated Results of Operations for the Years Ended December 31': 'income_statement',
+            'Consolidated Statement of Cash Flow for the Years Ended December 31, 2025, 2024 and 2023': 'cash_flow',
+        }
+        for title, kind in titles.items():
+            with self.subTest(title=title):
+                self.assertEqual(self.headings(title), [(kind, title)])
+                self.assertEqual(self.headings(title, header_lines=False), [])
+        # A period without a month, a period with nothing before it and prose are no titles.
+        for title in ('Consolidated Statements of Income for the Years Ended', 'As of December 31', 'Strong financial position',
+                      'The following table shows our financial position at December 31',
+                      'Consolidated Balance Sheets, as restated at December 31'):
+            with self.subTest(title=title):
+                self.assertEqual(self.headings(title), [])
+
     def test_a_title_printed_over_two_lines_is_joined_only_where_the_break_is_inside_it(self):
         first, second = 'CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS', 'AND COMPREHENSIVE INCOME (LOSS)'
         self.assertEqual(self.headings(first, second, '(Unaudited)'), [('income_statement', f'{first} {second}')])
@@ -566,13 +599,17 @@ class TiedBalanceSheetTests(unittest.TestCase):
 
     def test_footnotes_page_furniture_and_the_repeated_title_may_stand_between(self):
         for between in ('See notes to consolidated financial statements.', 'Table of Contents',
-                        '<table><tr><td>86</td></tr></table>', '(1) Includes 5 of assets of consolidated entities.</p><p>86'):
+                        '<table><tr><td>86</td></tr></table>', '(1) Includes 5 of assets of consolidated entities.</p><p>86',
+                        # A footnote may point to a note by its number.
+                        '(2) Net of the acquisition. For further details, see <a>Note 3.</a> <a>Acquisition of Example</a>.'):
             with self.subTest(between=between):
                 self.assertEqual([part.table_key for part in self.select(between=between)], self.KEYS)
 
     def test_totals_that_differ_another_title_or_anything_else_between_are_refused(self):
         refused = ({'total': '101'}, {'title': 'Consolidated Statements of Financial Position'},
                    {'between': self.NUMBERS}, {'between': 'Note 2. Summary of significant accounting policies'},
+                   {'between': '<a>Note 2.</a> Summary of significant accounting policies'},
+                   {'between': '<a id="n2"></a>Note 2. Summary of significant accounting policies'},
                    {'between': 'Consolidated Statements of Cash Flows'}, {'between': 'Detail. ' * 300})
         for options in refused:
             with self.subTest(options=options), self.assertRaises(TableExtractionError):

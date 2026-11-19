@@ -2274,13 +2274,49 @@ def _continuation_detail_scopes(first, candidate, facts):
     return added
 
 
+_LINE_BREAKS = frozenset({'div', 'p', 'td', 'th', 'li', 'tr', 'table', 'body', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'})
+
+
+def _begins_its_line(node, tail):
+    """Whether a piece of text (`node.text`, or `node.tail`) is the first thing its line prints.
+
+    "Note 3." at the start of a line is a note heading; after "For further
+    details, see" in a footnote it is a reference to that note. A line starts
+    with its paragraph, cell or block, and after a table or a line break.
+    """
+    if local(node) in _LINE_BREAKS:
+        return True
+    if tail and text(node):
+        return False
+    current = node
+    while True:
+        sibling = current.getprevious()
+        while sibling is not None:
+            if (sibling.tail or '').strip():
+                return False
+            if isinstance(sibling.tag, str):
+                if local(sibling) in _LINE_BREAKS:
+                    return True
+                if text(sibling):
+                    return False
+            sibling = sibling.getprevious()
+        parent = current.getparent()
+        if parent is None:
+            return True
+        if (parent.text or '').strip():
+            return False
+        if local(parent) in _LINE_BREAKS:
+            return True
+        current = parent
+
+
 def _page_furniture_between(tree, left, right, kind):
     """Nothing but footnotes, page furniture and the repeated title separates two tables.
 
     tables-v3 `extended` selection only; `_segments_adjacent` is the
     established rule. No table with a number or with more than a page
     footer's text, no title of another statement and no note heading may
-    stand between the two.
+    stand between the two. A footnote may refer to a note by its number.
     """
     nodes = list(tree.iter())
     positions = {node: index for index, node in enumerate(nodes)}
@@ -2293,10 +2329,11 @@ def _page_furniture_between(tree, left, right, kind):
             continue
         if local(node) == 'table' and (len(text(node)) > 240 or any(local(child) == 'nonfraction' for child in node.iter())):
             return False
-        for piece in (node.text, node.tail):
+        for tail, piece in enumerate((node.text, node.tail)):
             value = ' '.join((piece or '').split())
             length += len(value)
-            if _statement_heading(value) not in {None, kind} or re.match(r'^(?:note\s+\d+\b|notes to\b)', value, re.I):
+            if _statement_heading(value) not in {None, kind} or (
+                    re.match(r'^(?:note\s+\d+\b|notes to\b)', value, re.I) and _begins_its_line(node, bool(tail))):
                 return False
     return length <= 2000
 
