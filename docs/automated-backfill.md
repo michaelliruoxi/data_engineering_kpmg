@@ -1044,6 +1044,40 @@ The checkpoint's `last_run` describes the selected profile and destination.
 Completion requires the current invocation to verify every queue entry; old
 successful statuses cannot establish completion after changing the database or
 extractor version. A bounded run or failure-only retry can therefore exit 2
+**The release in the DEI namespace.** The namespace of the SEC's document and
+entity information taxonomy carries its release: a year for most
+(`dei/2023`), a full date for 2019 and 2020 (`dei/2020-01-31`), and a quarter
+for the release that added the auditor facts (`dei/2021q4`), which filings
+used from January 2022 into 2023 (883 of the archived filings). Two places
+knew only some of these forms (`sec_pipeline.dei_namespaces` now holds the
+one pattern):
+
+- the download check on a combined filing (`registrants._registrant_identities`)
+  knew the year and the date, found no registrant facts under `dei/2021q4`
+  and refused the filing: "Combined filing has no context-scoped DEI CIKs."
+  That was 59 filings of 26 combined filers (Duke, Southern, NextEra, Exelon,
+  Dow and others), nearly all from the first half of 2022;
+- the statement selection (`joint_statements._primary_identity`, the legal
+  entity axis of a subsidiary, and `tables._parent_scope_segments`) knew the
+  year only, so a combined filing on either other form was not read as a
+  joint filing and went through the selection for a single registrant.
+
+Not changed: `tables._document_period` and `statement_aliases._identity`
+still know the year only. They add evidence or an earlier selection attempt,
+and widening them could change the recorded evidence of filings already
+loaded; a filing on another form simply does without them.
+
+Measured on November 19. The 59 refused filings, downloaded into a scratch
+archive with the fix: 45 pass with their statements, 11 load as text, 3 stay
+refused (Wells Fargo's 2025 annual report without a DEI CIK, a Host Hotels
+quarterly report whose registrant has two legal-entity scopes, and a Pinnacle
+West quarterly report with a partially tagged number). The 31 archived combined filings on the two
+other forms, selected before and after: the 19 that are selected get the same
+tables with the same cells, 13 of them now with their joint-filing evidence;
+the other 12 are rejected either way. One of the 13 was already loaded (a
+Digital Realty quarterly report of November 2022); its stored statements are
+the ones the joint selection takes.
+
 until a complete verification pass finishes.
 
 ```sql
