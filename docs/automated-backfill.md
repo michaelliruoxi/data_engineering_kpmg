@@ -295,6 +295,34 @@ the shared instance is a `db.t4g.micro`; see the database limit below.
   chunks it inserts, so new rows share the newest index pages. The column
   defaults and the schema are unchanged, and existing rows keep their
   identifiers.
+
+  Measured the same afternoon, 40 minutes apart on the same database, for new
+  filings loaded by one worker:
+
+  | Per 1,000 rows inserted | Random identifiers | Time-ordered identifiers |
+  | --- | ---: | ---: |
+  | Index blocks read | 1,822 | 39 |
+  | Full-page images in the write-ahead log | 1,643 | 66 |
+  | Write-ahead log volume | 9.2 MiB | 1.9 MiB |
+  | Buffers the background writer had to clean | 1,471 | 45 |
+
+  Disk traffic fell from about 500 MiB to about 55 MiB per new filing, and
+  the allowance stayed at 43% to 44% while 13 large filings were loaded in
+  seven minutes. Re-importing a filing whose facts were stored with random
+  identifiers still looks those facts up (406 index blocks read per 1,000
+  rows, down from 1,739). `ANALYZE` on a large table reads 30,000 blocks
+  (234 MiB) whenever autovacuum triggers it, which shows as a short burst of
+  reads unrelated to the load.
+
+  Seven minutes was too short a window to judge the allowance. Over the next
+  four hours one worker loaded new filings in three slices of 14, 28 and 18
+  minutes (36, 67 and 48 filings); each slice took the allowance from 38% to
+  between 27% and 29%, and the refill back to 38% took about 90 minutes each
+  time. That is about 30 new filings an hour, a fifth of the pace while a
+  slice runs. The database volume moved only about 2.5 MiB/s during those
+  slices (`ReadThroughput` plus `WriteThroughput`), which does not account
+  for the allowance spent, so most of the cost is disk traffic the volume
+  metrics do not show. It has not been identified.
 - Stop the single-queue importer first; the launcher refuses to start while the
   main queue is locked. While shard queues exist, `backfill_sec.py` refuses to
   import the main queue directly (`--status` still works).
