@@ -750,6 +750,36 @@ stays one filing. V2/V3 processing-set configuration retains the deterministic
 the reporting parent can appear in `issuer_filing_history`. This association does
 not automatically include earlier predecessor filings.
 
+**An archive owner the XBRL never identifies.** United Rentals, Inc. files with
+United Rentals (North America), Inc. and the SEC stores the report under the
+subsidiary, but the XBRL states only the parent's CIK. FirstEnergy Corp. files
+with Jersey Central Power & Light Company from 2025, and the DEI gives that
+subsidiary a name under its legal-entity member and no CIK. The owner of such
+an archive has no DEI identity to verify, and every one of these filings was
+refused at download ("XML and inline registrant CIKs disagree or requested CIK
+is absent"). The owner is now accepted as the one index filer the XBRL leaves
+out (`registrants.unidentified_owner_name`), and only when:
+
+- the index lists it as a filer and links the primary document in its archive;
+- every other index filer is a DEI registrant proven as in any combined filing,
+  including the single undimensioned registrant whose form and period equal
+  the filing's, and the XML and inline documents agree on all of them;
+- no DEI CIK fact and no context entity in either document names the owner.
+
+The manifest then records the owner under the name the SEC index gives it
+("UNITED RENTALS NORTH AMERICA INC"), because the filing states no name tied to
+the owner's CIK; a name the documents print without a CIK is not used. The
+requested registrant is verified exactly as before and is never accepted this
+way. Still refused: a subsidiary context that repeats the parent's CIK (Public
+Service Enterprise Group from its 2024 annual report), a parent whose DEI omits
+the period end date (PPL, first quarter of 2025), and an annual report whose
+primary document carries no DEI CIK (Wells Fargo, 2025).
+
+Measured on November 19: the 15 refused filings of the two companies verify,
+and in an offline dry run 14 pass under `tables-v3` and one loads as text for
+review; the result of re-verifying every archived filing whose archive owner
+differs from the queued company is unchanged.
+
 The checkpoint's `last_run` describes the selected profile and destination.
 Completion requires the current invocation to verify every queue entry; old
 successful statuses cannot establish completion after changing the database or
