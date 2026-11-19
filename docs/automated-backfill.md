@@ -404,6 +404,8 @@ Saturday ("Twenty-Six Week Periods Ended March 29, 2025", tagged from October
 | `comparative_column` | "2024" or "March 30, 2024" beside a fully captioned column | Another column of the table has an established period of the same length (within seven days) ending one year earlier or later |
 | `printed_balance_date` | "Fiscal Year Ended / December 28, 2025" on a balance sheet | The tagged date is printed in full |
 | `fiscal_year_end` | "At the End of Year / 2024", "Fiscal Year End / 2025" on a balance sheet, tagged January 3 of the next year | The header prints only that year; the tagged date falls in the first seven days of the following January; and the filing itself shows a fiscal period to close on that date: an undimensioned fact covers 52 or 53 weeks or a whole year ending on it, or a period beginning the day after it |
+| `fiscal_year_ending_on_printed_date` | "December 28, 2024" over an annual income statement that prints no "year ended" anywhere | The header prints the period's last day in full and nothing else; the tagged period is a whole fiscal year (52 or 53 weeks, or twelve months); and it begins on the day after a balance date the filing reports |
+| `document_period_end` | "As of / Second Quarter of / 2026" on a balance sheet | The header prints only the fiscal year the filing's cover facts name (`DocumentFiscalYearFocus`), and the tagged date is the last day of the period they report on (`DocumentPeriodEndDate`); both must be stated exactly once |
 | `ratio_of_adjacent_column` | "Percent to Sales" beside "March 31, 2024" under "Fiscal First Quarter Ended" | The header says percent and prints no year or date; every tag in the column is a pure ratio; and the tagged period is the established period of the nearest dated column to its left |
 | `caption_duration`, `caption_balance_date` | "2025" under the line "For the quarters ended March 31, 2025 and 2024"; "March 31, 2025" under "Three months ended March 31, 2025 and 2024"; "2025" under "October 31, 2025 and 2024" on a balance sheet | A caption shared by the columns prints the period's end, as a full date or as a month and day beside that year, and for a duration its length; the column prints exactly one year, the period's end year; and the table has a column for every year the caption names |
 
@@ -653,6 +655,20 @@ and holds no tagged number anywhere, and it prints the reference in words
 "Notes", the note numbers alone ("13", "4, 5"). The heading "Note Reference
 Number" was already read this way.
 
+**An empty cell that holds only nil tags.** A balance sheet row such as
+"Commitments and contingencies" prints no amount, and filers tag its empty
+cells with a nil fact. Some attach the nil tag of one date to the empty cell
+under the other date, or to an empty spacer cell that has no date at all. The
+cell then used to stay unresolved ("Fact period differs from column heading"
+or "Unresolved column period"), and the flagged profile cannot record it
+either, because a tagging defect needs a number. Since November 19, 2026 a
+cell that prints nothing and holds nothing but nil tags is a blank cell: no
+number is printed, so none can stand under the wrong date. The cell is not
+linked to the fact, the nil facts stay facts of the filing, and the table
+lists the cells in `undisplayed_nil_tags`. A nil tag of the column's own date
+is linked as before, and a cell that prints anything or holds a tag with a
+value stays unresolved.
+
 **A balance dated at the period's end in an income statement.** An income
 statement may close with a balance, usually the shares outstanding, in a row
 that says so: "Shares outstanding at March 31," or "Actual shares outstanding
@@ -700,6 +716,17 @@ with the utility revenue concepts, reading the document in this way:
 - Tables of another scope are left out before the statement is chosen, as
   above, so a statement of the registrant's own that continues on an untitled
   next page is still found beside the partnership's.
+- A titled table whose columns no header dates used to stop the whole filing
+  ("Statement segment has an unresolved column period"). It still does when
+  it could be the statement: its undimensioned standard facts name, by
+  concept, every group the statement needs. A table none of whose numbers has
+  the registrant's own scope is left out. Any other is kept as a candidate
+  without periods (`_undated_candidate`): it can never be selected, but it
+  still makes a statement ambiguous when it stands under the statement's own
+  title, and the totals it holds still count against a page that may only
+  supplement a cash flow statement. A statement of comprehensive income with
+  "Pretax amount" and "Income tax" columns beside a dated income statement is
+  the usual case.
 
 **A complete cash flow statement followed by pages that supplement it.** A
 cash flow statement often runs on to a page of supplemental disclosures or a

@@ -390,6 +390,29 @@ class LastAttemptTests(unittest.TestCase):
         with self.assertRaises(TableExtractionError):
             select(whole('income'), parent_only, *self.split_cash())
 
+    def test_a_table_whose_columns_no_header_dates_stops_the_filing_only_if_it_could_be_the_statement(self):
+        other = ('Other comprehensive income', 'OtherComprehensiveIncomeLossNetOfTax', '1', HALF)
+
+        def parts(lines, title='Consolidated Statements of Comprehensive Income'):
+            return (whole('income'), table('undated', lines, title=title, header='Pretax amount'), whole('balance'), *self.split_cash())
+
+        with self.assertRaisesRegex(TableExtractionError, 'unresolved column period'):
+            select(*parts([INCOME[3], other]), corroborated_layouts=False)
+        selected = select(*parts([INCOME[3], other]))
+        self.assertEqual([part.table_key for part in selected], self.SPLIT)
+        self.assertEqual(selected[0].element.get('id'), 'income')
+        # Under the statement's own title it still makes the statement ambiguous
+        # (the filing then reports the first attempt's error, as always).
+        with self.assertRaises(TableExtractionError):
+            select(*parts([INCOME[3], other], title=TITLES['income']))
+        # A table that holds every group of the statement could be the statement.
+        with self.assertRaisesRegex(TableExtractionError, 'unresolved column period'):
+            select(*parts([INCOME[0], INCOME[2], INCOME[3]]))
+        # Another registrant's undated table is left out altogether.
+        partnership = {'kind': 'explicit', 'dimension': '{http://xbrl.sec.gov/dei/2026}LegalEntityAxis', 'member': '{http://example.com}PartnershipMember'}
+        tagged = [(*line, partnership) for line in (INCOME[0], INCOME[2], INCOME[3])]
+        self.assertEqual([part.table_key for part in select(*parts(tagged, title=TITLES['income']))], self.SPLIT)
+
     def test_a_balance_sheet_whose_two_sides_agree_needs_no_standard_equity_total(self):
         def parts(total):
             lines = [BALANCE[0], BALANCE[1], ('Total common shareholders equity', 'CommonShareholdersEquityOfTheCompany', '60', DATE),
