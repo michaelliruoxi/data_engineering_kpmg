@@ -352,6 +352,39 @@ class FiscalYearColumnTests(unittest.TestCase):
         self.assertEqual(_labelled_years(__import__('datetime').date(2023, 1, 8), None), {2023})
         self.assertEqual(_labelled_years(__import__('datetime').date(2023, 1, 28), 1), {2023, 2022})
 
+    def test_a_balance_column_that_names_only_the_period_the_filing_reports_on(self):
+        def cover(focus='2026', last_day='2026-07-03'):
+            dei = '{http://xbrl.sec.gov/dei/2026}'
+            return ({**fact('focus', 'x', HALF, focus), 'concept': dei + 'DocumentFiscalYearFocus', 'unit': None},
+                    {**fact('end', 'x', HALF, last_day), 'concept': dei + 'DocumentPeriodEndDate', 'unit': None})
+
+        header = '<tr><td></td><td>As of</td></tr><tr><td></td><td>Second Quarter of</td></tr><tr><td></td><td>2026</td></tr>'
+        quarter_end = {'instant': '2026-07-03'}
+        period, evidence, _ = self.periods(header, quarter_end, extra=cover())
+        self.assertEqual((period, evidence['anchor'], evidence['fiscal_year_focus']), (quarter_end, 'document_period_end', 2026))
+        # Another day than the cover's, another year than the cover's, or no cover facts at all: unresolved.
+        self.assertIsNone(self.periods(header, {'instant': '2026-07-04'}, extra=cover())[0])
+        self.assertIsNone(self.periods(header, quarter_end, extra=cover(focus='2025'))[0])
+        self.assertIsNone(self.periods(header, quarter_end)[0])
+        self.assertIsNone(self.periods(header, quarter_end, extra=(*cover(), {**cover(last_day='2026-04-03')[1], 'xml_id': 'other'}))[0])
+
+    def test_an_annual_statement_headed_by_its_year_end_date_alone(self):
+        income = ('Revenues', 'OperatingIncomeLoss', 'NetIncomeLoss')
+        header = '<tr><td></td><td>December 28, 2024</td></tr>'
+        year = {'startDate': '2023-12-31', 'endDate': '2024-12-28'}
+        opening = fact('opening', 'Assets', {'instant': '2023-12-30'})
+        period, evidence, _ = self.periods(header, year, extra=(opening,), concepts=income)
+        self.assertEqual((period, evidence['anchor']), (year, 'fiscal_year_ending_on_printed_date'))
+        # Without a balance on the day before the year begins the header reads as it always did.
+        self.assertEqual(self.periods(header, year, concepts=income)[0], {'instant': '2024-12-28'})
+        # A quarter ending on the printed date is no fiscal year, whatever balance precedes it.
+        quarter = {'startDate': '2024-09-29', 'endDate': '2024-12-28'}
+        before_quarter = fact('opening', 'Assets', {'instant': '2024-09-28'})
+        self.assertEqual(self.periods(header, quarter, extra=(before_quarter,), concepts=income)[0], {'instant': '2024-12-28'})
+        # A year ending on another day than the one printed is refused.
+        other = {'startDate': '2023-12-31', 'endDate': '2024-12-29'}
+        self.assertEqual(self.periods(header, other, extra=(opening,), concepts=income)[0], {'instant': '2024-12-28'})
+
     def test_a_year_glued_to_the_next_word_or_to_a_footnote_marker_is_still_a_year(self):
         income = ('Revenues', 'OperatingIncomeLoss', 'NetIncomeLoss')
         year = {'startDate': '2024-01-01', 'endDate': '2024-12-31'}
@@ -365,6 +398,45 @@ class FiscalYearColumnTests(unittest.TestCase):
         self.assertEqual(grid[1][1]['display_text'], '20251')
         # Without the raised marker "20251" is no year.
         self.assertIsNone(self.periods(header.replace('<sup>1</sup>', '1'), HALF, concepts=income)[0])
+
+
+class UndisplayedNilTests(unittest.TestCase):
+    """An empty cell that holds only a nil tag prints no number, whatever date the tag carries."""
+
+    def filing(self, *, text='', nil=True, period=OPENING):
+        filing = Filing()
+        filing.facts['nil'] = {**fact('nil', 'CommitmentsAndContingencies', period, '' if nil else '0'), 'is_nil': nil}
+        attribute = ' xsi:nil="true"' if nil else ''
+        filing.raw('balance', '<tr><td>Commitments and contingencies</td><td><ix:nonfraction id="nil" name="g:CommitmentsAndContingencies" '
+                              f'contextref="nil" unitref="usd"{attribute}>{text}</ix:nonfraction></td></tr>')
+        return filing
+
+    def cell(self, structures):
+        return next(cell for row in structures['balance_sheet']['rows'] for cell in row
+                    if cell['row_heading'] == 'Commitments and contingencies' and cell['column'] == 1)
+
+    def test_a_nil_tag_of_another_date_in_an_empty_cell_leaves_the_cell_blank(self):
+        filing = self.filing()
+        structures, tables = filing.extract()
+        self.assertEqual(unresolved(structures), [])
+        cell = self.cell(structures)
+        self.assertEqual((cell['classification'], cell['fact_references'], cell['unresolved_reason']), ('blank', [], None))
+        self.assertEqual(structures['balance_sheet']['undisplayed_nil_tags'],
+                         [{'cell_id': cell['cell_id'], 'column_period': END, 'xml_ids': ['nil']}])
+        validate_statement_segments(tables, filing.tree(), filing.facts, corroborated_layouts=True)
+        self.assertEqual(unresolved(filing.extract(corroborated_layouts=False)[0]), [('', 'Fact period differs from column heading')])
+
+    def test_a_nil_tag_of_the_columns_own_date_is_linked_as_before(self):
+        structures, _ = self.filing(period=END).extract()
+        cell = self.cell(structures)
+        self.assertEqual((cell['classification'], [ref['xml_id'] for ref in cell['fact_references']]), ('resolved', ['nil']))
+        self.assertNotIn('undisplayed_nil_tags', structures['balance_sheet'])
+
+    def test_a_printed_mark_or_a_tag_with_a_value_stays_unresolved(self):
+        for options in ({'text': '0', 'nil': False},):
+            with self.subTest(options=options):
+                self.assertEqual(unresolved(self.filing(**options).extract()[0]),
+                                 [(options['text'], 'Fact period differs from column heading')])
 
 
 class RatioColumnTests(unittest.TestCase):

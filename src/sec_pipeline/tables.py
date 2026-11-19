@@ -1149,7 +1149,30 @@ def _without_markers(cells, values):
     return [plain.get(value, value) for value in values] if plain else values
 
 
-def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset, captions=(), boundaries=None):
+def _document_period(facts):
+    """The fiscal year the filing's cover facts name and the last day of the period it reports on, or None.
+
+    Both must be stated exactly once, without a dimension:
+    `DocumentFiscalYearFocus` and `DocumentPeriodEndDate`.
+    """
+    stated = {'DocumentFiscalYearFocus': set(), 'DocumentPeriodEndDate': set()}
+    for record in facts.values():
+        match = re.fullmatch(r'\{https?://xbrl\.sec\.gov/dei/[0-9]{4}\}(DocumentFiscalYearFocus|DocumentPeriodEndDate)',
+                             record.get('concept') or '')
+        if match and not record.get('dimensions'):
+            stated[match[1]].add((record.get('raw_value') or '').strip())
+    if any(len(values) != 1 for values in stated.values()):
+        return None
+    focus, last_day = next(iter(stated['DocumentFiscalYearFocus'])), next(iter(stated['DocumentPeriodEndDate']))
+    try:
+        date.fromisoformat(last_day)
+    except ValueError:
+        return None
+    return (int(focus), last_day) if re.fullmatch(r'(?:19|20)\d\d', focus) else None
+
+
+def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset, captions=(), boundaries=None,
+                         document=None):
     """Accept the tagged period of columns whose printed header cannot be parsed alone.
 
     Every tagged number in such a column already carries one period, shared by
@@ -1164,6 +1187,12 @@ def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_ye
       length ending one year earlier or later: the comparative column of a
       caption that physically spans only its neighbour.
     - A balance column prints the tagged date in full.
+    - A duration column prints the period's last day in full and nothing
+      else, and the period is a whole fiscal year (52 or 53 weeks, or twelve
+      months) that begins on the day after a balance date this filing reports.
+    - A balance column prints only the fiscal year the filing's cover facts
+      name, and the tagged date is the last day of the period those facts
+      report on (`document`, a callable giving `_document_period`).
     - A balance column prints only a fiscal year, the tagged date falls in
       the first week of the January after it, and the filing itself shows a
       fiscal period to close on that date (`boundaries`, a callable giving
@@ -1275,6 +1304,35 @@ def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_ye
                 accept(column, 'caption_duration' if 'startDate' in candidate else 'caption_balance_date', caption=caption)
                 break
     comparatives()
+
+    # The readings below come last, so a column an earlier reading accepts keeps its evidence.
+    # An annual statement headed by its year-end dates alone ("December 28,
+    # 2024 / December 30, 2023"): the tags carry the fiscal year that ends on
+    # the printed date and begins on the day after a balance date this filing
+    # reports.
+    for column in sorted(pending):
+        candidate, _, tokens = pending[column]
+        if (tokens['full_dates'] and balance_dates is not None and 'startDate' in candidate
+                and 363 <= (date.fromisoformat(candidate['endDate']) - date.fromisoformat(candidate['startDate'])).days + 1 <= 372
+                and (date.fromisoformat(candidate['startDate']) - timedelta(days=1)).isoformat() in balance_dates):
+            accept(column, 'fiscal_year_ending_on_printed_date')
+    comparatives()
+
+    # A balance column that names only the fiscal period the filing reports on
+    # ("As of / Second Quarter of / 2026"): the filing's own cover facts give
+    # that period its last day, and the tags carry exactly that day.
+    reported = document() if document is not None and any(
+        column not in accepted and set(candidate) == {'instant'} for column, (candidate, _, _) in deferred.items()) else None
+    if reported is not None:
+        focus, last_day = reported
+        for column in sorted(deferred):
+            candidate, _, headers = deferred[column]
+            tokens = _printed_period_tokens(headers)
+            if (column not in accepted and candidate == {'instant': last_day} and tokens is not None and tokens['years'] == {focus}
+                    and not (tokens['full_dates'] or tokens['month_days'] or tokens['month_only'] or tokens['year_to_date'])
+                    and tokens['weeks'] is None):
+                accept(column, 'document_period_end', fiscal_year_focus=focus)
+
     return accepted
 
 
@@ -1518,7 +1576,7 @@ def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, ta
         table = next(cell for row in rows for cell in row)['_element'].xpath('ancestor::table[1]')[0]
         captions = _memo(('caption_lines', table), lambda: tuple(_caption_lines(table)))
         _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_year_offset, captions,
-                             boundaries=lambda: _fiscal_year_boundaries(facts))
+                             boundaries=lambda: _fiscal_year_boundaries(facts), document=lambda: _document_period(facts))
     # A column whose tags all carry one period that its header, read from the
     # physical grid, still contradicts: read the header rows where the page
     # displays them. The reading is taken only when every tagged column of the
@@ -1655,6 +1713,45 @@ def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=
     # must not join a parent, subsidiary, currency or dimensional statement.
     candidate = {'table': table, 'axes': axes, 'coverage': coverage, 'evidence': evidence, 'references': references,
                  'scopes': scopes, 'headings': _segment_heading_signatures(table, kind),
+                 'continued': kind in _statement_headings(table, continued=True)}
+    if heading_evidence:
+        candidate.update(headings={item.signature for item in heading_evidence if item.kind == kind},
+                         continued=any(item.continued for item in heading_evidence if item.kind == kind),
+                         consolidated=any(item.consolidated for item in heading_evidence if item.kind == kind))
+    return candidate
+
+
+def _undated_candidate(table, kind, facts, heading_evidence, concept_groups):
+    """A titled table whose columns no header dates (the last tables-v3 selection attempts only).
+
+    Such a table used to stop the whole filing. It still does (None) when it
+    could be the statement: its undimensioned standard facts name, by concept,
+    every group the statement needs. A table none of whose numbers has the
+    registrant's own scope is another registrant's and is left out (False).
+    Any other table is kept as a candidate without periods: it can never be
+    selected and adds nothing to a statement, but it still shares its title
+    with the tables beside it, and the concept groups it holds still count
+    against a page that may only supplement a statement.
+    """
+    names, scopes = set(), set()
+    for element in table.iter():
+        if local(element) != 'nonfraction' or _hidden(element):
+            continue
+        reference = facts.get(element.get('id'))
+        if reference is None or not isinstance(reference.get('entity'), dict):
+            return None
+        scopes.add(json.dumps({'entity': reference['entity'], 'unit': reference['unit'], 'dimensions': reference['dimensions']},
+                              sort_keys=True))
+        if (not reference['dimensions'] and not reference['is_nil']
+                and re.fullmatch(r'\{https?://(?:fasb\.org|xbrl\.us)/us-gaap/[^}]+\}[^}]+', reference['concept'])):
+            names.add(reference['concept'].split('}', 1)[-1])
+    if not any(not json.loads(scope)['dimensions'] for scope in scopes):
+        return False
+    covered = {index for index, group in enumerate(concept_groups[kind]) if names & set(group)}
+    if covered == set(range(len(concept_groups[kind]))):
+        return None
+    candidate = {'table': table, 'axes': [], 'coverage': {'undated': covered}, 'evidence': {}, 'references': {}, 'scopes': scopes,
+                 'headings': _segment_heading_signatures(table, kind),
                  'continued': kind in _statement_headings(table, continued=True)}
     if heading_evidence:
         candidate.update(headings={item.signature for item in heading_evidence if item.kind == kind},
@@ -2427,9 +2524,16 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                                                concept_groups=concept_groups, corroborate=corroborate,
                                                label_columns=extended, parent_detail=outside_notes)
             except TableExtractionError as exc:
-                if kind != 'cash_flow' or len(choices[kind]) != 1 or str(exc) != 'Statement segment has an unresolved column period':
-                    raise
-                candidate = _cash_named_header_continuation(tree, choices[kind][0], table, facts, html_ids, heading_evidence)
+                undated = str(exc) == 'Statement segment has an unresolved column period'
+                candidate = None
+                if kind == 'cash_flow' and len(choices[kind]) == 1 and undated:
+                    candidate = _cash_named_header_continuation(tree, choices[kind][0], table, facts, html_ids, heading_evidence)
+                if candidate is None and outside_notes and undated:
+                    # A table whose columns no header dates stops the filing
+                    # only if it could be the statement.
+                    candidate = _undated_candidate(table, kind, facts, heading_evidence, concept_groups)
+                    if candidate is False:
+                        continue
                 if candidate is None:
                     raise
             if candidate is not None:
@@ -3008,6 +3112,7 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
         summed_cash = (_summed_cash_components(rows, first_data, facts, html_ids)
                        if corroborated_layouts and advanced and kind == 'cash_flow' else {})
         summed_used = {}
+        undisplayed_nil = []
         cash_bindings, cash_reconciliations = {}, []
         if advanced and kind == 'cash_flow' and not reconciliation_segment and not closing_reconciliation:
             from .cash_reconciliation import bind_cash_reconciliations
@@ -3141,8 +3246,19 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                                                   else 'resolved')
                         row_refs.extend(cell['fact_references'])
                     except TableExtractionError as exc:
-                        cell['fact_references'] = []
-                        cell['classification'], cell['unresolved_reason'] = 'unresolved', str(exc)
+                        if (corroborated_layouts and not value.strip(_PRINTED) and cell['fact_references']
+                                and all(ref['is_nil'] for ref in cell['fact_references'])
+                                and str(exc) in ('Fact period differs from column heading', 'Unresolved column period')):
+                            # tables-v3 corroborated layouts only: an empty cell that
+                            # holds nothing but nil tags prints no number, so no number
+                            # can stand under the wrong date. The cell is blank and is
+                            # not linked; the nil facts stay facts of the filing.
+                            undisplayed_nil.append({'cell_id': cell['cell_id'], 'column_period': cell['column_period'],
+                                                    'xml_ids': [ref['xml_id'] for ref in cell['fact_references']]})
+                            cell['fact_references'] = []
+                        else:
+                            cell['fact_references'] = []
+                            cell['classification'], cell['unresolved_reason'] = 'unresolved', str(exc)
                 elif not is_header and cell['column'] > 0 and (re.search(r'[0-9]', value)
                         or re.fullmatch(r'[-–—]', value)):
                     if any(re.fullmatch(r'notereferencenumbers?', re.sub(r'\s+', '', heading), re.I)
@@ -3189,6 +3305,8 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
             structure['cash_reconciliation_evidence'] = cash_reconciliations
         if reconciliation_sections:
             structure['cash_reconciliation_sections'] = reconciliation_sections
+        if undisplayed_nil:
+            structure['undisplayed_nil_tags'] = undisplayed_nil
         if summed_used:
             structure['cash_component_sums'] = [
                 {'verification_version': 'cash-component-sum-v1', 'total_xml_id': total, 'component_xml_ids': sorted(identities)}
