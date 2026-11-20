@@ -1457,6 +1457,12 @@ def _displayed_header_rows(rows, first_data):
         if not row or (row_width, row_hidden) == (width, hidden):
             result.append(row)
             continue
+        if all(cell['column'] == 0 or hides(cell) or not cell['display_text'].strip(_PRINTED) for cell in row):
+            # A shorter row that prints nothing right of the label column (a
+            # sizing row, a row of hidden cells, a section title) has no
+            # caption that could stand above another column.
+            result.append(row)
+            continue
         if row_width - len(row_hidden) != len(visible):
             return None
         placed = []
@@ -1514,6 +1520,127 @@ def _note_reference(cell, tagged_columns):
     headings = [heading.strip(_PRINTED) for heading in cell['column_headings'] if heading.strip(_PRINTED)]
     return (bool(headings) and all(re.fullmatch(r'notes?', heading, re.I) for heading in headings)
             and bool(re.fullmatch(_NOTE_NUMBERS, value)))
+
+
+def _dated_parentheticals(rows, first_data, periods, facts, html_ids):
+    """Balances a row prints under their own month and year, left of the period columns.
+
+    tables-v3 corroborated layouts only. A balance sheet may give the shares
+    issued at each balance date a row of its own: "Common stock – shares
+    issued –", "March 2026", "4,009.2", before the amounts under the dated
+    columns or in a row without any. Left of the first column that has a
+    period, every number such a row prints must be tagged, each tag must be an
+    instant, and a cell left of the number must be exactly that instant's
+    month and year. A column of amounts whose header could not be read has no
+    such caption in its rows, so it is never taken for one of these. Returns
+    the ids of the tagged cells and of the caption cells.
+    """
+    with_period = [column for column, period in periods.items() if period is not None]
+    if not with_period:
+        return frozenset(), frozenset()
+    first_period = min(with_period)
+    tagged, captions = set(), set()
+    for row in rows[first_data:]:
+        row_tagged, row_captions, named = [], [], set()
+        for cell in row:
+            if cell['column'] + cell['colspan'] > first_period:
+                break
+            text = ' '.join(cell['display_text'].strip(_PRINTED).split())
+            numbers = [node for node in cell['_element'].iter() if local(node) == 'nonfraction']
+            if numbers:
+                dates = set()
+                for node in numbers:
+                    evidence = facts.get(node.get('id'))
+                    if evidence is None or html_ids.get(node.get('id'), 0) != 1 or set(evidence['period']) != {'instant'}:
+                        dates = None
+                        break
+                    instant = date.fromisoformat(evidence['period']['instant'])
+                    dates.add((instant.month, instant.year))
+                if not dates or not dates <= named or cell['column'] == 0:
+                    row_tagged = None
+                    break
+                row_tagged.append(cell['cell_id'])
+            else:
+                caption = re.fullmatch(r'(' + _MONTH_NAMES + r')\.? ((?:19|20)\d\d)', text, re.I)
+                if caption:
+                    named.add((_MONTH_NUMBERS[caption[1].lower()], int(caption[2])))
+                    if cell['column'] > 0:
+                        row_captions.append(cell['cell_id'])
+                elif cell['column'] > 0 and re.search(r'[0-9]', text):
+                    row_tagged = None
+                    break
+        if row_tagged:
+            tagged.update(row_tagged)
+            captions.update(row_captions)
+    return frozenset(tagged), frozenset(captions)
+
+
+def _spacer_zero(element):
+    """An untagged "0" set in type of one point or less (tables-v3 corroborated layouts only).
+
+    A filing tool prints such a zero to keep an otherwise empty ruled row
+    open; at that size it is no readable amount. The one "0" must be every
+    printed character of the cell, and the nearest element around it that
+    sets a font size must set at most one point.
+    """
+    if any((child.tail or '').strip(_PRINTED) for child in element.iter() if child is not element):
+        return False
+    printed = [node for node in element.iter() if isinstance(node.tag, str) and (node.text or '').strip(_PRINTED)]
+    if len(printed) != 1 or printed[0].text.strip(_PRINTED) != '0':
+        return False
+    node = printed[0]
+    while node is not None:
+        size = re.search(r'(?:^|;)\s*font-size\s*:\s*([0-9]*\.?[0-9]+)\s*pt\s*(?:;|$)', node.get('style') or '', re.I)
+        if size is not None:
+            return float(size[1]) <= 1.0
+        if node is element:
+            return False
+        node = node.getparent()
+    return False
+
+
+def _restated_period_captions(rows, first_data, periods):
+    """Cells of body rows that only restate the end of their own columns' periods.
+
+    tables-v3 corroborated layouts only. A cash flow statement often prints a
+    second line of dates above the reconciliation of its closing cash ("June
+    30," over "2026" and "2025", or "March 29, 2026" beside the caption). A
+    row qualifies when it holds no tag and every cell right of the label that
+    prints anything is such a caption: a full date equal to the end of every
+    period column the cell spans, a month and day equal to those ends, or,
+    directly below a row of month-and-day captions, the year of those ends.
+    A printed amount is none of these, so no number can be taken for a
+    caption.
+    """
+    captions, below_days = set(), False
+    for row in rows[first_data:]:
+        cells = [cell for cell in row if cell['column'] > 0 and cell['display_text'].strip(_PRINTED)]
+        kinds = []
+        if cells and not any(local(node) in ('nonfraction', 'nonnumeric') for cell in row for node in cell['_element'].iter()):
+            for cell in cells:
+                covered = [periods.get(column) for column in range(cell['column'], cell['column'] + cell['colspan'])]
+                ends = [date.fromisoformat(period.get('endDate') or period['instant']) for period in covered
+                        if period and (period.get('endDate') or period.get('instant'))]
+                value = ' '.join(cell['display_text'].strip(_PRINTED).split())
+                full = re.fullmatch(r'(' + _MONTH_NAMES + r')\.? ?(\d{1,2}), ?((?:19|20)\d\d)', value, re.I)
+                day = re.fullmatch(r'(' + _MONTH_NAMES + r')\.? ?(\d{1,2}),?', value, re.I)
+                if not ends:
+                    kinds.append(None)
+                elif full and all((end.year, end.month, end.day) == (int(full[3]), _MONTH_NUMBERS[full[1].lower()], int(full[2]))
+                                  for end in ends):
+                    kinds.append('date')
+                elif day and all((end.month, end.day) == (_MONTH_NUMBERS[day[1].lower()], int(day[2])) for end in ends):
+                    kinds.append('day')
+                elif below_days and re.fullmatch(r'(?:19|20)\d\d', value) and all(end.year == int(value) for end in ends):
+                    kinds.append('year')
+                else:
+                    kinds.append(None)
+        if kinds and all(kinds):
+            captions.update(cell['cell_id'] for cell in cells)
+            below_days = all(kind == 'day' for kind in kinds)
+        else:
+            below_days = False
+    return frozenset(captions)
 
 
 def _column_periods(rows, first_data, facts, ns, html_ids, *, advanced=False, tagging_defects=False,
@@ -3178,6 +3305,14 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
             label_columns = _label_columns(rows, first_data, column_periods)
             tagged_columns = frozenset(cell['column'] for row in rows[first_data:] for cell in row
                                        if any(local(node) == 'nonfraction' for node in cell['_element'].iter()))
+        # tables-v3 corroborated layouts only: body rows that restate the end
+        # of their columns' periods, as above a reconciliation of closing cash.
+        period_captions = (_restated_period_captions(rows, first_data, column_periods)
+                           if corroborated_layouts and advanced else frozenset())
+        # tables-v3 corroborated layouts only: balances a row prints under their
+        # own month and year, left of the period columns, and those captions.
+        dated_cells, dated_captions = (_dated_parentheticals(rows, first_data, column_periods, facts, html_ids)
+                                       if corroborated_layouts and advanced else (frozenset(), frozenset()))
         # tables-v3 corroborated layouts only: components of a cash balance
         # proved by the total printed below them, and those a cell relied on.
         summed_cash = (_summed_cash_components(rows, first_data, facts, html_ids)
@@ -3227,6 +3362,29 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                     cell['column_headings'] = column_headers(rows[reconciliation['start']:],
                         reconciliation['first'] - reconciliation['start'], cell['column'], advanced=advanced)
                     cell['column_period'] = reconciliation['periods'].get(cell['column'])
+                if (corroborated_layouts and inline and cell['column_period'] is None and cell['colspan'] > 1
+                        and cell['column'] > 0 and cell['column'] not in label_columns and cell['cell_id'] not in dated_cells):
+                    # tables-v3 corroborated layouts only: a tagged number printed
+                    # across grid columns, whose first column has no period of its
+                    # own, stands under the period of the columns it spans when
+                    # they give exactly one. Its tag must still carry that period.
+                    # A spanned column no body cell starts in has only its header.
+                    known = reconciliation['periods'] if in_reconciliation else column_periods
+                    spanned = set()
+                    for column in range(cell['column'], cell['column'] + cell['colspan']):
+                        if column in known:
+                            period = known[column]
+                        elif in_reconciliation:
+                            period = header_period(column_headers(
+                                rows[reconciliation['start']:], reconciliation['first'] - reconciliation['start'], column,
+                                advanced=advanced), advanced=advanced)
+                        else:
+                            period = header_period(column_headers(heading_rows if ri >= first_data else rows, first_data,
+                                                                  column, advanced=advanced), advanced=advanced)
+                        if period is not None:
+                            spanned.add(json.dumps(period, sort_keys=True))
+                    if len(spanned) == 1:
+                        cell['column_period'] = json.loads(next(iter(spanned)))
                 cell['fact_references'] = []
                 cell['unresolved_reason'] = None
                 if cell['cell_id'] in cash_bindings:
@@ -3251,7 +3409,7 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                                 'method': 'inline_id', 'inline_xpath': inline_source_xpath(tree, f),
                                 'scale': f.get('scale', '0'), 'inline_sign': f.get('sign'),
                                 'format': f.get('format')})
-                        if cell['column'] > 0 and cell['column'] not in label_columns:
+                        if cell['column'] > 0 and cell['column'] not in label_columns and cell['cell_id'] not in dated_cells:
                             header = cell['column_period']
                             if header is None:
                                 raise TableExtractionError('Unresolved column period')
@@ -3314,7 +3472,7 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                                 if ref['period'] != wanted:
                                     raise TableExtractionError('Fact period differs from column heading')
                         cell['classification'] = ('resolved_label' if cell['column'] == 0 or cell['column'] in label_columns
-                                                  else 'resolved')
+                                                  or cell['cell_id'] in dated_cells else 'resolved')
                         row_refs.extend(cell['fact_references'])
                     except TableExtractionError as exc:
                         if (corroborated_layouts and not value.strip(_PRINTED) and cell['fact_references']
@@ -3340,6 +3498,15 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                         # reference to a note. A label without a digit keeps the
                         # classification it always had in such a column.
                         cell['classification'] = 'label'
+                    elif cell['cell_id'] in period_captions:
+                        # A caption inside the body that restates its columns' period end.
+                        cell['classification'] = 'header'
+                    elif cell['cell_id'] in dated_captions:
+                        # The month and year a row prints before a balance of that date.
+                        cell['classification'] = 'label'
+                    elif corroborated_layouts and _spacer_zero(element):
+                        # A "0" of one point that only keeps a ruled row open.
+                        cell['classification'] = 'formatting'
                     else:
                         cell['classification'], cell['unresolved_reason'] = 'unresolved', 'untagged_financial_cell'
                 cell['is_total'] = row_label.lower().startswith(('total ', 'net '))

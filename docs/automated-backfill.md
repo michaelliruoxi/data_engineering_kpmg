@@ -651,6 +651,53 @@ cleanly (Aflac, Amazon, Equifax, Lockheed Martin, Microchip, Paramount
 Skydance and T-Mobile), all 14 pass the complete offline dry run, and each of
 the 2,915 that parsed cleanly before is byte-identical.
 
+Since November 20, 2026 a header row that is shorter than the numbered rows
+and prints nothing right of the label column (a sizing row of hidden cells, a
+section title such as "Revenues") no longer prevents this reading: it carries
+no caption that could stand above another column, so it is left where it is.
+A shorter row that does print right of the label still prevents it. T-Mobile's
+annual reports and CMS Energy's statements needed this.
+
+**More cells read as the page prints them (November 20, 2026).** Four more
+readings, again for `tables-v3` only and only for cells that were unresolved
+before:
+
+- *A spacer zero.* A filing tool prints "0" in type of one point to keep an
+  otherwise empty ruled row open (Bunge, HP). The cell is formatting when
+  that "0" is everything it prints and the nearest element around it that
+  sets a font size sets at most one point. A zero in readable type, any other
+  number, or a zero with no stated size stays an untagged number.
+- *A period caption inside the body.* A cash flow statement often repeats
+  dates above the reconciliation of its closing cash: "June 30," over "2026"
+  and "2025" (Aptiv), or "March 29, 2026" beside the caption (Lam Research).
+  A row is such a caption row when it holds no tag and every cell right of
+  the label that prints anything is a full date equal to the end of every
+  period column the cell spans, a month and day equal to those ends, or,
+  directly below a row of month-and-day captions, the year of those ends.
+  Its cells are headers. A year alone, a date that is not the column's own
+  end, or a row with a tag is not taken.
+- *A balance under its own month and year.* Procter & Gamble's balance sheet
+  prints the shares issued at each balance date left of the dated columns:
+  "Common stock – shares issued –", "March 2026", "4,009.2". Left of the
+  first column that has a period, a tagged number is part of the row label
+  (`resolved_label`, with its own date) when every tag in the cell is an
+  instant and a cell left of it is exactly that instant's month and year. A
+  column of amounts whose header could not be read has no such caption in its
+  rows and is never taken for one.
+- *A number printed across grid columns.* A tagged number whose cell starts
+  in a column without a period (where the other rows print the currency
+  sign) and spans into the dated one takes the period of the columns it
+  spans when they give exactly one, counting the header of a spanned column
+  no body cell starts in (Centene's reconciliation rows). Its tag must still
+  carry that period.
+
+Measured on the 1,036 filings that were served as text only or not at all on
+November 20: 64 more parse cleanly (Procter & Gamble 15, Aptiv 11, CMS Energy
+10, Bunge 10, T-Mobile 6, HP 5, Centene 5, Teradyne 1, BlackRock 1), and the
+128 of them that already parsed cleanly are byte-identical. 63 of the 64 pass
+the complete offline dry run; the Teradyne annual report still has a partly
+tagged number, which `tables-v3` refuses.
+
 **Row labels right of an empty first column.** A statement may leave its first
 grid column empty and print every row label in the next one. A label such as
 "Property, plant and equipment, net of accumulated depreciation of $5,909 and
@@ -1044,10 +1091,6 @@ report with a number the page and the XML cannot be compared on). The
 after: all 6,786 that parsed cleanly before are byte-identical, and the 20
 are the only filings that became clean.
 
-The checkpoint's `last_run` describes the selected profile and destination.
-Completion requires the current invocation to verify every queue entry; old
-successful statuses cannot establish completion after changing the database or
-extractor version. A bounded run or failure-only retry can therefore exit 2
 **The release in the DEI namespace.** The namespace of the SEC's document and
 entity information taxonomy carries its release: a year for most
 (`dei/2023`), a full date for 2019 and 2020 (`dei/2020-01-31`), and a quarter
@@ -1082,6 +1125,10 @@ the other 12 are rejected either way. One of the 13 was already loaded (a
 Digital Realty quarterly report of November 2022); its stored statements are
 the ones the joint selection takes.
 
+The checkpoint's `last_run` describes the selected profile and destination.
+Completion requires the current invocation to verify every queue entry; old
+successful statuses cannot establish completion after changing the database or
+extractor version. A bounded run or failure-only retry can therefore exit 2
 until a complete verification pass finishes.
 
 ```sql
