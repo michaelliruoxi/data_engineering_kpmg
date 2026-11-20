@@ -698,6 +698,24 @@ November 20: 64 more parse cleanly (Procter & Gamble 15, Aptiv 11, CMS Energy
 the complete offline dry run; the Teradyne annual report still has a partly
 tagged number, which `tables-v3` refuses.
 
+**A cash reconciliation under its own balance dates (November 20, 2026).**
+Ameriprise ends its cash flow table with the components of its cash balance
+under the two balance sheet dates ("June 30, 2026", "December 31, 2025")
+instead of the statement's periods, and without the title "Reconciliation of
+cash ... consolidated balance sheets" that already opened such a section. For
+`tables-v3` a body row of a cash flow statement that holds no tag and prints
+nothing but full dates right of its label now opens the same kind of section
+(`_balance_date_captions`), unless it only restates the ends of its own
+columns. The rows below it are read against those dates as in a titled
+section. In addition, and only where every existing reading refuses the tag,
+a cash balance (a concept whose name contains "Cash", the test
+`_endpoint_balance_period` applies) is accepted under the date its section
+prints. A balance that is not cash, or a balance of another date, stays
+unresolved. Measured on the 9,850 archived filings: the 8,895 that parsed
+cleanly are byte-identical; one Ameriprise quarterly report becomes clean and
+ten more are left with a single row, a deduction tagged with a concept that
+is not cash.
+
 **Row labels right of an empty first column.** A statement may leave its first
 grid column empty and print every row label in the next one. A label such as
 "Property, plant and equipment, net of accumulated depreciation of $5,909 and

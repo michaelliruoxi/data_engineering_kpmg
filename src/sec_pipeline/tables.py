@@ -1522,6 +1522,25 @@ def _note_reference(cell, tagged_columns):
             and bool(re.fullmatch(_NOTE_NUMBERS, value)))
 
 
+def _balance_date_captions(row, period_captions):
+    """Whether a body row prints nothing but full dates right of its label.
+
+    tables-v3 corroborated layouts only. A cash flow statement may close with
+    a reconciliation of cash to the balance sheets that is headed by the two
+    balance dates. The row holds no tag, prints at least one cell right of
+    the label, and each of those cells is one full date. A row that only
+    restates the ends of its own columns (`_restated_period_captions`) is a
+    caption of the statement itself and opens no such section.
+    """
+    cells = [cell for cell in row if cell['column'] > 0 and cell['display_text'].strip(_PRINTED)]
+    if not cells or all(cell['cell_id'] in period_captions for cell in cells):
+        return False
+    if any(local(node) in ('nonfraction', 'nonnumeric') for cell in row for node in cell['_element'].iter()):
+        return False
+    return all(re.fullmatch(r'(' + _MONTH_NAMES + r')\.? ?(\d{1,2}), ?((?:19|20)\d\d)',
+                            ' '.join(cell['display_text'].strip(_PRINTED).split()), re.I) for cell in cells)
+
+
 def _dated_parentheticals(rows, first_data, periods, facts, html_ids):
     """Balances a row prints under their own month and year, left of the period columns.
 
@@ -3349,6 +3368,23 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                         reconciliation = {'start': start, 'first': first, 'periods': periods}
                         reconciliation_sections.append({'header_start_row': start, 'first_data_row': first,
                                                         'column_periods': {str(column): period for column, period in periods.items()}})
+            elif (corroborated_layouts and advanced and kind == 'cash_flow' and reconciliation is None and ri >= first_data
+                    and _balance_date_captions(row, period_captions)):
+                # tables-v3 corroborated layouts only: a reconciliation of cash to
+                # the balance sheets headed by its own balance dates ("June 30,
+                # 2026", "December 31, 2025") without the title above them. The
+                # rows below are read against those dates exactly as in a titled
+                # section: only cash balances of that date are accepted there.
+                first = next((index for index in range(ri + 1, min(ri + 8, len(rows)))
+                              if any(local(element) == 'nonfraction' for cell in rows[index]
+                                     for element in cell['_element'].iter())), None)
+                if first is not None:
+                    periods, _ = _column_periods(rows[ri:], first - ri, facts, ns, html_ids, advanced=advanced)
+                    known = [period for period in periods.values() if period is not None]
+                    if known and all(set(period) == {'instant'} for period in known):
+                        reconciliation = {'start': ri, 'first': first, 'periods': periods}
+                        reconciliation_sections.append({'header_start_row': ri, 'first_data_row': first,
+                                                        'column_periods': {str(column): period for column, period in periods.items()}})
             row_refs = []
             for cell in row:
                 element = cell['_element']
@@ -3464,6 +3500,12 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
                                             'instant': header.get('endDate', header.get('instant'))}):
                                         wanted = dict(ref['period'])
                                         summed_used.setdefault(summed_cash[ref['xml_id']], []).append(ref['xml_id'])
+                                    elif (corroborated_layouts and in_reconciliation and set(header) == {'instant'}
+                                            and ref['period'] == header and 'Cash' in ref['concept'].rsplit('}', 1)[-1]):
+                                        # tables-v3 corroborated layouts only, and only where every
+                                        # reading above refused: any cash balance, as in
+                                        # _endpoint_balance_period, here under the date its section prints.
+                                        wanted = header
                                     else:
                                         raise TableExtractionError('Unexpected instant in cash-flow row')
                                 elif (corroborated_layouts and kind == 'income_statement' and 'instant' in ref['period']
