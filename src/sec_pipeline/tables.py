@@ -2501,13 +2501,17 @@ def _begins_its_line(node, tail):
         current = parent
 
 
-def _page_furniture_between(tree, left, right, kind):
+def _page_furniture_between(tree, left, right, kind, *, balances=None):
     """Nothing but footnotes, page furniture and the repeated title separates two tables.
 
     tables-v3 `extended` selection only; `_segments_adjacent` is the
     established rule. No table with a number or with more than a page
     footer's text, no title of another statement and no note heading may
     stand between the two. A footnote may refer to a note by its number.
+
+    `balances` (`balance_segments.tied_balance_segments` only) is asked about
+    the tagged numbers of a table between the two: a table whose numbers it
+    accepts is detail printed with the statement and may stand there.
     """
     nodes = list(tree.iter())
     positions = {node: index for index, node in enumerate(nodes)}
@@ -2518,6 +2522,10 @@ def _page_furniture_between(tree, left, right, kind):
     for node in nodes[start:end]:
         if not isinstance(node.tag, str) or _hidden(node):
             continue
+        if local(node) == 'table' and balances is not None:
+            numbers = [child for child in node.iter() if local(child) == 'nonfraction']
+            if numbers and balances(numbers):
+                continue
         if local(node) == 'table' and (len(text(node)) > 240 or any(local(child) == 'nonfraction' for child in node.iter())):
             return False
         for tail, piece in enumerate((node.text, node.tail)):
@@ -2809,7 +2817,9 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                 from .balance_segments import tied_balance_segments, verified_balance_segments
                 balance_segments = verified_balance_segments(tree, candidates, facts)
                 if balance_segments is None and extended:
-                    balance_segments = tied_balance_segments(tree, candidates)
+                    # Without a table of detail between the two first, as always.
+                    balance_segments = (tied_balance_segments(tree, candidates)
+                                        or tied_balance_segments(tree, candidates, facts=facts))
             if balance_segments is not None:
                 output.extend(balance_segments)
                 continue

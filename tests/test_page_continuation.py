@@ -193,6 +193,41 @@ class BalanceSheetPageTests(unittest.TestCase):
                 select(*self.parts(**options))
 
 
+class BalanceDetailBetweenTests(unittest.TestCase):
+    """A table of detail printed between the assets and the liabilities of a balance sheet tied by its totals."""
+
+    KEYS = ['income_statement', 'balance_sheet.segment_1', 'balance_sheet.segment_2', 'cash_flow']
+    DETAIL = ('Assets of consolidated entities', 'OtherAssets', '5', DATE)
+
+    def parts(self, *, detail=DETAIL, total='100'):
+        liabilities = [*BALANCE[1:3], ('Total liabilities and equity', 'LiabilitiesAndStockholdersEquity', total, DATE)]
+        return (whole('income'), table('assets', BALANCE[:1], title=TITLES['balance'], header=DATE_HEADER),
+                table('detail', [detail], before='<p>* Includes the following.</p>'),
+                table('liabilities', liabilities, title=TITLES['balance'], header=DATE_HEADER, before=PAGE), whole('cash'))
+
+    def test_balances_of_the_statements_entity_at_its_dates_may_stand_between(self):
+        with self.assertRaisesRegex(TableExtractionError, 'balance_sheet: ambiguous or incomplete'):
+            select(*self.parts(), corroborated_layouts=False)
+        selected = select(*self.parts())
+        self.assertEqual([part.table_key for part in selected], self.KEYS)
+        self.assertEqual([part.element.get('id') for part in selected[1:3]], ['assets', 'liabilities'])
+        self.assertEqual(selected[1].group['balance_continuation']['totals'][0]['raw_values'],
+                         {'Assets': '100', 'LiabilitiesAndStockholdersEquity': '100'})
+
+    def test_any_other_number_between_or_totals_that_do_not_tie_are_refused(self):
+        label, concept, value, _ = self.DETAIL
+        refused = ({'detail': (label, concept, value, OPENING)},      # a balance at another date
+                   {'detail': (label, 'Revenues', value, HALF)},      # an amount of a period
+                   {'total': '101'})                                  # the totals do not tie
+        for options in refused:
+            with self.subTest(options=options), self.assertRaises(TableExtractionError):
+                select(*self.parts(**options))
+        tree, facts = document(*self.parts())
+        facts['detail-0']['entity'] = {'scheme': 'http://www.sec.gov/CIK', 'identifier': '0000000002'}   # another entity's balance
+        with self.assertRaises(TableExtractionError):
+            select_statement_segments(tree, facts, corroborated_layouts=True)
+
+
 class IncomeStatementPageTests(unittest.TestCase):
     KEYS = ['income_statement.segment_1', 'income_statement.segment_2', 'balance_sheet', 'cash_flow']
 

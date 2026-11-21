@@ -558,6 +558,16 @@ on the next page". The last attempt also accepts the pair
 The tables are stored as `balance_sheet.segment_1` and
 `balance_sheet.segment_2`, with the tied facts in `balance_continuation`.
 
+Where that reading fails only because a table with numbers stands between the
+two, the pair is tried once more with one more thing allowed there: a table of
+detail printed with the statement, such as a footnote to a line of the assets
+(Berkshire Hathaway's Treasury bills) or the assets of consolidated entities
+(Citigroup). Every tagged number of such a table must be a balance of the
+statement's own entity at one of the statement's dates; a number of a period,
+of another date or of another entity still separates the two tables. The
+table of detail is no part of the stored statement, and every other condition
+above, the equal totals included, is unchanged.
+
 **An income statement printed once per period length.** A quarterly report may
 print the income statement as one table for the quarter and another for the
 year to date, each complete and under the same title. The last attempt accepts
