@@ -445,6 +445,53 @@ class RefusedScopeTests(unittest.TestCase):
             select(*self.parts(statement=False))
 
 
+class DiscontinuedCashTotalTests(unittest.TestCase):
+    """A cash flow statement that closes on the total of cash and cash equivalents including discontinued operations."""
+
+    TOTAL = 'CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations'
+
+    def parts(self, concept=TOTAL):
+        balances = [('Cash at beginning of period', concept, '20', OPENING), ('Cash at end of period', concept, '25', DATE)]
+        return (whole('income'), whole('balance'), table('cash', FLOWS + balances, title=TITLES['cash'], header=DURATION_HEADER))
+
+    def test_the_statement_is_complete_with_that_total(self):
+        with self.assertRaisesRegex(TableExtractionError, 'cash_flow: ambiguous or incomplete'):
+            select(*self.parts(), corroborated_layouts=False)
+        selected = select(*self.parts())
+        self.assertEqual([part.table_key for part in selected], ['income_statement', 'balance_sheet', 'cash_flow'])
+        self.assertEqual(selected[2].element.get('id'), 'cash')
+
+    def test_a_balance_that_is_no_total_of_cash_does_not_complete_it(self):
+        for concept in ('RestrictedCash', 'CashEquivalentsAtCarryingValue', 'DisposalGroupIncludingDiscontinuedOperationCashAndCashEquivalents'):
+            with self.subTest(concept=concept), self.assertRaisesRegex(TableExtractionError, 'cash_flow: ambiguous or incomplete'):
+                select(*self.parts(concept))
+
+
+class ContinuingOperationsNetIncomeTests(unittest.TestCase):
+    """An income statement whose net income is tagged as income from continuing operations."""
+
+    CONCEPTS = ('IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest',
+                'IncomeLossFromContinuingOperations')
+
+    def parts(self, concept):
+        income = [*INCOME[:3], ('Net income', concept, '8', HALF)]
+        return (table('income', income, title=TITLES['income'], header=DURATION_HEADER), whole('balance'), whole('cash'))
+
+    def test_the_statement_is_complete_with_that_line(self):
+        for concept in self.CONCEPTS:
+            with self.subTest(concept=concept):
+                with self.assertRaisesRegex(TableExtractionError, 'income_statement: ambiguous or incomplete'):
+                    select(*self.parts(concept), corroborated_layouts=False)
+                selected = select(*self.parts(concept))
+                self.assertEqual([part.table_key for part in selected], ['income_statement', 'balance_sheet', 'cash_flow'])
+                self.assertEqual(selected[0].element.get('id'), 'income')
+
+    def test_a_line_that_is_no_net_income_does_not_complete_it(self):
+        for concept in ('ComprehensiveIncomeNetOfTax', 'IncomeLossFromDiscontinuedOperationsNetOfTax', 'OperatingIncomeLoss'):
+            with self.subTest(concept=concept), self.assertRaisesRegex(TableExtractionError, 'income_statement: ambiguous or incomplete'):
+                select(*self.parts(concept))
+
+
 class ContinuedPageDetailTests(unittest.TestCase):
     """A page marked "(continued)" that adds rows of dimensional detail to the cash flow statement."""
     KEYS = ['income_statement', 'balance_sheet', 'cash_flow.segment_1', 'cash_flow.segment_2']
