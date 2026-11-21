@@ -412,11 +412,13 @@ Saturday ("Twenty-Six Week Periods Ended March 29, 2025", tagged from October
 | `document_period_end` | "As of / Second Quarter of / 2026" on a balance sheet | The header prints only the fiscal year the filing's cover facts name (`DocumentFiscalYearFocus`), and the tagged date is the last day of the period they report on (`DocumentPeriodEndDate`); both must be stated exactly once |
 | `ratio_of_adjacent_column` | "Percent to Sales" beside "March 31, 2024" under "Fiscal First Quarter Ended" | The header says percent and prints no year or date; every tag in the column is a pure ratio; and the tagged period is the established period of the nearest dated column to its left |
 | `caption_duration`, `caption_balance_date` | "2025" under the line "For the quarters ended March 31, 2025 and 2024"; "March 31, 2025" under "Three months ended March 31, 2025 and 2024"; "2025" under "October 31, 2025 and 2024" on a balance sheet | A caption shared by the columns prints the period's end, as a full date or as a month and day beside that year, and for a duration its length; the column prints exactly one year, the period's end year; and the table has a column for every year the caption names |
+| `caption_of_two_durations` | "Three Months Ended / 2024" and "Six Months Ended / 2024" under the line "For the Three and Six Months Ended June 30, 2024 and 2023" printed across the table (Entergy) | Tried after every other: the caption names exactly two lengths joined by "and" and prints the period's end as above; the column itself prints its year and which of the two lengths it has, and that length matches the tagged period |
 
 A caption is a header cell that names two or more years, or a line printed
 between the statement's title and the table (the lines listed under "Lines
 around a title" below; any other text ends the search). A caption for a
-balance column must print no length.
+balance column must print no length. A caption of two lengths never chooses
+between them: a column that does not print its own length stays unresolved.
 
 Since November 19, 2026 three printed forms of a year are also read. A period
 that ends in the first seven days of January may be headed by the year before:
@@ -508,7 +510,7 @@ its table. The whole line must be made of these:
 
 | Line | Example |
 | --- | --- |
-| Units | "(Millions of Dollars, Except Share Data)", "(Unaudited; in millions, except per share amounts)", "(Dollar amounts in thousands)", "($ and shares in millions, except per share amounts)", "(Dollars in millions, shares in thousands)" |
+| Units | "(Millions of Dollars, Except Share Data)", "(Unaudited; in millions, except per share amounts)", "(Dollar amounts in thousands)", "($ and shares in millions, except per share amounts)", "(Dollars in millions, shares in thousands)", "(unaudited and in thousands, except for share and par value amounts)" |
 | Units naming the currency first | "(In US$ and in thousands, except share and per share data)" |
 | Periods and dates | "March 31, 2025 and December 31, 2024", "For the Three- and Nine-Months Ended September 30, 2025 and 2024", "For the Three Months Ended March 30, 2024 and April 1, 2023, respectively", "Fiscal Years Ended in December" |
 | The registrant's name, in either spelling of its legal form | "W. R. Berkley Corporation and Subsidiaries" for the DEI name "W. R. BERKLEY CORP"; "Emerson Electric Co. & Subsidiaries" |
@@ -536,6 +538,13 @@ other one has failed also read a title printed in one block with its units in
 parentheses, in any of the units wordings above. Parentheses that hold any
 other word stay part of the text, which is then no title. A filing an earlier
 attempt accepts keeps its selection.
+
+The same attempts read a units statement broken over two lines between a title
+and its table as the one line it is: PG&E Corporation prints "(in" and
+"millions)" as two blocks above its cash flow statement. The first line must
+open a parenthesis that the second closes, and the two together must be a
+units line as listed above; "in" alone, or a second line with any other word,
+still ends the search.
 
 **A balance sheet printed as two tables.** The established rules join an
 assets table and a liabilities-and-equity table only when the second has no
@@ -768,6 +777,20 @@ before:
   instant and a cell left of it is exactly that instant's month and year. A
   column of amounts whose header could not be read has no such caption in its
   rows and is never taken for one.
+- *Balances under a row of years of their own.* American Electric Power's
+  balance sheet prints the shares authorized and issued at both balance dates
+  in columns of their own, left of the dated ones: a row that prints "2025"
+  and "2024" and nothing else, then "Shares Authorized" and "Shares Issued"
+  with a number under each year. On a balance sheet such a number is part of
+  the row label (`resolved_label`, with its own date) and the years are labels
+  when all of these hold: the row of years holds no tag and no label, and
+  each year stands over columns that no header dates, left of the first dated
+  column; every cell a row below prints right of its label begins under one
+  of those years and holds only tagged numbers; and each tag is a balance at
+  one of the statement's own dates, in the year printed above it. The first
+  row that prints anything else ends the rows read this way. Selection reads
+  them the same way in its last attempts, so the liabilities table is a
+  candidate at all.
 - *A number printed across grid columns.* A tagged number whose cell starts
   in a column without a period (where the other rows print the currency
   sign) and spans into the dated one takes the period of the columns it
@@ -959,6 +982,39 @@ Dominion, Edison International, Entergy, Eversource, Mid-America Apartment
 Communities, PG&E, PSEG, Southern Company and others); in each, every selected
 table holds the parent's own undimensioned numbers.
 
+**The parent's pages, tried last.** This reading looks outside the notes only,
+and there a page under a statement's title whose columns no header dates
+stands beside the statement as a candidate without periods, so the reading
+described under "A next page under the statement's title, without column
+dates" never saw it. Since November 21, 2026, when every attempt above has declined a combined
+filing, the parent's statements are looked for again: first with the last
+catalog described below, then with each of the three catalogs and two more
+readings (`parent_pages`):
+
+- a page of the registrant's own numbers under the statement's title, whose
+  columns no header dates, is offered as the next page of the table above it
+  and is joined only when the statement's own arithmetic holds across the page
+  break, exactly as in a filing of one registrant (VICI Properties prints the
+  net change in cash, the opening and closing balances and the supplemental
+  rows on such a page). A page nothing joins still stops the attempt;
+- the pages of a cash flow statement are joined when a later page names
+  exactly the periods of the first page in another order of first appearance:
+  the first row of Equity Residential's "(Continued)" page prints a number
+  for the earlier period alone. Every other condition for joining pages is
+  unchanged, and a page that names another period is still another statement.
+
+Every check listed above still applies to what these attempts select.
+
+Measured on the 9,850 archived filings on November 21, together with the
+readings added the same day (a caption of two lengths, balances under a row of
+years, units that begin "unaudited and", units broken over two lines, and
+lease income as revenue): 67 combined filings that were rejected parse cleanly
+(American Electric Power 19, Equity Residential 18, VICI Properties 11,
+Entergy 10, PG&E 5, DTE Energy 4), and 66 of them pass the complete offline
+dry run. In each, every selected table is printed under the parent's name or
+continues such a table, and holds the parent's own undimensioned totals. The
+8,990 filings that were already clean are byte-identical.
+
 **A balance sheet whose equity total has no standard concept.** A company may
 tag its total equity with a concept of its own (WEC Energy Group), so the
 table shows none of the standard equity totals. Where every other rule has
@@ -973,7 +1029,7 @@ selection is tried a final time counting
 `RegulatedAndUnregulatedOperatingRevenue`, the total operating revenue a
 regulated utility reports, as the revenue line of an income statement.
 
-**Two more standard totals, tried last.** After every attempt above, two more
+**More standard concepts, tried last.** After every attempt above, two more
 are made with a last catalog that adds:
 
 - `CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations` as
@@ -984,11 +1040,15 @@ are made with a last catalog that adds:
   `IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest`
   as the net income line of an income statement: a company without
   discontinued operations may tag its net income so (PNC, Fortive). The page
-  continuation reading already accepts both as a net income line.
+  continuation reading already accepts both as a net income line;
+- `OperatingLeaseLeaseIncome` as the revenue line of an income statement: the
+  standard lease income a landlord reports as its only revenue (Equity
+  Residential's "Rental income").
 
-Without them such a statement has no closing balance, or no net income, that
-the selection knows, and is rejected as incomplete. Each cash cell must still
-pass the opening and closing rules when the statement is extracted. A balance
+Without them such a statement has no closing balance, no net income or no
+revenue that the selection knows, and is rejected as incomplete. Each cash
+cell must still pass the opening and closing rules when the statement is
+extracted. A balance
 that is no total of cash (restricted cash alone, a disposal group's cash) and
 a line that is no net income (comprehensive income, income from discontinued
 operations) do not complete a statement.
