@@ -132,7 +132,7 @@ _RUNNING_HEADERS = re.compile(
     r"|item [0-9]{1,2}[ab]? (?:unaudited )?(?:condensed )?(?:consolidated )?financial statements"
     r"(?: and supplementary data)?(?: unaudited)?|continued)\b")
 _LINE_UNITS = re.compile(
-    r"(?:(?:un)?audited )?(?:in (?:us|u s)(?: dollars)? and )?"
+    r"(?:(?:un)?audited (?:and )?)?(?:in (?:us|u s)(?: dollars)? and )?"
     r"(?:(?:(?:(?:dollar )?amounts?|dollars?|u s dollars|us dollars)(?: (?:and )?shares)? |and shares )?in )?"
     r"(?:thousands|millions|billions)(?: of (?:u s |us )?dollars)?(?: shares in (?:thousands|millions|billions))?"
     r"(?: (?:except|and|per share)(?: (?:per|share|shares|par|value|values|data|amounts?|numbers?|and|or|of|in|for|as|where"
@@ -414,6 +414,7 @@ def _two_line_heading(second, registrants):
 def _previous(node, max_empty, max_blocks, *, wide=False, registrants=(), header_lines=False, block_units=False):
     empty = blocks = 0
     sibling = node.getprevious()
+    below = ""
     while sibling is not None:
         if _numeric(sibling):
             return (), False
@@ -432,9 +433,16 @@ def _previous(node, max_empty, max_blocks, *, wide=False, registrants=(), header
                 found = _two_line_heading(sibling, registrants)
             if found:
                 return found, False
-            if (_local(sibling) == "table" or sibling.xpath(".//table")
-                    or _numeric(sibling) or not _metadata(value, registrants if wide else (), header_lines)):
+            if _local(sibling) == "table" or sibling.xpath(".//table") or _numeric(sibling):
                 return (), False
+            if not _metadata(value, registrants if wide else (), header_lines):
+                # `block_units` only: a units statement broken over two lines
+                # ("(in" above "millions)") is read as the one line it is.
+                if not (block_units and below and value.count("(") == value.count(")") + 1
+                        and below.count(")") == below.count("(") + 1 and len(value) + len(below) <= 120
+                        and _metadata(f"{value} {below}", registrants if wide else (), header_lines)):
+                    return (), False
+            below = value
         sibling = sibling.getprevious()
     return (), True
 
@@ -451,7 +459,8 @@ def recover_headings(table, *, max_empty=128, max_blocks=8, max_ancestors=4, wid
     `header_lines` (with `wide`) also passes the lines a filing prints between
     a title and its table, as `_line_metadata` defines them, and reads a title
     printed over two lines. `block_units` (with `header_lines`) is described
-    at `statement_kind`.
+    at `statement_kind`; between a title and its table it also passes a units
+    statement broken over two lines ("(in" above "millions)").
     """
     if _local(table) != "table" or _hidden(table):
         return ()

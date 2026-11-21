@@ -253,6 +253,111 @@ class ParentScopeTests(unittest.TestCase):
                 t.select_statement_segments(tree, facts, corroborated_layouts=True)
 
 
+class ParentPagesTests(unittest.TestCase):
+    """The last attempts for the reporting parent of a combined filing both joint readings reject (tables-v3)."""
+    PRIOR = {'startDate': '2025-01-01', 'endDate': '2025-03-31'}
+    HEADER = '<tr><td></td><td>Three months ended March 31, 2026</td><td>Three months ended March 31, 2025</td></tr>'
+    FLOWS = [('Operating cash', 'NetCashProvidedByUsedInOperatingActivities', ('30', '28')),
+             ('Investing cash', 'NetCashProvidedByUsedInInvestingActivities', ('-10', '-9'))]
+    FINANCING = ('Financing cash', 'NetCashProvidedByUsedInFinancingActivities', ('-5', '-6'))
+    OPENING = ('Cash, beginning of period', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents', ('10', '8'))
+    CLOSING = ('Cash, end of period', 'CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents', ('25', '21'))
+    PAGES = ['1-income_statement', '1-balance_sheet', '1-cash_flow', '1-cash_page']
+
+    def filing(self, first, second, *, header=HEADER, suffix='', second_prior=PRIOR):
+        """The parent's cash flow statement over two pages of two periods; a value of None prints an empty cell.
+
+        `header` is the header row of the second page, `suffix` what follows its title and `second_prior` the
+        earlier period its numbers are tagged with.
+        """
+        tree, facts = ParentScopeTests.combined_name(self)
+        old = tree.xpath('//*[@id="1-cash_flow"]')[0]
+        name, title = (row[0].text for row in old.xpath('./tr')[:2])
+        for key, rows, top, mark, prior in (('1-cash_flow', first, self.HEADER, '', self.PRIOR),
+                                            ('1-cash_page', second, header, suffix, second_prior)):
+            parts = [f'<table id="{key}"><tr><td colspan="3">{name}</td></tr><tr><td colspan="3">{title}{mark}</td></tr>{top}']
+            for index, (label, concept, values) in enumerate(rows):
+                cells = ''
+                for column, value in enumerate(values):
+                    if value is None:
+                        cells += '<td></td>'
+                        continue
+                    period = (PERIOD, prior)[column]
+                    if 'beginning' in label:
+                        period = {'instant': ('2025-12-31', '2024-12-31')[column]}
+                    elif 'end of period' in label:
+                        period = {'instant': period['endDate']}
+                    identifier = f'p-{key}-{index}-{column}'
+                    facts[identifier] = {'xml_id': identifier, 'concept': '{' + GAAP + '}' + concept, 'context_ref': identifier,
+                                         'unit_ref': 'usd', 'unit': UNIT, 'raw_value': value, 'is_nil': False, 'dimensions': [],
+                                         'entity': ENTITY, 'period': period}
+                    cells += (f'<td><ix:nonFraction id="{identifier}" name="g:{concept}" contextRef="{identifier}" '
+                              f'unitRef="usd">{value}</ix:nonFraction></td>')
+                parts.append(f'<tr><td>{label}</td>{cells}</tr>')
+            old.addprevious(html.fragment_fromstring(''.join(parts) + '</table>'))
+        old.getparent().remove(old)
+        for key in [key for key in facts if key.startswith('f-1-cash_flow-')]:
+            del facts[key]
+        return tree, facts
+
+    def attempt(self, tree, facts, **options):
+        return t._select_statement_segments_v2(tree, facts, concept_groups=t._CORROBORATED_STATEMENT_CONCEPTS, corroborate=True,
+                                               extended=True, outside_notes=True, last_readings=True, **options)
+
+    def test_a_page_whose_columns_no_header_dates_is_the_parents_next_page_when_cash_reconciles(self):
+        tree, facts = self.filing([*self.FLOWS, self.FINANCING], [self.OPENING, self.CLOSING], header='')
+        with self.assertRaisesRegex(t.TableExtractionError, 'disagree on periods'):
+            self.attempt(tree, facts)
+        selected = t.select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertEqual([segment.element.get('id') for segment in selected], self.PAGES)
+        self.assertEqual(selected[2].group['page_continuation']['ties'][0]['raw_values'],
+                         {'operating': '30', 'investing': '-10', 'financing': '-5', 'opening': '10', 'closing': '25'})
+        self.assertEqual({column: value['period'] for column, value in selected[3].group['header_inheritance']['columns'].items()},
+                         {'1': PERIOD, '2': self.PRIOR})
+        # Cash that does not reconcile across the page break joins nothing.
+        closing = (*self.CLOSING[:2], ('26', '21'))
+        tree, facts = self.filing([*self.FLOWS, self.FINANCING], [self.OPENING, closing], header='')
+        with self.assertRaises(t.TableExtractionError):
+            t.select_statement_segments(tree, facts, corroborated_layouts=True)
+
+    def test_a_continued_page_may_name_the_same_periods_in_another_order(self):
+        proceeds = ('Proceeds from notes', 'ProceedsFromNotesPayable', (None, '4'))
+        second = [proceeds, self.FINANCING, self.CLOSING]
+        tree, facts = self.filing(self.FLOWS, second, suffix=' (Continued)')
+        with self.assertRaisesRegex(t.TableExtractionError, 'disagree on periods'):
+            self.attempt(tree, facts)
+        self.assertEqual([segment.element.get('id') for segment in self.attempt(tree, facts, parent_pages=True)], self.PAGES)
+        selected = t.select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertEqual([segment.element.get('id') for segment in selected], self.PAGES)
+        self.assertEqual(selected[2].group['column_periods'], [PERIOD, self.PRIOR])
+        # A page that names another period is still another statement.
+        tree, facts = self.filing(self.FLOWS, second, suffix=' (Continued)',
+                                  header=self.HEADER.replace('March 31, 2025', 'March 31, 2024'),
+                                  second_prior={'startDate': '2024-01-01', 'endDate': '2024-03-31'})
+        with self.assertRaisesRegex(t.TableExtractionError, 'disagree on periods'):
+            self.attempt(tree, facts, parent_pages=True)
+        with self.assertRaises(t.TableExtractionError):
+            t.select_statement_segments(tree, facts, corroborated_layouts=True)
+
+    def test_lease_income_is_the_revenue_line_in_the_last_catalog(self):
+        def with_revenue(concept):
+            tree, facts = ParentScopeTests.combined_name(self)
+            for owner in (1, 2):
+                identifier = f'f-{owner}-income_statement-0'
+                facts[identifier] = {**facts[identifier], 'concept': '{' + GAAP + '}' + concept}
+                tree.xpath(f'//*[@id="{identifier}"]')[0].set('name', f'g:{concept}')
+            return tree, facts
+
+        tree, facts = with_revenue('OperatingLeaseLeaseIncome')
+        selected = t.select_statement_segments(tree, facts, corroborated_layouts=True)
+        self.assertEqual([segment.element.get('id') for segment in selected], ParentScopeTests.PARENT)
+        self.assertIn('OperatingLeaseLeaseIncome', t._LAST_STATEMENT_CONCEPTS['income_statement'][0])
+        for catalog in (t._STATEMENT_CONCEPTS, t._CORROBORATED_STATEMENT_CONCEPTS, t._UTILITY_STATEMENT_CONCEPTS):
+            self.assertNotIn('OperatingLeaseLeaseIncome', catalog['income_statement'][0])
+        with self.assertRaises(t.TableExtractionError):
+            t.select_statement_segments(*with_revenue('OtherOperatingIncome'), corroborated_layouts=True)
+
+
 class ArchivedJointStatementTests(unittest.TestCase):
     CASES = {
         '0000922224-26-000044': ['div[291]/table', 'div[320]/table', 'div[330]/table', 'div[310]/table'],

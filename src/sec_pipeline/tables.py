@@ -217,15 +217,18 @@ _UTILITY_STATEMENT_CONCEPTS = {
 }
 # Tried after both catalogs above have declined a filing: the standard total
 # of cash and cash equivalents that includes discontinued operations, for a
-# statement without restricted cash (J.B. Hunt), and the standard income
-# from continuing operations a company without discontinued operations
-# reports as its net income (PNC). Each cash cell must still pass the opening
-# and closing rules when the statement is extracted.
+# statement without restricted cash (J.B. Hunt), the standard income from
+# continuing operations a company without discontinued operations reports as
+# its net income (PNC), and the standard lease income a landlord reports as
+# its only revenue (Equity Residential). Each cash cell must still pass the
+# opening and closing rules when the statement is extracted.
 _LAST_STATEMENT_CONCEPTS = {
     **_CORROBORATED_STATEMENT_CONCEPTS,
-    'income_statement': (_STATEMENT_CONCEPTS['income_statement'][0], _STATEMENT_CONCEPTS['income_statement'][1] | {
-        'IncomeLossFromContinuingOperations',
-        'IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest'},
+    'income_statement': (
+        _STATEMENT_CONCEPTS['income_statement'][0] | {'OperatingLeaseLeaseIncome'},
+        _STATEMENT_CONCEPTS['income_statement'][1] | {
+            'IncomeLossFromContinuingOperations',
+            'IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest'},
         _STATEMENT_CONCEPTS['income_statement'][2]),
     'cash_flow': (*_CORROBORATED_STATEMENT_CONCEPTS['cash_flow'][:3], _CORROBORATED_STATEMENT_CONCEPTS['cash_flow'][3] | {
         'CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations'}),
@@ -1375,7 +1378,39 @@ def _corroborate_columns(deferred, periods, provenance, balance_dates, fiscal_ye
                     and tokens['weeks'] is None):
                 accept(column, 'document_period_end', fiscal_year_focus=focus)
 
+    # A caption shared by columns of two lengths ("For the Three and Six
+    # Months Ended June 30, 2024 and 2023"): the column itself prints its year
+    # and which of the two lengths it has, the caption the period's end.
+    for column in sorted(deferred):
+        candidate, _, headers = deferred[column]
+        if column in accepted or 'startDate' not in candidate or own[column] is None:
+            continue
+        for caption in [*(header for header in headers if several_years(header)), *captions]:
+            shared = _two_length_caption(caption)
+            if (shared is not None and shared[0]['years'] <= column_years and own[column][shared[1]] in shared[2]
+                    and _caption_agrees(own[column], shared[0], candidate, fiscal_year_offset)):
+                accept(column, 'caption_of_two_durations', caption=caption)
+                break
+
     return accepted
+
+
+def _two_length_caption(caption):
+    """A caption that names two lengths: what else it prints, the unit, and the two counts; or None.
+
+    "For the Three and Six Months Ended June 30, 2024 and 2023" heads the
+    three-month and the six-month columns of one statement. The two counts
+    must be joined by "and" before one unit, and the caption may name no
+    other length.
+    """
+    value = ' '.join(_period_text(re.sub(r'([a-z])([A-Z])', r'\1 \2', caption)).split())
+    match = re.search(r'\b(\d{1,2}) (?:and|&) (\d{1,2}) (month|week)s?\b', value)
+    if match is None or match[1] == match[2] or re.search(r'\d,? ?$', value[:match.start()]):
+        return None
+    tokens = _printed_period_tokens([value[:match.start()] + ' ' + value[match.end():]])
+    if tokens is None or tokens['months'] is not None or tokens['weeks'] is not None or tokens['year_to_date']:
+        return None
+    return tokens, match[3] + 's', {int(match[1]), int(match[2])}
 
 
 def _endpoint_balance_period(reference, preceding_text, header):
@@ -1606,6 +1641,79 @@ def _dated_parentheticals(rows, first_data, periods, facts, html_ids):
         if row_tagged:
             tagged.update(row_tagged)
             captions.update(row_captions)
+    return frozenset(tagged), frozenset(captions)
+
+
+def _year_captioned_balances(rows, first_data, periods, facts, html_ids):
+    """Balances printed under a row of years of their own, left of the period columns.
+
+    tables-v3 corroborated layouts only. A balance sheet may print the shares
+    authorized and issued at each balance date in columns of their own: a row
+    that prints "2025" and "2024" and nothing else, and below it rows whose
+    numbers stand under those years, all left of the columns that carry the
+    statement's dates.
+
+    The statement's own columns must all be dated by instants. The caption
+    row holds no tag, prints no label, and every cell it prints is one year
+    over columns without a period, left of the first column that has one. A
+    row directly below belongs to the captions while every cell it prints
+    right of its label begins in the column of a caption, ends left of the
+    first column that has a period, and holds only tagged numbers, each an
+    instant in that caption's year and the date of one of the statement's
+    columns. The first row that prints anything else ends them, and a caption
+    row without such a row is not taken. No column such a cell covers may
+    have a header that dates it, so a number the header already places is
+    never taken. Returns the ids of the tagged cells and of the caption cells.
+    """
+    known = [period for period in periods.values() if period is not None]
+    if not known or any(set(period) != {'instant'} for period in known):
+        return frozenset(), frozenset()
+    dates = {period['instant'] for period in known}
+    first_period = min(column for column, period in periods.items() if period is not None)
+
+    def undated(cell):
+        return (cell['column'] + cell['colspan'] <= first_period and all(
+            header_period(column_headers(rows, first_data, column, advanced=True), advanced=True) is None
+            for column in range(cell['column'], cell['column'] + cell['colspan'])))
+
+    tagged, captions = set(), set()
+    index = first_data
+    while index < len(rows):
+        row = rows[index]
+        index += 1
+        printed = [cell for cell in row if cell['display_text'].strip(_PRINTED)]
+        if (not printed or any(cell['column'] == 0 for cell in printed)
+                or any(local(node) in ('nonfraction', 'nonnumeric') for cell in row for node in cell['_element'].iter())
+                or any(not re.fullmatch(r'(?:19|20)\d\d', ' '.join(cell['display_text'].strip(_PRINTED).split()))
+                       or not undated(cell) for cell in printed)):
+            continue
+        years = {cell['column']: int(cell['display_text'].strip(_PRINTED)) for cell in printed}
+        below = []
+        while index < len(rows):
+            cells = [cell for cell in rows[index] if cell['column'] > 0 and cell['display_text'].strip(_PRINTED)]
+            if not cells:
+                if any(cell['display_text'].strip(_PRINTED) for cell in rows[index]):
+                    break
+                index += 1
+                continue
+            accepted = True
+            for cell in cells:
+                numbers = [node for node in cell['_element'].iter() if local(node) == 'nonfraction']
+                evidence = [facts.get(node.get('id')) for node in numbers]
+                if (cell['column'] not in years or not numbers or not undated(cell)
+                        or any(item is None or html_ids.get(node.get('id'), 0) != 1 or set(item['period']) != {'instant'}
+                               or item['period']['instant'] not in dates
+                               or date.fromisoformat(item['period']['instant']).year != years[cell['column']]
+                               for item, node in zip(evidence, numbers))):
+                    accepted = False
+                    break
+            if not accepted:
+                break
+            below.extend(cell['cell_id'] for cell in cells)
+            index += 1
+        if below:
+            tagged.update(below)
+            captions.update(cell['cell_id'] for cell in printed)
     return frozenset(tagged), frozenset(captions)
 
 
@@ -1854,11 +1962,16 @@ def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=
     # `label_columns` (tables-v3 `extended` selection only): the numbers a row
     # label carries are no statement column, as in the first grid column.
     labels = _label_columns(rows, first, periods) if label_columns else frozenset()
+    # The very last tables-v3 selection attempts only (`spanned_cells`), as
+    # extraction reads them: balances printed under a row of years of their
+    # own are no statement column either.
+    captioned = (_year_captioned_balances(rows, first, periods, facts, html_ids)[0]
+                 if spanned_cells and kind == 'balance_sheet' else frozenset())
     parent_rows = False
     axes, coverage, evidence, scopes, references = [], {}, {}, set(), {}
     for row in rows[first:]:
         for cell in row:
-            if cell['column'] == 0 or cell['column'] in labels:
+            if cell['column'] == 0 or cell['column'] in labels or cell['cell_id'] in captioned:
                 continue
             period = periods.get(cell['column'])
             elements = [element for element in cell['_element'].iter()
@@ -2610,12 +2723,15 @@ def _bare_titles(headings, registrants):
     return {heading[_registrant_prefix(heading, registrants, spaced=True):].strip() or heading for heading in headings}
 
 
-def _joined_cash_segments(tree, kind, candidates, facts, html_ids, required, extended, registrants):
+def _joined_cash_segments(tree, kind, candidates, facts, html_ids, required, extended, registrants, *, any_order=False):
     """Join the pages of one cash flow statement, or raise.
 
     The established rule, with the `extended` additions documented where they
     apply. `registrants` (the filing's own names) lets `extended` compare the
     titles of two pages when one prints the registrant's name before it.
+    `any_order` (`parent_pages` of `_select_statement_segments_v2` only)
+    accepts a later page of the statement that names exactly the periods of
+    the first page in another order of first appearance.
     """
     candidates = _include_cash_reconciliations(tree, candidates, facts, html_ids)
     first = candidates[0]
@@ -2644,7 +2760,10 @@ def _joined_cash_segments(tree, kind, candidates, facts, html_ids, required, ext
             if added is not None:
                 same_scopes = True
                 detail_scopes.update(added)
-        if (candidate['axes'] != wanted_axes or not same_scopes
+        same_axes = candidate['axes'] == wanted_axes or (
+            any_order and index and not is_reconciliation and len(candidate['axes']) == len(wanted_axes)
+            and set(candidate['axes']) == set(wanted_axes))
+        if (not same_axes or not same_scopes
                 or (index and not _segments_adjacent(tree, candidates[index - 1]['table'], candidate['table'], kind,
                                                     numbered_footer=bool(candidate.get('inherited_columns')))
                     and not (extended and _page_furniture_between(tree, candidates[index - 1]['table'],
@@ -2706,7 +2825,7 @@ def _joined_cash_segments(tree, kind, candidates, facts, html_ids, required, ext
 
 
 def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corroborate=False, extended=False,
-                                  outside_notes=False, last_readings=False):
+                                  outside_notes=False, last_readings=False, parent_pages=False):
     """Select original physical tables; v2 currently groups cash-flow continuations.
 
     Complete v1 selections are preserved. Split statements need matching exact
@@ -2727,6 +2846,13 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
     columns it spans, as extraction does (`_segment_candidate`), and gives a
     table that still has no title the `block_units` reading of
     `statement_headings.recover_headings`.
+    `parent_pages` (with `outside_notes` and `last_readings`, the last attempts
+    for the reporting parent of a combined filing only, see
+    `_parent_scope_segments`) offers a page under a statement's title whose
+    columns no header dates to `page_continuation.recover` as the next page of
+    the table above it, as `extended` does outside those attempts, and joins
+    the pages of a cash flow statement whose periods first appear in another
+    order on a later page.
     """
     concept_groups = _STATEMENT_CONCEPTS if concept_groups is None else concept_groups
     try:
@@ -2797,6 +2923,12 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                     candidate = _undated_candidate(table, kind, facts, heading_evidence, concept_groups)
                     if candidate is False:
                         continue
+                    if candidate is not None and parent_pages and choices[kind]:
+                        # `parent_pages` only: such a page of the registrant's
+                        # own numbers is offered as the next page of the table
+                        # above it, exactly as below, instead of standing
+                        # beside it as a candidate without periods.
+                        candidate = None
                 if candidate is None and extended and undated and choices[kind]:
                     # Extended attempts only: a page under the statement's title
                     # whose columns no header dates may be the next page of the
@@ -2886,7 +3018,14 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                 from .page_continuation import statement_before_supplements
                 whole = statement_before_supplements(tree, kind, candidates, required)
             if whole is None:
-                raise
+                if not parent_pages:
+                    raise
+                # `parent_pages` only, where both readings above give up: a
+                # later page whose first row prints a number for the earlier
+                # period alone names the same periods in another order.
+                output.extend(_joined_cash_segments(tree, kind, candidates, facts, html_ids, required, extended,
+                                                    spelled_registrants, any_order=True))
+                continue
             output.append(StatementSegment(kind, kind, whole['table']))
     # An undated page that no statement took as its next page still stops the filing.
     selected = {segment.element for segment in output}
@@ -3189,15 +3328,20 @@ def _parent_scope_segments(tree, facts, source_facts):
         if len(printed) == 1:
             names[record['raw_value'].strip().zfill(10)] = next(iter(printed))
     parent_cik = (parent[1] or '').zfill(10)
-    # Last, both catalogs once more with a number printed across grid columns
-    # read under the period it spans and titles printed with their units
-    # (`last_readings`).
-    for concept_groups, last_readings in ((_CORROBORATED_STATEMENT_CONCEPTS, False), (_UTILITY_STATEMENT_CONCEPTS, False),
-                                          (_CORROBORATED_STATEMENT_CONCEPTS, True), (_UTILITY_STATEMENT_CONCEPTS, True)):
+    # Third and fourth, both catalogs once more with a number printed across
+    # grid columns read under the period it spans and titles printed with
+    # their units (`last_readings`). Then the last catalog, and last all three
+    # with the parent's pages read as `parent_pages` describes.
+    for concept_groups, last_readings, parent_pages in (
+            (_CORROBORATED_STATEMENT_CONCEPTS, False, False), (_UTILITY_STATEMENT_CONCEPTS, False, False),
+            (_CORROBORATED_STATEMENT_CONCEPTS, True, False), (_UTILITY_STATEMENT_CONCEPTS, True, False),
+            (_LAST_STATEMENT_CONCEPTS, True, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, True),
+            (_UTILITY_STATEMENT_CONCEPTS, True, True), (_LAST_STATEMENT_CONCEPTS, True, True)):
         try:
             selected = _validate_primary_scope(
                 _select_statement_segments_v2(tree, facts, concept_groups=concept_groups, corroborate=True, extended=True,
-                                              outside_notes=True, last_readings=last_readings), source_facts)
+                                              outside_notes=True, last_readings=last_readings, parent_pages=parent_pages),
+                source_facts)
         except TableExtractionError:
             continue
         for segment in selected:
@@ -3435,6 +3579,11 @@ def extract_tables(html_path, xml_path, *, filing_id: UUID, html_document_id: UU
         # own month and year, left of the period columns, and those captions.
         dated_cells, dated_captions = (_dated_parentheticals(rows, first_data, column_periods, facts, html_ids)
                                        if corroborated_layouts and advanced else (frozenset(), frozenset()))
+        if corroborated_layouts and advanced and kind == 'balance_sheet':
+            # And balances a balance sheet prints under a row of years of
+            # their own, read the same way.
+            year_cells, year_captions = _year_captioned_balances(rows, first_data, column_periods, facts, html_ids)
+            dated_cells, dated_captions = dated_cells | year_cells, dated_captions | year_captions
         # tables-v3 corroborated layouts only: components of a cash balance
         # proved by the total printed below them, and those a cell relied on.
         summed_cash = (_summed_cash_components(rows, first_data, facts, html_ids)

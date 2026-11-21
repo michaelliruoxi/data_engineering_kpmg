@@ -3,17 +3,19 @@
 * a "0" of one point that only keeps a ruled row open;
 * a body row that restates the end of its columns' periods;
 * a balance a row prints under its own month and year, left of the period columns;
+* balances a balance sheet prints under a row of years of their own, left of the period columns;
 * a tagged number printed across grid columns of which only one has a period;
 * a short header row that prints nothing right of the label column.
 """
 
+import json
 import unittest
 
 from lxml import html
 
 from sec_pipeline.tables import (
-    _column_periods, _dated_parentheticals, _displayed_header_rows, _restated_period_captions, _spacer_zero, layout_grid,
-    validate_statement_segments,
+    TableExtractionError, _column_periods, _dated_parentheticals, _displayed_header_rows, _restated_period_captions,
+    _segment_candidate, _spacer_zero, _year_captioned_balances, layout_grid, validate_statement_segments,
 )
 from tests.test_displayed_header_alignment import CAPTIONS, GAAP, HIDDEN, INCOME, PERIODS, YEARS, document, numbered
 from tests.test_printed_cell_readings import END, HALF, OPENING, Filing, unresolved
@@ -169,6 +171,98 @@ class DatedParentheticalTests(unittest.TestCase):
         # An id used twice in the page, or a table without a dated column, gives nothing.
         self.assertEqual(_dated_parentheticals(rows, 1, {1: None, 2: None, 3: END}, facts, {'a': 2, 'b': 1, 'c': 1})[0], frozenset())
         self.assertEqual(_dated_parentheticals(rows, 1, {1: None, 2: None, 3: None}, facts, {'a': 1}), (frozenset(), frozenset()))
+
+
+class YearCaptionedBalanceTests(unittest.TestCase):
+    """Shares authorized and issued at both balance dates under a row of years, left of the amount columns."""
+    HEADER = '<tr><td></td><td></td><td></td><td>June 30, 2025</td><td>December 31, 2024</td></tr>'
+    UNREAD = [('2025', 'untagged_financial_cell'), ('2024', 'untagged_financial_cell'), ('900', 'Unresolved column period'),
+              ('901', 'Unresolved column period'), ('500', 'Unresolved column period'), ('480', 'Unresolved column period')]
+
+    def filing(self, years=('2025', '2024'), second=OPENING, label='', between=''):
+        filing = Filing()
+        filing.headers['balance'] = self.HEADER
+        filing.rows['balance'] = []
+
+        def total(concept):
+            filing.raw('balance', f'<tr><td>Total {concept}</td><td></td><td></td><td>{filing.tag(concept, END)}</td>'
+                                  f'<td>{filing.tag(concept, OPENING)}</td></tr>')
+
+        # The equity section follows numbered rows, so its row of years is no header row of the table.
+        total('Assets')
+        total('Liabilities')
+        filing.raw('balance', '<tr><td>Common stock – par value $1 per share:</td><td></td><td></td><td></td><td></td></tr>')
+        filing.raw('balance', f'<tr><td>{label}</td><td>{years[0]}</td><td>{years[1]}</td><td></td><td></td></tr>')
+        filing.raw('balance', between)
+        for name, concept, values in (('Shares authorized', 'CommonStockSharesAuthorized', ('900', '901')),
+                                      ('Shares issued', 'CommonStockSharesIssued', ('500', '480'))):
+            filing.raw('balance', f'<tr><td>{name}</td><td>{filing.tag(concept, END, values[0])}</td>'
+                                  f'<td>{filing.tag(concept, second, values[1])}</td><td></td><td></td></tr>')
+        total('StockholdersEquity')
+        return filing
+
+    def test_balances_under_a_row_of_years_are_part_of_the_label(self):
+        filing = self.filing()
+        structures, tables = filing.extract()
+        self.assertEqual(unresolved(structures), [])
+        cells = cells_of(structures['balance_sheet'])
+        self.assertEqual({cells[text]['classification'] for text in ('900', '901', '500', '480')}, {'resolved_label'})
+        self.assertEqual([cells[text]['fact_references'][0]['period'] for text in ('500', '480')], [END, OPENING])
+        self.assertEqual((cells['2025']['classification'], cells['2024']['classification']), ('label', 'label'))
+        self.assertEqual([column['column'] for column in structures['balance_sheet']['presentation_columns']], [3, 4])
+        validate_statement_segments(tables, filing.tree(), filing.facts, corroborated_layouts=True)
+
+    def test_without_the_option_the_rows_stay_unresolved(self):
+        structures, _ = self.filing().extract(corroborated_layouts=False)
+        self.assertEqual(unresolved(structures), self.UNREAD)
+
+    def test_a_year_date_or_row_that_does_not_fit_leaves_them_unresolved(self):
+        blank, note = '<tr><td></td><td></td><td></td><td></td><td></td></tr>', '<tr><td>(Note 9)</td><td></td><td></td><td></td><td></td></tr>'
+        cases = {
+            'another year printed': (self.filing(years=('2025', '2023')), '2023'),
+            'a date that is no column of the statement': (self.filing(second={'instant': '2024-06-30'}), '2024'),
+            'a flow instead of a balance': (self.filing(second=HALF), '2024'),
+            'a label beside the years': (self.filing(label='Shares'), '2024'),
+            'a row of words between': (self.filing(between=note), '2024'),
+        }
+        for name, (filing, second_year) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual([text for text, _ in unresolved(filing.extract()[0])],
+                                 ['2025', second_year, '900', '901', '500', '480'])
+        # An empty row between the years and the numbers changes nothing.
+        self.assertEqual(unresolved(self.filing(between=blank).extract()[0]), [])
+
+    def test_only_numbers_under_a_year_left_of_the_dated_columns_are_taken(self):
+        tree = html.document_fromstring(
+            '<table><tr><td></td><td></td><td></td><td>June 30, 2025</td></tr>'
+            '<tr><td></td><td>2025</td><td></td><td></td></tr>'
+            '<tr><td>Issued</td><td><ix:nonfraction id="a">9</ix:nonfraction></td><td></td><td></td></tr>'
+            '<tr><td>Held</td><td><ix:nonfraction id="b">9</ix:nonfraction></td><td><ix:nonfraction id="c">9</ix:nonfraction></td><td></td></tr>'
+            '<tr><td>Other</td><td><ix:nonfraction id="d">9</ix:nonfraction></td><td></td><td></td></tr>'
+            '</table>').getroottree()
+        rows, _ = layout_grid(tree.xpath('//table')[0], tree)
+        facts = {key: {'period': dict(END)} for key in 'abcd'}
+        ids = {key: 1 for key in 'abcd'}
+        periods = {1: None, 2: None, 3: END}
+        # The row that prints a number under no year ends the captions; nothing below it is taken.
+        self.assertEqual(_year_captioned_balances(rows, 1, periods, facts, ids),
+                         (frozenset({rows[2][1]['cell_id']}), frozenset({rows[1][1]['cell_id']})))
+        # An id used twice in the page, a statement of periods, or one without a dated column gives nothing.
+        self.assertEqual(_year_captioned_balances(rows, 1, periods, facts, ids | {'a': 2}), (frozenset(), frozenset()))
+        self.assertEqual(_year_captioned_balances(rows, 1, {1: None, 2: None, 3: HALF}, facts, ids), (frozenset(), frozenset()))
+        self.assertEqual(_year_captioned_balances(rows, 1, {1: None, 2: None, 3: None}, facts, ids), (frozenset(), frozenset()))
+
+    def test_selection_reads_them_only_in_its_last_attempts(self):
+        filing = self.filing()
+        tree = filing.tree()
+        [table] = tree.xpath('//table[@id="balance"]')
+        ids = {key: 1 for key in filing.facts}
+        with self.assertRaisesRegex(TableExtractionError, 'unresolved column period'):
+            _segment_candidate(tree, table, 'balance_sheet', filing.facts, ids, corroborate=True, label_columns=True)
+        candidate = _segment_candidate(tree, table, 'balance_sheet', filing.facts, ids, corroborate=True, label_columns=True,
+                                       spanned_cells=True)
+        self.assertEqual([json.loads(axis) for axis in candidate['axes']], [END, OPENING])
+        self.assertEqual(set(candidate['coverage'][candidate['axes'][0]]), {0, 1, 2})
 
 
 class SpannedColumnTests(unittest.TestCase):

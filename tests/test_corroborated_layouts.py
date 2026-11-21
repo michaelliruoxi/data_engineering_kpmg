@@ -205,6 +205,38 @@ class CaptionTests(unittest.TestCase):
         periods, provenance = resolve([['Year-Ended December 31,'], ['2024']], [year])
         self.assertEqual(periods[1], year)
 
+    # A caption printed across the table that heads its three-month and its six-month columns.
+    TWO_LENGTHS = 'For the Three and Six Months Ended June 30, 2025 and 2024'
+    LENGTHS = ['Three Months Ended', 'Three Months Ended', 'Six Months Ended', 'Six Months Ended']
+    BOTH = [duration('2025-04-01', '2025-06-30'), duration('2024-04-01', '2024-06-30'),
+            duration('2025-01-01', '2025-06-30'), duration('2024-01-01', '2024-06-30')]
+
+    def test_a_caption_of_two_lengths_dates_the_columns_that_print_which_length_they_have(self):
+        header = [[self.TWO_LENGTHS] * 4, self.LENGTHS, ['2025', '2024', '2025', '2024']]
+        periods, provenance = resolve(header, self.BOTH)
+        self.assertEqual([periods[column] for column in (1, 2, 3, 4)], self.BOTH)
+        self.assertEqual({provenance[str(column)]['anchor'] for column in (1, 2, 3, 4)}, {'caption_of_two_durations'})
+        self.assertEqual(provenance['3']['caption'], self.TWO_LENGTHS)
+        # Without the option nothing is read from the caption.
+        self.assertEqual(resolve(header, self.BOTH, corroborate=False)[1], {})
+
+    def test_a_caption_of_two_lengths_never_chooses_the_length_or_overrides_what_is_printed(self):
+        years = ['2025', '2024', '2025', '2024']
+        nine = [duration('2024-10-01', '2025-06-30'), self.BOTH[1], self.BOTH[2], self.BOTH[3]]
+        cases = (
+            ([[self.TWO_LENGTHS] * 4, years], self.BOTH),                                    # the column prints no length
+            ([[self.TWO_LENGTHS] * 4, ['Nine Months Ended', *self.LENGTHS[1:]], years], nine),   # a length the caption lacks
+            ([[self.TWO_LENGTHS] * 4, ['Six Months Ended', *self.LENGTHS[1:]], years], self.BOTH),  # another length is tagged
+            ([[self.TWO_LENGTHS.replace('June 30', 'March 31')] * 4, self.LENGTHS, years], self.BOTH),  # another end is printed
+            ([[self.TWO_LENGTHS.replace('2025 and 2024', '2024 and 2023')] * 4, self.LENGTHS, years], self.BOTH),  # no 2025
+            ([[self.TWO_LENGTHS.replace('Three and Six', 'Three, Six and Nine')] * 4, self.LENGTHS, years], self.BOTH),
+        )
+        for header, tagged in cases:
+            with self.subTest(header=header[0][0], lengths=header[1][0]):
+                periods, provenance = resolve(header, tagged)
+                self.assertNotEqual(periods[1], tagged[0])
+                self.assertNotIn('1', provenance)
+
 
 class ComparativeColumnTests(unittest.TestCase):
     CURRENT = duration('2025-01-01', '2025-03-31')
@@ -542,6 +574,29 @@ class HeaderLineTests(unittest.TestCase):
                      'Index to Consolidated Financial Statements and Schedules of Investments'):
             with self.subTest(line=line):
                 self.assertEqual(self.headings('Consolidated Balance Sheets', line), [])
+
+    def test_units_that_begin_with_unaudited_and(self):
+        line = '(unaudited and in thousands, except for share and par value amounts)'
+        self.assertEqual(self.headings('Consolidated Balance Sheets', line), self.BALANCE)
+        self.assertEqual(self.headings('Consolidated Balance Sheets', line, header_lines=False), [])
+        # The registrant, the title and those units as the lines of the table's own first cell.
+        cell = f'<td colspan="2"><div>W. R. EXAMPLE CORP.</div><div>CONSOLIDATED BALANCE SHEETS</div><div>{line}</div></td>'
+        self.assertEqual(self.headings(first_row=cell), [('balance_sheet', 'CONSOLIDATED BALANCE SHEETS')])
+        self.assertEqual(self.headings(first_row=cell, header_lines=False), [])
+        for other in ('(unaudited and restated, in thousands)', '(unaudited and in thousands, except as described in Note 2)'):
+            with self.subTest(line=other):
+                self.assertEqual(self.headings('Consolidated Balance Sheets', other), [])
+
+    def test_a_units_statement_broken_over_two_lines_is_one_line_in_the_last_reading(self):
+        self.assertEqual(self.headings('Consolidated Balance Sheets', '(in', 'millions)', block_units=True), self.BALANCE)
+        self.assertEqual(self.headings('Consolidated Balance Sheets', '(in', 'millions, except per share amounts)',
+                                       block_units=True), self.BALANCE)
+        # Not before that reading, and only where the two lines together are a units statement in parentheses.
+        self.assertEqual(self.headings('Consolidated Balance Sheets', '(in', 'millions)'), [])
+        for first, second in (('(in', 'millions'), ('in', 'millions)'), ('(see', 'Note 1)'), ('(in', 'millions) of the parent'),
+                              ('(in the opinion of management', 'millions)')):
+            with self.subTest(first=first, second=second):
+                self.assertEqual(self.headings('Consolidated Balance Sheets', first, second, block_units=True), [])
 
     def test_a_title_that_ends_with_its_period_and_the_title_financial_position(self):
         titles = {
