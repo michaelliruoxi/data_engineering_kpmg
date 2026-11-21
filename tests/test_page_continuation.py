@@ -382,6 +382,34 @@ class ContinuedIncomeStatementTests(unittest.TestCase):
             select_statement_segments(tree, facts, corroborated_layouts=True)
 
 
+class RefusedScopeTests(unittest.TestCase):
+    """Tables the scope check refuses are not the statements: the attempts after the one that chose them are still made."""
+
+    SEGMENT = {'dimension': '{' + GAAP + '}StatementBusinessSegmentsAxis', 'member': '{http://example.com/2025}BankMember'}
+    UNITS_TITLE = 'CONSOLIDATED STATEMENTS OF CASH FLOWS<br>(Unaudited) (Millions of Dollars)'
+
+    def parts(self, *, statement=True):
+        # A business group's cash flows stand under the statement's title; the statement itself
+        # prints its title with the units in one block, which only the last attempts read.
+        # The continued income statement page sends every kind through the selection of segments.
+        page = table('page', ContinuedIncomeStatementTests.COMMON, title=ContinuedIncomeStatementTests.CONTINUED,
+                     header=DURATION_HEADER, before=PAGE)
+        group = table('group', [(*line, self.SEGMENT) for line in FLOWS + BALANCES], title=TITLES['cash'], header=DURATION_HEADER)
+        own = table('own', FLOWS + BALANCES, caption=self.UNITS_TITLE, header=DURATION_HEADER, before=PAGE)
+        return (whole('income'), page, whole('balance'), group, *([own] if statement else []))
+
+    def test_a_later_attempt_whose_tables_pass_the_check_is_taken(self):
+        selected = select(*self.parts())
+        self.assertEqual([part.table_key for part in selected],
+                         ['income_statement.segment_1', 'income_statement.segment_2', 'balance_sheet', 'cash_flow'])
+        self.assertEqual(selected[3].element.get('id'), 'own')
+        self.assertIsNone(selected[3].group)
+
+    def test_the_first_refusal_is_reported_when_no_attempt_passes(self):
+        with self.assertRaisesRegex(TableExtractionError, 'lack undimensioned core facts'):
+            select(*self.parts(statement=False))
+
+
 class ContinuedPageDetailTests(unittest.TestCase):
     """A page marked "(continued)" that adds rows of dimensional detail to the cash flow statement."""
     KEYS = ['income_statement', 'balance_sheet', 'cash_flow.segment_1', 'cash_flow.segment_2']

@@ -3209,34 +3209,55 @@ def _select_statement_segments(tree, facts, *, cash_followers, corroborated_layo
                 raise
     if selected is not None:
         return selected
+    # Each later attempt reads more; the fourth and fifth look outside the
+    # notes only. The last four repeat the second to fifth with the last
+    # readings: a number printed across grid columns under the period it
+    # spans, and a title printed with its units.
+    attempts = (
+        (_CORROBORATED_STATEMENT_CONCEPTS, False, False, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, False, False),
+        (_UTILITY_STATEMENT_CONCEPTS, True, False, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, True, False),
+        (_UTILITY_STATEMENT_CONCEPTS, True, True, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, False, True),
+        (_UTILITY_STATEMENT_CONCEPTS, True, False, True), (_CORROBORATED_STATEMENT_CONCEPTS, True, True, True),
+        (_UTILITY_STATEMENT_CONCEPTS, True, True, True)) if corroborated_layouts else ()
+
+    def later(start):
+        """The selections of `attempts` from `start` on, each with the position after it."""
+        for position in range(start, len(attempts)):
+            concept_groups, extended, outside_notes, last_readings = attempts[position]
+            try:
+                yield position + 1, _select_statement_segments_v2(
+                    tree, facts, concept_groups=concept_groups, corroborate=True, extended=extended,
+                    outside_notes=outside_notes, last_readings=last_readings)
+            except TableExtractionError:
+                continue
+
+    following = 0
     try:
         selected = _select_statement_segments_v2(tree, facts, corroborate=corroborated_layouts)
     except TableExtractionError:
         from .statement_aliases import select_alias_statement_segments
         selected = select_alias_statement_segments(tree, facts)
-        if selected is None and corroborated_layouts:
+        if selected is None:
             # Last, so a filing the two established selections accept keeps
             # its exact segments and proof.
-            # Each later attempt reads more; the fourth and fifth look outside
-            # the notes only. The last four repeat the second to fifth with
-            # the last readings: a number printed across grid columns under
-            # the period it spans, and a title printed with its units.
-            for concept_groups, extended, outside_notes, last_readings in (
-                    (_CORROBORATED_STATEMENT_CONCEPTS, False, False, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, False, False),
-                    (_UTILITY_STATEMENT_CONCEPTS, True, False, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, True, False),
-                    (_UTILITY_STATEMENT_CONCEPTS, True, True, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, False, True),
-                    (_UTILITY_STATEMENT_CONCEPTS, True, False, True), (_CORROBORATED_STATEMENT_CONCEPTS, True, True, True),
-                    (_UTILITY_STATEMENT_CONCEPTS, True, True, True)):
-                try:
-                    selected = _select_statement_segments_v2(tree, facts, concept_groups=concept_groups, corroborate=True,
-                                                             extended=extended, outside_notes=outside_notes,
-                                                             last_readings=last_readings)
-                    break
-                except TableExtractionError:
-                    selected = None
+            following, selected = next(later(0), (0, None))
         if selected is None:
             raise
-    selected = _validate_primary_scope(selected, source_facts)
+    try:
+        selected = _validate_primary_scope(selected, source_facts)
+    except TableExtractionError:
+        # tables-v3 corroborated layouts only: tables the scope check refuses
+        # are not the statements, so the attempts after the one that chose
+        # them are still made. The first selection that passes the check is
+        # taken; if none does, the first refusal is reported as before.
+        for _, candidate in later(following):
+            try:
+                selected = _validate_primary_scope(candidate, source_facts)
+                break
+            except TableExtractionError:
+                continue
+        else:
+            raise
     return _with_cash_followers(tree, selected, source_facts) if cash_followers else selected
 
 
