@@ -577,8 +577,9 @@ titled table of a kind, the last attempt reads the next table that holds a
 number as its continuation (`page_continuation`, `page-continuation-v1`) when
 all of these hold:
 
-- no reading finds a title for the second table, and neither table lies inside
-  a tagged text block (a note);
+- no reading finds a title for the second table, or it stands under the
+  statement's own title and no header dates its columns (see below), and
+  neither table lies inside a tagged text block (a note);
 - nothing but footnotes and page furniture stands between them, as above;
 - the second table prints the first table's column periods again, or prints no
   column headers and has the same columns, in which case each column takes the
@@ -590,12 +591,30 @@ all of these hold:
 | Statement | Arithmetic that must hold |
 | --- | --- |
 | Balance sheet | The one total assets fact of the first table equals the one total liabilities and equity fact of the second (`tied-balance-totals-v1`) |
-| Cash flow | Opening cash plus the operating, investing and financing totals and the exchange-rate effect equals closing cash; a tagged net change must agree with those totals |
+| Cash flow | Opening cash plus the operating, investing and financing totals and the exchange-rate effect equals closing cash; a tagged net change must agree with those totals. Both balances are read under one total cash concept; only where none gives both, the opening balance may carry another total cash concept than the closing one (cash of a disposal group at one of the two dates) |
 | Income statement | Income before income taxes less income tax expense, both in the first table, equals a net income line of the second |
 
 The tables are stored as `<kind>.segment_1` and `<kind>.segment_2` with the
 tied facts in `page_continuation`. A cash flow statement is read this way only
 when it is the single table found under a cash flow title.
+
+**A next page under the statement's title, without column dates.** Some
+filings repeat the statement's title above the next page, or mark it
+"(continued)", and print no column headers there. Such a table used to stop
+the filing ("unresolved column period"), because a titled table whose columns
+no header dates cannot be a candidate. In the last attempts it is set aside
+instead when a table of the same statement stands before it, and is then read
+as the next page of that table under exactly the conditions above. A page that
+no statement takes this way still stops the filing with the same message.
+
+**The same columns on both pages.** A page without column headers has the
+first page's columns when both grids are equally wide. Two grids that differ
+only in empty columns are not: there every column in which the second page
+prints a number must be a column in which the first page prints a number. A
+caption that begins in the label column and names no period, such as the
+statement's title repeated inside the table, heads the page and no column:
+where it dates nothing, the page has no column headers. The numbers on the
+page must still carry the periods they take, and the arithmetic must hold.
 
 **Dimensional detail on a continued cash flow page.** The established rule
 joins the pages of a cash flow statement only when every fact on every page

@@ -2700,6 +2700,7 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
             html_ids[node.get('id')] = html_ids.get(node.get('id'), 0) + 1
     choices = {kind: [] for kind in concept_groups}
     untitled = set()
+    undated_pages = {}
     registrants = spelled_registrants = ()
     if corroborate:
         from .statement_headings import registrant_names
@@ -2748,6 +2749,15 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                     candidate = _undated_candidate(table, kind, facts, heading_evidence, concept_groups)
                     if candidate is False:
                         continue
+                if candidate is None and extended and undated and choices[kind]:
+                    # Extended attempts only: a page under the statement's title
+                    # whose columns no header dates may be the next page of the
+                    # table above it. It is no candidate of its own. `recover`
+                    # joins it to that table only when the statement's own
+                    # arithmetic holds across the page break; if nothing joins
+                    # it, the filing is rejected below exactly as before.
+                    undated_pages.setdefault(kind, []).append((table, exc))
+                    continue
                 if candidate is None:
                     raise
             if candidate is not None:
@@ -2802,7 +2812,8 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                 # Only where every established rule gives up: a note table
                 # under the statement's title, or an untitled next page.
                 from .page_continuation import recover
-                recovered = recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups)
+                recovered = recover(tree, kind, candidates, untitled | {table for table, _ in undated_pages.get(kind, ())},
+                                    facts, html_ids, concept_groups)
                 if recovered is None and kind == 'balance_sheet':
                     from .balance_segments import whole_balance_sheet
                     recovered = whole_balance_sheet(candidates)
@@ -2823,6 +2834,12 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
             if whole is None:
                 raise
             output.append(StatementSegment(kind, kind, whole['table']))
+    # An undated page that no statement took as its next page still stops the filing.
+    selected = {segment.element for segment in output}
+    for pages in undated_pages.values():
+        for table, error in pages:
+            if table not in selected:
+                raise error
     if len({segment.element for segment in output}) != len(output):
         raise TableExtractionError('Different statements cannot reuse the same physical table')
     return tuple(output)

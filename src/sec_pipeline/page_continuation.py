@@ -6,8 +6,8 @@ keeps the selection it has. Two layouts are read here:
 
 * a note repeats a statement's title above a table that holds none of the
   statement's totals (`without_note_tables`);
-* a statement runs on to the next page in a table printed without a title
-  (`page_continuation`);
+* a statement runs on to the next page in a table printed without a title,
+  or under the statement's title without column dates (`page_continuation`);
 * another statement stands under the same title, every number of which
   carries a dimension: the statement repeated for a business group, or that
   of a second registrant (`with_own_scope`);
@@ -92,9 +92,15 @@ def _cash_tie(period, first_refs, second_refs):
         if _one(effects) is None:
             return None
         used['exchange_rate_effect'], effect = effects[0], _amount(effects[0])
-    for concept in _CASH_TOTAL_CONCEPTS:
-        opening = _one([ref for ref in refs if _name(ref) == concept and ref['period'] == opening_at])
-        closing = _one([ref for ref in refs if _name(ref) == concept and ref['period'] == closing_at])
+    # Both balances under one total cash concept first. Only where no concept
+    # gives both: the balance a period opens with may be reported under
+    # another total cash concept than the one it closes with, as where a
+    # disposal group held cash at one of the two dates only.
+    pairs = [(concept, concept) for concept in _CASH_TOTAL_CONCEPTS]
+    pairs += [(at_start, at_end) for at_start in _CASH_TOTAL_CONCEPTS for at_end in _CASH_TOTAL_CONCEPTS if at_start != at_end]
+    for at_start, at_end in pairs:
+        opening = _one([ref for ref in refs if _name(ref) == at_start and ref['period'] == opening_at])
+        closing = _one([ref for ref in refs if _name(ref) == at_end and ref['period'] == closing_at])
         if opening is not None and closing is not None and _amount(opening) + flows + effect == _amount(closing):
             used['opening'], used['closing'] = opening, closing
             break
@@ -145,26 +151,31 @@ def page_continuation(tree, kind, first, table, facts, html_ids, concept_groups)
     """Return a titled table and the untitled table that continues it on the next page.
 
     `first` is the one incomplete titled table of its kind and `table` the
-    next table of the document, for which no reading finds a title. Both
+    next table of the document, for which no reading finds a title, or which
+    stands under the statement's title with columns no header dates. Both
     lie outside the notes and only page furniture separates them. The second
     table either prints the first table's column periods again, or prints no
     column headers and has the same columns, in which case each column takes
-    the period the first table gives it. Both report one entity; together
-    they hold every concept group, and (except for a liabilities total) no
-    group twice. The statement's own arithmetic must then hold across the
-    page break for every period:
+    the period the first table gives it. It has the same columns when both
+    grids are equally wide, or when every column it prints a number in is one
+    the first table prints a number in; a caption that begins in the label
+    column and names no period is no column header. Both report one entity;
+    together they hold every concept group, and (except for a liabilities
+    total) no group twice. The statement's own arithmetic must then hold
+    across the page break for every period:
 
     * balance sheet: the one total assets fact of the first table equals the
       one total liabilities and equity fact of the second
       (`balance_segments.tied_balance_segments`);
     * cash flow: opening cash plus the three activity totals and the
-      exchange-rate effect equals closing cash, and a tagged net change
-      agrees with those totals;
+      exchange-rate effect equals closing cash, both balances under one total
+      cash concept or, where none gives both, under two, and a tagged net
+      change agrees with those totals;
     * income statement: income before income taxes less income tax expense,
       both in the first table, equals a net income line of the second.
     """
-    from .tables import (StatementSegment, TableExtractionError, _column_periods, _page_furniture_between,
-                         _segment_candidate, column_headers, layout_grid, local)
+    from .tables import (StatementSegment, TableExtractionError, _column_header_cells, _column_periods,
+                         _page_furniture_between, _period_caption, _segment_candidate, layout_grid, local)
 
     required = set(range(len(concept_groups[kind])))
     shape = {'instant'} if kind == 'balance_sheet' else {'startDate', 'endDate'}
@@ -186,27 +197,52 @@ def page_continuation(tree, kind, first, table, facts, html_ids, concept_groups)
     if data is None or not grid or not first_grid:
         return None
     columns = sorted({cell['column'] for row in rows[data:] for cell in row if cell['column'] > 0})
-    inherited = {}
-    if not any(column_headers(rows, data, column) for column in columns):
-        if len(first_grid[0]) != len(grid[0]):
-            return None
-        periods, _ = _column_periods(first_rows, first_data, facts, {}, html_ids, advanced=True, corroborate=True)
-        for column in columns:
-            period = periods.get(column)
-            if period is not None and set(period) == shape:
-                inherited[str(column)] = {'period': period, 'source_cells': [
-                    {'source_xpath': cell['source_xpath'], 'display_text': cell['display_text'],
-                     'row': cell['row'], 'column': cell['column'], 'colspan': cell['colspan']}
-                    for row in first_rows[:first_data] for cell in row
-                    if cell['display_text'] and cell['column'] <= column < cell['column'] + cell['colspan']]}
-    try:
-        # Inherited headers establish their own periods; corroboration never adds to them.
-        second = _segment_candidate(
-            tree, table, kind, facts, html_ids, concept_groups=concept_groups, corroborate=not inherited,
-            inherited_periods={int(column): value['period'] for column, value in inherited.items()} or None)
-    except TableExtractionError:
+
+    def numbered(table_rows, start):
+        return {cell['column'] for row in table_rows[start:] for cell in row
+                if any(local(node) == 'nonfraction' for node in cell['_element'].iter())}
+
+    def read(inherit):
+        inherited = {}
+        if inherit:
+            periods, _ = _column_periods(first_rows, first_data, facts, {}, html_ids, advanced=True, corroborate=True)
+            for column in columns:
+                period = periods.get(column)
+                if period is not None and set(period) == shape:
+                    inherited[str(column)] = {'period': period, 'source_cells': [
+                        {'source_xpath': cell['source_xpath'], 'display_text': cell['display_text'],
+                         'row': cell['row'], 'column': cell['column'], 'colspan': cell['colspan']}
+                        for row in first_rows[:first_data] for cell in row
+                        if cell['display_text'] and cell['column'] <= column < cell['column'] + cell['colspan']]}
+        try:
+            # Inherited headers establish their own periods; corroboration never adds to them.
+            candidate = _segment_candidate(
+                tree, table, kind, facts, html_ids, concept_groups=concept_groups, corroborate=not inherited,
+                inherited_periods={int(column): value['period'] for column, value in inherited.items()} or None)
+        except TableExtractionError:
+            return None, inherited
+        return (candidate if candidate is not None and candidate['axes'] == first['axes'] else None), inherited
+
+    # The second page has the first page's columns when both grids are equally
+    # wide. Grids that differ only in empty columns are not: there every column
+    # the second page prints a number in must be one the first page prints a
+    # number in.
+    same_columns = (len(first_grid[0]) == len(grid[0])
+                    or numbered(rows, data) <= numbered(first_rows, first_data))
+    headers = [cell for column in columns for cell in _column_header_cells(rows, data, column)]
+    if headers:
+        second, inherited = read(False)
+        # A caption that begins in the label column and names no period, such
+        # as the statement's title repeated inside the table, heads the page,
+        # not a column: where it dates nothing, the page has no column headers.
+        if (second is None and same_columns
+                and all(cell['column'] == 0 and not _period_caption(cell['display_text']) for cell in headers)):
+            second, inherited = read(True)
+    elif same_columns:
+        second, inherited = read(True)
+    else:
         return None
-    if second is None or second['axes'] != first['axes']:
+    if second is None:
         return None
     entities = {json.dumps(ref['entity'], sort_keys=True) for candidate in (first, second)
                 for refs in candidate['references'].values() for ref in refs}
@@ -318,6 +354,9 @@ def recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups):
     Otherwise a titled table that shares its title with no other candidate
     may continue on the next page (`page_continuation`); exactly one must.
     A cash flow statement is read this way only as the single candidate left.
+    `untitled` holds the tables that may be such a page: those no reading
+    finds a title for, and those under the statement's title whose columns no
+    header dates.
     """
     from .tables import StatementSegment, _hidden, local
 
