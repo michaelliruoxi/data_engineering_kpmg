@@ -450,13 +450,13 @@ class HeaderLineTests(unittest.TestCase):
     REGISTRANTS = ['W. R. EXAMPLE CORP', 'AUTOEXAMPLE, INC /NY']
     BALANCE = [('balance_sheet', 'Consolidated Balance Sheets')]
 
-    def headings(self, *blocks, header_lines=True, first_row='<td>Revenues</td><td>1</td>'):
+    def headings(self, *blocks, header_lines=True, first_row='<td>Revenues</td><td>1</td>', block_units=False):
         tree = html.document_fromstring(
             '<html><body>' + ''.join(f'<p>{block}</p>' for block in blocks)
             + f'<table><tr>{first_row}</tr><tr><td>Revenues</td><td>1</td></tr></table></body></html>').getroottree()
         [table] = tree.xpath('//table')
         # As selection does: the other spellings of the name belong to this reading only.
-        found = recover_headings(table, wide=True, header_lines=header_lines,
+        found = recover_headings(table, wide=True, header_lines=header_lines, block_units=block_units,
                                  registrants=registrant_names(self.REGISTRANTS, spellings=header_lines))
         return [(item.kind, item.text) for item in found]
 
@@ -503,6 +503,31 @@ class HeaderLineTests(unittest.TestCase):
                       'Consolidated Statements of Cash Flows (1) continued from Note 2'):
             with self.subTest(title=title):
                 self.assertEqual(self.headings(title), [])
+
+    def test_a_title_printed_in_one_block_with_its_units_in_parentheses(self):
+        titles = {
+            'W. R. EXAMPLE CORP.<br>CONSOLIDATED STATEMENTS OF CASH FLOWS<br>(Unaudited) (Millions of Dollars)': 'cash_flow',
+            'CONSOLIDATED BALANCE SHEETS (Millions of Dollars, Except Share Data)': 'balance_sheet',
+            'Consolidated Statements of Income (Dollars and shares in millions, except per share amounts)': 'income_statement',
+        }
+        for title, kind in titles.items():
+            with self.subTest(title=title):
+                self.assertEqual([found for found, _ in self.headings(title, block_units=True)], [kind])
+                # Read only on request, after the header-lines reading found nothing.
+                self.assertEqual(self.headings(title), [])
+                # The same block as the first row of the table itself.
+                in_table = f'<td colspan="2">{title}</td>'
+                self.assertEqual([found for found, _ in self.headings(first_row=in_table, block_units=True)], [kind])
+                self.assertEqual(self.headings(first_row=in_table), [])
+        # Parentheses that hold any other word stay part of the text, which is then no title.
+        for title in ('Consolidated Balance Sheets (Millions of Dollars, restated for the merger)',
+                      'Consolidated Balance Sheets (Millions of Dollars) and related information',
+                      'Consolidated Balance Sheets (Parent Company Only, Millions of Dollars)'):
+            with self.subTest(title=title):
+                self.assertEqual(self.headings(title, block_units=True), [])
+        # A units line of its own is still a header line, and the title beside it is read as before.
+        self.assertEqual(self.headings('Consolidated Balance Sheets', '($ and shares in millions, except per share amounts)',
+                                       block_units=True), self.BALANCE)
 
     def test_more_units_wordings_a_running_header_and_a_reference_to_a_note_are_header_lines(self):
         lines = ('(Dollar amounts in thousands)', '(Dollar amounts in thousands, except per share data)',
