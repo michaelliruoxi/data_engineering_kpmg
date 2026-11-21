@@ -34,9 +34,14 @@ TITLES = {'income': 'Consolidated Statements of Income', 'balance': 'Consolidate
           'cash': 'Consolidated Statements of Cash Flows'}
 
 
-def table(key, lines, *, title=None, header=None, before='', note=False):
-    """One table: `title` printed above it, `header` over its value column, `before` any HTML ahead of both."""
-    return {'key': key, 'lines': lines, 'title': title, 'header': header, 'before': before, 'note': note}
+def table(key, lines, *, title=None, header=None, before='', note=False, caption=None, pad=0, shift=0):
+    """One table: `title` printed above it, `header` over its value column, `before` any HTML ahead of both.
+
+    `caption` is a first row printed across the label and the value column, `pad` a number of
+    empty cells after each value and `shift` a number of empty cells between label and value.
+    """
+    return {'key': key, 'lines': lines, 'title': title, 'header': header, 'before': before, 'note': note,
+            'caption': caption, 'pad': pad, 'shift': shift}
 
 
 def whole(kind):
@@ -47,11 +52,14 @@ def whole(kind):
 def document(*tables):
     parts, facts = [], {}
     for item in tables:
-        rows = [f'<tr><td></td><td>{item["header"]}</td></tr>'] if item['header'] else []
+        shift, pad = '<td></td>' * item.get('shift', 0), '<td></td>' * item.get('pad', 0)
+        rows = [f'<tr><td colspan="{2 + item.get("shift", 0)}">{item["caption"]}</td></tr>'] if item.get('caption') else []
+        if item['header']:
+            rows.append(f'<tr><td></td>{shift}<td>{item["header"]}</td></tr>')
         for index, (label, concept, value, period, *dimensions) in enumerate(item['lines']):
             identifier = f'{item["key"]}-{index}'
-            rows.append(f'<tr><td>{label}</td><td><ix:nonfraction id="{identifier}" name="g:{concept}" '
-                        f'contextref="{identifier}" unitref="usd">{value}</ix:nonfraction></td></tr>')
+            rows.append(f'<tr><td>{label}</td>{shift}<td><ix:nonfraction id="{identifier}" name="g:{concept}" '
+                        f'contextref="{identifier}" unitref="usd">{value}</ix:nonfraction></td>{pad}</tr>')
             facts[identifier] = {'xml_id': identifier, 'concept': '{' + GAAP + '}' + concept, 'context_ref': identifier,
                                  'unit_ref': 'usd', 'period': dict(period), 'raw_value': value, 'is_nil': False,
                                  'dimensions': [dict(dimension) for dimension in dimensions],
@@ -122,6 +130,22 @@ class CashFlowPageTests(unittest.TestCase):
             with self.subTest(wrong=wrong), self.assertRaises(TableExtractionError):
                 select(*self.parts(extra=(effect, wrong), balances=closing))
 
+    def test_the_opening_balance_may_carry_another_total_cash_concept_than_the_closing_balance(self):
+        including = CASH + 'IncludingDisposalGroupAndDiscontinuedOperations'
+        opening = ('Cash at beginning of period', including, '20', OPENING)
+        selected = select(*self.parts(balances=[opening, BALANCES[1]]))
+        self.assertEqual([part.table_key for part in selected], self.KEYS)
+        tie = selected[2].group['page_continuation']['ties'][0]
+        self.assertEqual((tie['facts']['opening'], tie['facts']['closing']), ('page-0', 'page-1'))
+        # One concept for both balances is taken where it reconciles.
+        other = ('Cash at beginning of period, with the disposal group', including, '21', OPENING)
+        tie = select(*self.parts(balances=[other, *BALANCES]))[2].group['page_continuation']['ties'][0]
+        self.assertEqual((tie['facts']['opening'], tie['facts']['closing']), ('page-1', 'page-2'))
+        # Two concepts that do not reconcile, or a balance that is no total of cash, are refused.
+        for wrong in ((opening[0], including, '21', OPENING), (opening[0], 'RestrictedCash', '20', OPENING)):
+            with self.subTest(wrong=wrong), self.assertRaises(TableExtractionError):
+                select(*self.parts(balances=[wrong, BALANCES[1]]))
+
     def test_cash_that_does_not_reconcile_a_title_a_note_or_anything_else_between_is_refused(self):
         numbers = '<table><tr><td>Other</td><td><ix:nonfraction name="g:OtherAssets">5</ix:nonfraction></td></tr></table>'
         refused = (
@@ -188,6 +212,101 @@ class IncomeStatementPageTests(unittest.TestCase):
         for options in ({'net': '9'}, {'first': INCOME[:2]}, {'first': [INCOME[0], INCOME[2]]}):
             with self.subTest(options=options), self.assertRaises(TableExtractionError):
                 select(*self.parts(**options))
+
+
+class PageWithoutColumnDatesTests(unittest.TestCase):
+    """A next page printed under the statement's own title, whose columns no header dates."""
+
+    CASH_KEYS = ['income_statement', 'balance_sheet', 'cash_flow.segment_1', 'cash_flow.segment_2']
+    BALANCE_KEYS = ['income_statement', 'balance_sheet.segment_1', 'balance_sheet.segment_2', 'cash_flow']
+    CONTINUED = TITLES['cash'] + ' (continued)'
+    UNDATED = 'unresolved column period'
+
+    def cash(self, *, title=CONTINUED, first=FLOWS[:1], second=None, before=PAGE, first_pad=0, **page):
+        second = FLOWS[1:] + BALANCES if second is None else second
+        return (whole('income'), whole('balance'),
+                table('cash', first, title=TITLES['cash'], header=DURATION_HEADER, pad=first_pad),
+                table('page', second, title=title, before=before, **page))
+
+    def balance(self, *, total='100', **page):
+        liabilities = [*BALANCE[1:3], ('Total liabilities and equity', 'LiabilitiesAndStockholdersEquity', total, DATE)]
+        return (whole('income'), table('assets', BALANCE[:1], title=TITLES['balance'], header=DATE_HEADER),
+                table('liabilities', liabilities, title=TITLES['balance'] + ' (continued)', before=PAGE, **page), whole('cash'))
+
+    def inherited(self, segment):
+        return {column: value['period'] for column, value in segment.group['header_inheritance']['columns'].items()}
+
+    def test_the_page_takes_the_first_pages_periods_when_cash_reconciles(self):
+        with self.assertRaisesRegex(TableExtractionError, self.UNDATED):
+            select(*self.cash(), corroborated_layouts=False)
+        for title in (self.CONTINUED, TITLES['cash']):   # marked as a continuation, or the title repeated
+            with self.subTest(title=title):
+                selected = select(*self.cash(title=title))
+                self.assertEqual([part.table_key for part in selected], self.CASH_KEYS)
+                self.assertEqual([part.element.get('id') for part in selected[2:]], ['cash', 'page'])
+                self.assertEqual(self.inherited(selected[3]), {'1': HALF})
+                self.assertEqual(selected[3].group['header_inheritance']['source_table_key'], 'cash_flow.segment_1')
+                self.assertEqual(selected[2].group['page_continuation']['ties'][0]['facts'], {
+                    'operating': 'cash-0', 'investing': 'page-0', 'financing': 'page-1', 'opening': 'page-2', 'closing': 'page-3'})
+
+    def test_the_liabilities_page_takes_the_balance_date_when_the_totals_tie(self):
+        with self.assertRaisesRegex(TableExtractionError, self.UNDATED):
+            select(*self.balance(), corroborated_layouts=False)
+        selected = select(*self.balance())
+        self.assertEqual([part.table_key for part in selected], self.BALANCE_KEYS)
+        self.assertEqual([part.element.get('id') for part in selected[1:3]], ['assets', 'liabilities'])
+        self.assertEqual(self.inherited(selected[2]), {'1': DATE})
+        self.assertEqual(selected[2].group['page_continuation']['verification_version'], VERIFICATION_VERSION)
+
+    def test_a_page_no_statement_takes_still_stops_the_filing(self):
+        numbers = '<table><tr><td>Other</td><td><ix:nonfraction name="g:OtherAssets">5</ix:nonfraction></td></tr></table>'
+        page = table('page', FLOWS[1:] + BALANCES, title=self.CONTINUED, before=PAGE)
+        third = table('third', [('Cash paid for interest', 'InterestPaidNet', '3', HALF)], title=self.CONTINUED, before=PAGE)
+        refused = (
+            self.cash(second=[*FLOWS[1:], BALANCES[0], ('Cash at end of period', CASH, '26', DATE)]),   # cash does not reconcile
+            self.cash(second=FLOWS[1:] + BALANCES[1:]),                                                 # no opening balance
+            self.cash(first=FLOWS + BALANCES),                                 # the statement is complete without the page
+            self.cash(before=PAGE + numbers),                                  # another table of numbers stands between
+            self.cash(before='<p>Note 2. Summary of significant accounting policies</p>'),
+            self.cash(header='Real Estate'),                                   # a column header that names no period
+            (*self.cash(), third),                                             # a second page without column dates
+            (whole('income'), whole('balance'), page,                          # the page stands before the statement
+             table('cash', FLOWS[:1], title=TITLES['cash'], header=DURATION_HEADER, before=PAGE)),
+            self.balance(total='101'),                                         # the totals do not tie
+        )
+        for index, parts in enumerate(refused):
+            with self.subTest(case=index), self.assertRaisesRegex(TableExtractionError, self.UNDATED):
+                select(*parts)
+        # A page that only supplements a complete statement is left out as before (`statement_before_supplements`).
+        supplemented = select(*self.cash(first=FLOWS + BALANCES, second=third['lines']))
+        self.assertEqual([part.table_key for part in supplemented], ['income_statement', 'balance_sheet', 'cash_flow'])
+        self.assertIsNone(supplemented[2].group)
+
+    def test_grids_that_differ_only_in_empty_columns_have_the_same_columns(self):
+        # Titled or untitled, the page prints its numbers in a column the first page prints numbers in.
+        for options in ({'pad': 2}, {'first_pad': 3}, {'pad': 2, 'title': None}, {'first_pad': 3, 'title': None}):
+            with self.subTest(options=options):
+                selected = select(*self.cash(**options))
+                self.assertEqual([part.table_key for part in selected], self.CASH_KEYS)
+                self.assertEqual(self.inherited(selected[3]), {'1': HALF})
+        # Numbers in another column are not the first page's columns, whatever stands beside them.
+        for options in ({'shift': 1}, {'shift': 1, 'pad': 1}, {'shift': 1, 'title': None}, {'shift': 1, 'first_pad': 2}):
+            with self.subTest(options=options), self.assertRaises(TableExtractionError):
+                select(*self.cash(**options))
+
+    def test_a_caption_across_the_page_that_names_no_period_heads_no_column(self):
+        caption = 'Example Corp. ' + self.CONTINUED
+        for options in ({'caption': caption}, {'caption': caption, 'pad': 2}, {'caption': '(in millions)'}):
+            with self.subTest(options=options):
+                selected = select(*self.cash(**options))
+                self.assertEqual([part.table_key for part in selected], self.CASH_KEYS)
+                self.assertEqual(self.inherited(selected[3]), {'1': HALF})
+        refused = ({'caption': 'Three Months Ended June 30, 2025'},      # the caption dates the columns, with another period
+                   {'caption': caption, 'header': 'Real Estate'},        # a header over the numbers that names no period
+                   {'caption': caption, 'shift': 1})                     # the numbers stand in another column
+        for options in refused:
+            with self.subTest(options=options), self.assertRaises(TableExtractionError):
+                select(*self.cash(**options))
 
 
 class ContinuedPageDetailTests(unittest.TestCase):
