@@ -215,6 +215,21 @@ _UTILITY_STATEMENT_CONCEPTS = {
     'income_statement': (_STATEMENT_CONCEPTS['income_statement'][0] | {'RegulatedAndUnregulatedOperatingRevenue'},
                          *_STATEMENT_CONCEPTS['income_statement'][1:]),
 }
+# Tried after both catalogs above have declined a filing: the standard total
+# of cash and cash equivalents that includes discontinued operations, for a
+# statement without restricted cash (J.B. Hunt), and the standard income
+# from continuing operations a company without discontinued operations
+# reports as its net income (PNC). Each cash cell must still pass the opening
+# and closing rules when the statement is extracted.
+_LAST_STATEMENT_CONCEPTS = {
+    **_CORROBORATED_STATEMENT_CONCEPTS,
+    'income_statement': (_STATEMENT_CONCEPTS['income_statement'][0], _STATEMENT_CONCEPTS['income_statement'][1] | {
+        'IncomeLossFromContinuingOperations',
+        'IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest'},
+        _STATEMENT_CONCEPTS['income_statement'][2]),
+    'cash_flow': (*_CORROBORATED_STATEMENT_CONCEPTS['cash_flow'][:3], _CORROBORATED_STATEMENT_CONCEPTS['cash_flow'][3] | {
+        'CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations'}),
+}
 
 
 def _inline_namespaces(element, fallback=None):
@@ -3228,7 +3243,8 @@ def _select_statement_segments(tree, facts, *, cash_followers, corroborated_layo
         (_UTILITY_STATEMENT_CONCEPTS, True, False, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, True, False),
         (_UTILITY_STATEMENT_CONCEPTS, True, True, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, False, True),
         (_UTILITY_STATEMENT_CONCEPTS, True, False, True), (_CORROBORATED_STATEMENT_CONCEPTS, True, True, True),
-        (_UTILITY_STATEMENT_CONCEPTS, True, True, True)) if corroborated_layouts else ()
+        (_UTILITY_STATEMENT_CONCEPTS, True, True, True), (_LAST_STATEMENT_CONCEPTS, True, False, True),
+        (_LAST_STATEMENT_CONCEPTS, True, True, True)) if corroborated_layouts else ()
 
     def later(start):
         """The selections of `attempts` from `start` on, each with the position after it."""

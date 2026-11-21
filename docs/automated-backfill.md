@@ -973,6 +973,26 @@ selection is tried a final time counting
 `RegulatedAndUnregulatedOperatingRevenue`, the total operating revenue a
 regulated utility reports, as the revenue line of an income statement.
 
+**Two more standard totals, tried last.** After every attempt above, two more
+are made with a last catalog that adds:
+
+- `CashAndCashEquivalentsAtCarryingValueIncludingDiscontinuedOperations` as
+  the closing balance of a cash flow statement: the standard total a company
+  without restricted cash reports when it has discontinued operations (J.B.
+  Hunt);
+- `IncomeLossFromContinuingOperations` and
+  `IncomeLossFromContinuingOperationsIncludingPortionAttributableToNoncontrollingInterest`
+  as the net income line of an income statement: a company without
+  discontinued operations may tag its net income so (PNC, Fortive). The page
+  continuation reading already accepts both as a net income line.
+
+Without them such a statement has no closing balance, or no net income, that
+the selection knows, and is rejected as incomplete. Each cash cell must still
+pass the opening and closing rules when the statement is extracted. A balance
+that is no total of cash (restricted cash alone, a disposal group's cash) and
+a line that is no net income (comprehensive income, income from discontinued
+operations) do not complete a statement.
+
 **Combined filings.** A filing made for a parent and its subsidiaries selects
 the reporting parent's statements by the registrant name printed with each
 title (`joint_statements`). When that established reading rejects the filing,
