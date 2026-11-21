@@ -14,7 +14,7 @@ from .source_locators import source_xpath
 _GAAP = r'https?://(?:fasb\.org|xbrl\.us)/us-gaap/[^/]+'
 
 
-def tied_balance_segments(tree, candidates):
+def tied_balance_segments(tree, candidates, *, facts=None):
     """Return an assets table and a liabilities-and-equity table tied by their totals.
 
     tables-v3 corroborated layouts only, for a balance sheet printed as two
@@ -25,18 +25,34 @@ def tied_balance_segments(tree, candidates):
     date the one undimensioned Assets fact of the first equals the one
     undimensioned LiabilitiesAndStockholdersEquity fact of the second, in one
     currency.
+
+    `facts` (tried only after the reading without them) also passes a table of
+    detail between the two: a footnote to a line of the first table, or the
+    assets of consolidated entities printed below the assets. Every tagged
+    number of such a table must be a balance of the statement's own entity at
+    one of the statement's dates. It is no part of the statement.
     """
     from .tables import StatementSegment, _page_furniture_between
 
     if len(candidates) != 2:
         return None
     first, second = candidates
+
+    def balances(numbers):
+        periods = [json.loads(axis) for axis in first['axes']]
+        entities = {json.dumps(ref['entity'], sort_keys=True) for refs in first['references'].values() for ref in refs}
+        return len(entities) == 1 and all(
+            reference is not None and reference['period'] in periods
+            and json.dumps(reference['entity'], sort_keys=True) in entities
+            for reference in (facts.get(node.get('id')) for node in numbers))
+
     if (not first['axes'] or first['axes'] != second['axes'] or first['continued']
             or any(set(json.loads(axis)) != {'instant'} for axis in first['axes'])
             or any(groups not in ({0}, {0, 1}) for groups in first['coverage'].values())
             or any(groups != {1, 2} for groups in second['coverage'].values())
             or not first['headings'].intersection(second['headings'])
-            or not _page_furniture_between(tree, first['table'], second['table'], 'balance_sheet')):
+            or not _page_furniture_between(tree, first['table'], second['table'], 'balance_sheet',
+                                           balances=balances if facts is not None else None)):
         return None
     core_scope, totals, groups = None, [], []
     for axis in first['axes']:
