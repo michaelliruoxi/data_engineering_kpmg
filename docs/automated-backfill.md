@@ -676,6 +676,18 @@ The added scopes are recorded as `detail_scopes` in the statement group. Every
 other condition of the established rule (same title, same periods, adjacency,
 ordered continuation, complete combined evidence) is unchanged.
 
+**Tables the scope check refuses.** Once an attempt has selected tables, their
+core totals must carry no dimension and belong to one reporting entity
+(`_validate_primary_scope`). A selection that failed this check used to reject
+the filing outright, although a later attempt might have found the statements:
+in Vistra's annual reports the only tables an early attempt can read under a
+cash flow and a balance sheet title are the parent company's condensed
+statements in a note, every number of which carries a dimension. Tables the
+check refuses are not the statements, so the attempts after the one that
+chose them are now still made, and the first selection that passes the check
+is taken. The check itself is unchanged; if no attempt passes it, the first
+refusal is reported as before.
+
 **A note table under a statement's title.** A note sometimes repeats a
 statement's title above a table of detail ("Condensed Consolidated Balance
 Sheets" over a table of deferred revenue). The established rules then find two
