@@ -240,7 +240,7 @@ def _line_metadata(value, registrants):
                or re.fullmatch(r"[0-9]{1,3}|(?:19|20)[0-9]{2}", token) for token in tokens)
 
 
-def statement_kind(value, *, wide=False, registrants=(), header_lines=False):
+def statement_kind(value, *, wide=False, registrants=(), header_lines=False, block_units=False):
     """Recognize only a complete supported title, never a substring in prose.
 
     `wide` (tables-v3 corroborated layouts only) also reads a title printed
@@ -254,11 +254,20 @@ def statement_kind(value, *, wide=False, registrants=(), header_lines=False):
     also reads a title whose words are printed without a space, one that
     carries a footnote marker, the registrant's name in another spacing, and
     the cash flow statement titled "Consolidated Cash Flows".
+
+    `block_units` (with `header_lines`, tried only after it found nothing,
+    and for one block of text only) also passes a units statement in
+    parentheses in any wording a header line may have ("(Millions of
+    Dollars)"), as where the registrant's name, the title and the units are
+    the lines of one table cell.
     """
     if _FORBIDDEN.search(_clean(value)):
         return None
     if header_lines:
         value = re.sub(r"\(\s*[0-9]\s*\)", " ", value)
+    if block_units:
+        value = re.sub(r"\(([^()]*)\)", lambda match: " " if _LINE_UNITS.fullmatch(_tokens(match.group(1))) else match.group(0),
+                       value)
     value = normalized_heading(value)
     if header_lines:
         value = _without_trailing_period(_split_glued(value, _TITLE_WORDS))
@@ -319,14 +328,15 @@ def _numeric(node):
     return any(_local(child) == "nonfraction" and not _hidden(child) for child in node.iter())
 
 
-def _block_headings(node, *, wide=False, registrants=(), header_lines=False):
+def _block_headings(node, *, wide=False, registrants=(), header_lines=False, block_units=False):
     """Return local title nodes only when surrounding text is header metadata."""
     if _numeric(node):
         return ()
     visible = _visible_text(node)
     if not visible or len(visible) > 640 or _FORBIDDEN.search(_NOTE_REFERENCE.sub(" ", visible) if header_lines else visible):
         return ()
-    kind = (lambda text: statement_kind(text, wide=True, registrants=registrants, header_lines=header_lines)) if wide else statement_kind
+    kind = (lambda text: statement_kind(text, wide=True, registrants=registrants, header_lines=header_lines,
+                                        block_units=block_units)) if wide else statement_kind
     candidates = []
     for child in node.iter():
         if not isinstance(child.tag, str) or _hidden(child):
@@ -401,7 +411,7 @@ def _two_line_heading(second, registrants):
                             source_xpath=source_xpath(first.getroottree(), first)),)
 
 
-def _previous(node, max_empty, max_blocks, *, wide=False, registrants=(), header_lines=False):
+def _previous(node, max_empty, max_blocks, *, wide=False, registrants=(), header_lines=False, block_units=False):
     empty = blocks = 0
     sibling = node.getprevious()
     while sibling is not None:
@@ -416,7 +426,8 @@ def _previous(node, max_empty, max_blocks, *, wide=False, registrants=(), header
             blocks += 1
             if blocks > max_blocks:
                 return (), False
-            found = _block_headings(sibling, wide=wide, registrants=registrants, header_lines=header_lines)
+            found = _block_headings(sibling, wide=wide, registrants=registrants, header_lines=header_lines,
+                                    block_units=block_units)
             if not found and header_lines:
                 found = _two_line_heading(sibling, registrants)
             if found:
@@ -429,7 +440,7 @@ def _previous(node, max_empty, max_blocks, *, wide=False, registrants=(), header
 
 
 def recover_headings(table, *, max_empty=128, max_blocks=8, max_ancestors=4, wide=False, registrants=(),
-                     header_lines=False):
+                     header_lines=False, block_units=False):
     """Recover one title from its own header or nearest bounded header blocks.
 
     Empty anchors do not consume the meaningful-block budget. Parent traversal
@@ -439,7 +450,8 @@ def recover_headings(table, *, max_empty=128, max_blocks=8, max_ancestors=4, wid
 
     `header_lines` (with `wide`) also passes the lines a filing prints between
     a title and its table, as `_line_metadata` defines them, and reads a title
-    printed over two lines.
+    printed over two lines. `block_units` (with `header_lines`) is described
+    at `statement_kind`.
     """
     if _local(table) != "table" or _hidden(table):
         return ()
@@ -449,13 +461,14 @@ def recover_headings(table, *, max_empty=128, max_blocks=8, max_ancestors=4, wid
             break
         if _FORBIDDEN.search(_visible_text(row)):
             return ()
-        own.extend(_block_headings(row, wide=wide, registrants=registrants, header_lines=header_lines))
+        own.extend(_block_headings(row, wide=wide, registrants=registrants, header_lines=header_lines,
+                                   block_units=block_units))
     if own:
         return _unique(own)
     node = table
     for _ in range(max_ancestors + 1):
         found, may_ascend = _previous(node, max_empty, max_blocks, wide=wide, registrants=registrants,
-                                      header_lines=header_lines)
+                                      header_lines=header_lines, block_units=block_units)
         if found or not may_ascend:
             return found
         node = node.getparent()

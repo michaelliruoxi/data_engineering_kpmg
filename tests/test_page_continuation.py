@@ -7,7 +7,7 @@ from lxml import html
 
 from sec_pipeline.balance_segments import whole_balance_sheet
 from sec_pipeline.page_continuation import (
-    VERIFICATION_VERSION, in_note, statement_before_supplements, with_own_scope, without_note_tables,
+    CONTINUED_PAGES_VERSION, VERIFICATION_VERSION, in_note, statement_before_supplements, with_own_scope, without_note_tables,
 )
 from sec_pipeline.tables import TableExtractionError, _bare_titles, select_statement_segments
 
@@ -34,14 +34,15 @@ TITLES = {'income': 'Consolidated Statements of Income', 'balance': 'Consolidate
           'cash': 'Consolidated Statements of Cash Flows'}
 
 
-def table(key, lines, *, title=None, header=None, before='', note=False, caption=None, pad=0, shift=0):
+def table(key, lines, *, title=None, header=None, before='', note=False, caption=None, pad=0, shift=0, spanned=()):
     """One table: `title` printed above it, `header` over its value column, `before` any HTML ahead of both.
 
     `caption` is a first row printed across the label and the value column, `pad` a number of
     empty cells after each value and `shift` a number of empty cells between label and value.
+    `spanned` names the lines whose number is printed across those empty cells and the value column.
     """
     return {'key': key, 'lines': lines, 'title': title, 'header': header, 'before': before, 'note': note,
-            'caption': caption, 'pad': pad, 'shift': shift}
+            'caption': caption, 'pad': pad, 'shift': shift, 'spanned': tuple(spanned)}
 
 
 def whole(kind):
@@ -58,7 +59,9 @@ def document(*tables):
             rows.append(f'<tr><td></td>{shift}<td>{item["header"]}</td></tr>')
         for index, (label, concept, value, period, *dimensions) in enumerate(item['lines']):
             identifier = f'{item["key"]}-{index}'
-            rows.append(f'<tr><td>{label}</td>{shift}<td><ix:nonfraction id="{identifier}" name="g:{concept}" '
+            across = index in item.get('spanned', ())
+            cell = f'<td colspan="{1 + item.get("shift", 0)}">' if across else f'{shift}<td>'
+            rows.append(f'<tr><td>{label}</td>{cell}<ix:nonfraction id="{identifier}" name="g:{concept}" '
                         f'contextref="{identifier}" unitref="usd">{value}</ix:nonfraction></td>{pad}</tr>')
             facts[identifier] = {'xml_id': identifier, 'concept': '{' + GAAP + '}' + concept, 'context_ref': identifier,
                                  'unit_ref': 'usd', 'period': dict(period), 'raw_value': value, 'is_nil': False,
@@ -307,6 +310,76 @@ class PageWithoutColumnDatesTests(unittest.TestCase):
         for options in refused:
             with self.subTest(options=options), self.assertRaises(TableExtractionError):
                 select(*self.cash(**options))
+
+
+class ContinuedIncomeStatementTests(unittest.TestCase):
+    """A complete income statement, then a page under its title marked "(continued)"."""
+
+    KEYS = ['income_statement.segment_1', 'income_statement.segment_2', 'balance_sheet', 'cash_flow']
+    CONTINUED = TITLES['income'] + ' (continued)'
+    COMMON = [('Net income applicable to common shareholders', 'NetIncomeLossAvailableToCommonStockholdersBasic', '7', HALF),
+              ('Preferred dividends', 'PreferredStockDividendsIncomeStatementImpact', '1', HALF)]
+    SEGMENT = {'dimension': '{' + GAAP + '}StatementBusinessSegmentsAxis', 'member': '{http://example.com/2025}BankMember'}
+
+    def parts(self, *, lines=COMMON, title=CONTINUED, header=DURATION_HEADER, before=PAGE, first=None, **page):
+        return (first or whole('income'), table('page', list(lines), title=title, header=header, before=before, **page),
+                whole('balance'), whole('cash'))
+
+    def test_the_statement_is_the_complete_table_and_its_continued_page(self):
+        with self.assertRaisesRegex(TableExtractionError, 'income_statement: ambiguous or incomplete'):
+            select(*self.parts(), corroborated_layouts=False)
+        selected = select(*self.parts())
+        self.assertEqual([part.table_key for part in selected], self.KEYS)
+        self.assertEqual([part.element.get('id') for part in selected[:2]], ['income', 'page'])
+        group = selected[0].group
+        self.assertEqual(group['continued_pages']['verification_version'], CONTINUED_PAGES_VERSION)
+        self.assertEqual(group['continued_pages']['entity'], {'scheme': 'http://www.sec.gov/CIK', 'identifier': '0000000001'})
+        self.assertEqual((group['heading'], group['segment_count'], group['column_periods']),
+                         ('consolidated statements of income', 2, [HALF]))
+        self.assertEqual(group['combined_concept_evidence'][0]['groups']['1'], ['income-3', 'page-0'])
+        self.assertEqual((selected[0].group['segment_index'], selected[1].group['segment_index']), (1, 2))
+
+    def test_a_page_that_is_not_marked_dated_alike_or_the_registrants_own_is_refused(self):
+        other_entity = {'scheme': 'http://www.sec.gov/CIK', 'identifier': '0000000002'}
+        numbers = '<table><tr><td>Other</td><td><ix:nonfraction name="g:OtherAssets">5</ix:nonfraction></td></tr></table>'
+        refused = (
+            {'title': 'Consolidated Statements of Comprehensive Income (continued)'},
+            {'header': 'Three Months Ended June 30, 2025',                   # other periods than the statement's
+             'lines': [(label, concept, value, {'startDate': '2025-04-01', 'endDate': '2025-06-30'})
+                       for label, concept, value, _ in self.COMMON]},
+            {'before': PAGE + numbers}, {'before': '<p>Note 2. Summary of significant accounting policies</p>'},
+            {'first': table('income', INCOME[:3], title=TITLES['income'], header=DURATION_HEADER)},   # no complete statement
+        )
+        for options in refused:
+            with self.subTest(options=options), self.assertRaises(TableExtractionError):
+                select(*self.parts(**options))
+        # Read as before, the complete table alone: the title repeated without the mark, a page
+        # with nothing of the registrant's own scope, and a page inside a note.
+        alone = ({'title': TITLES['income']}, {'lines': [(*line, self.SEGMENT) for line in self.COMMON]}, {'note': True})
+        for options in alone:
+            with self.subTest(options=options):
+                selected = select(*self.parts(**options))
+                self.assertEqual([part.table_key for part in selected], ['income_statement', 'balance_sheet', 'cash_flow'])
+                self.assertIsNone(selected[0].group)
+        tree, facts = document(*self.parts())
+        for identifier in ('page-0', 'page-1'):
+            facts[identifier]['entity'] = other_entity                      # the page of another registrant
+        with self.assertRaises(TableExtractionError):
+            select_statement_segments(tree, facts, corroborated_layouts=True)
+
+    def test_a_number_printed_across_an_undated_column_stands_under_the_period_it_spans(self):
+        # The second line of the page begins in the empty column before the dated one.
+        self.assertEqual(keys(*self.parts(shift=1, spanned=(1,))), self.KEYS)
+        with self.assertRaisesRegex(TableExtractionError, 'unresolved column period'):
+            select(*self.parts(shift=1, spanned=(1,)), corroborated_layouts=False)
+        # Across two dated columns of different periods it stands under neither.
+        two = table('page', self.COMMON, title=self.CONTINUED, before=PAGE, shift=1, spanned=(1,))
+        tree, facts = document(whole('income'), two, whole('balance'), whole('cash'))
+        page = tree.xpath('//table[@id="page"]')[0]
+        page.insert(0, html.fragment_fromstring(
+            '<tr><td></td><td>Three Months Ended June 30, 2025</td><td>' + DURATION_HEADER + '</td></tr>'))
+        with self.assertRaises(TableExtractionError):
+            select_statement_segments(tree, facts, corroborated_layouts=True)
 
 
 class ContinuedPageDetailTests(unittest.TestCase):

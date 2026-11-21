@@ -528,6 +528,15 @@ Years Ended December 31"), where the words dropped are period words and
 numbers that name a month and what remains is itself a complete title; and the
 balance sheet titled "Consolidated Financial Position" (Caterpillar).
 
+**A title printed in one block with its units.** Vistra prints the
+registrant's name, the title and "(Unaudited) (Millions of Dollars)" as the
+lines of one cell in the table's own header row, so no element holds the
+title alone. For a table that still has no title, attempts made after every
+other one has failed also read a title printed in one block with its units in
+parentheses, in any of the units wordings above. Parentheses that hold any
+other word stay part of the text, which is then no title. A filing an earlier
+attempt accepts keeps its selection.
+
 **A balance sheet printed as two tables.** The established rules join an
 assets table and a liabilities-and-equity table only when the second has no
 title and no dates of its own, or when the filing prints "statement continues
@@ -615,6 +624,40 @@ caption that begins in the label column and names no period, such as the
 statement's title repeated inside the table, heads the page and no column:
 where it dates nothing, the page has no column headers. The numbers on the
 page must still carry the periods they take, and the arithmetic must hold.
+
+**A complete income statement and its continued pages.** An income statement
+often runs on to a page under the same title marked "(continued)": the
+allocation of net income, earnings per share, or comprehensive income. The
+established rules take a complete table only when no other table is marked as
+its continuation, so such a filing was rejected as ambiguous. Where every
+other reading gives up, the last attempts read the statement as the complete
+table and those pages (`continued_pages`, `continued-pages-v1`) when all of
+these hold:
+
+- the first table is complete, with every concept group in every column, and
+  is not itself marked as a continuation;
+- every other table read as that statement is marked as a continuation and
+  shares the first table's title;
+- nothing but footnotes and page furniture stands between each table and the
+  one before it, and none lies inside a tagged text block (a note);
+- each page has the first table's column periods, reports the same entity and
+  holds a number of the registrant's own scope.
+
+The tables are stored as `income_statement.segment_1`, `.segment_2` and so on,
+in the order they are printed. A page under the same title that is not marked,
+one that holds only dimensional detail and one inside a note are left out as
+before, and the complete table alone is the statement.
+
+**A number printed across an undated column, when the statements are
+selected.** Extraction already reads a tagged number printed across grid
+columns, whose first column has no period of its own, under the period of the
+columns it spans when they give exactly one. Before, such a cell stopped the
+selection of the statement tables ("unresolved column period") before its
+table could be considered. The selection now reads the cell the same way, but
+only in attempts made after every other one has failed: the extended attempts
+are repeated with this reading, inside and outside the notes, and so is the
+reading of a combined filing by the scope of its numbers. A filing any
+earlier attempt accepts keeps its selection.
 
 **Dimensional detail on a continued cash flow page.** The established rule
 joins the pages of a cash flow statement only when every fact on every page

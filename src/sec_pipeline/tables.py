@@ -1823,7 +1823,7 @@ def _segment_heading_signatures(table, kind):
 
 
 def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=None, heading_evidence=(), concept_groups=None,
-                       corroborate=False, label_columns=False, parent_detail=False):
+                       corroborate=False, label_columns=False, parent_detail=False, spanned_cells=False):
     concept_groups = _STATEMENT_CONCEPTS if concept_groups is None else concept_groups
     rows, _ = layout_grid(table, tree)
     first = next((index for index, row in enumerate(rows) if any(
@@ -1850,6 +1850,20 @@ def _segment_candidate(tree, table, kind, facts, html_ids, *, inherited_periods=
                         if local(element) == 'nonfraction' and not _hidden(element)]
             if not elements:
                 continue
+            if period is None and spanned_cells and cell['colspan'] > 1:
+                # The very last tables-v3 selection attempts only, as
+                # extraction reads the cell: a tagged number printed across
+                # grid columns, whose first column has no period of its own,
+                # stands under the period of the columns it spans when they
+                # give exactly one.
+                spanned = set()
+                for column in range(cell['column'], cell['column'] + cell['colspan']):
+                    known = periods[column] if column in periods else header_period(
+                        column_headers(rows, first, column, advanced=True), advanced=True)
+                    if known is not None:
+                        spanned.add(json.dumps(known, sort_keys=True))
+                if len(spanned) == 1:
+                    period = json.loads(next(iter(spanned)))
             if period is None:
                 raise TableExtractionError('Statement segment has an unresolved column period')
             axis = json.dumps(period, sort_keys=True)
@@ -2669,7 +2683,7 @@ def _joined_cash_segments(tree, kind, candidates, facts, html_ids, required, ext
 
 
 def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corroborate=False, extended=False,
-                                  outside_notes=False):
+                                  outside_notes=False, last_readings=False):
     """Select original physical tables; v2 currently groups cash-flow continuations.
 
     Complete v1 selections are preserved. Split statements need matching exact
@@ -2685,6 +2699,11 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
     outside the notes only: a table inside a tagged text block is no
     candidate, whatever title stands above it, and rows of the parent company
     are detail of a table that also holds numbers without a dimension.
+    `last_readings` (with `extended`, tried after everything else) reads a
+    tagged number printed across grid columns under the one period of the
+    columns it spans, as extraction does (`_segment_candidate`), and gives a
+    table that still has no title the `block_units` reading of
+    `statement_headings.recover_headings`.
     """
     concept_groups = _STATEMENT_CONCEPTS if concept_groups is None else concept_groups
     try:
@@ -2729,6 +2748,11 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
             heading_evidence = _memo(('recover_header_lines', table), lambda: recover_headings(
                 table, wide=True, registrants=spelled_registrants, header_lines=True))
             kinds = {item.kind for item in heading_evidence}
+        if not kinds and corroborate and extended and last_readings:
+            # Only after every other attempt: a title printed in one block with its units.
+            heading_evidence = _memo(('recover_block_units', table), lambda: recover_headings(
+                table, wide=True, registrants=spelled_registrants, header_lines=True, block_units=True))
+            kinds = {item.kind for item in heading_evidence}
         if not kinds:
             untitled.add(table)
         for kind in kinds:
@@ -2737,7 +2761,8 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
             try:
                 candidate = _segment_candidate(tree, table, kind, facts, html_ids, heading_evidence=heading_evidence,
                                                concept_groups=concept_groups, corroborate=corroborate,
-                                               label_columns=extended, parent_detail=outside_notes)
+                                               label_columns=extended, parent_detail=outside_notes,
+                                               spanned_cells=last_readings)
             except TableExtractionError as exc:
                 undated = str(exc) == 'Statement segment has an unresolved column period'
                 candidate = None
@@ -2813,10 +2838,14 @@ def _select_statement_segments_v2(tree, facts, *, concept_groups=None, corrobora
                 # under the statement's title, or an untitled next page.
                 from .page_continuation import recover
                 recovered = recover(tree, kind, candidates, untitled | {table for table, _ in undated_pages.get(kind, ())},
-                                    facts, html_ids, concept_groups)
+                                    facts, html_ids, concept_groups, spanned_cells=last_readings)
                 if recovered is None and kind == 'balance_sheet':
                     from .balance_segments import whole_balance_sheet
                     recovered = whole_balance_sheet(candidates)
+                if recovered is None and kind == 'income_statement':
+                    # Tried last: a complete statement and its marked continuation pages.
+                    from .page_continuation import continued_pages
+                    recovered = continued_pages(tree, kind, candidates, required)
             if recovered is None:
                 raise TableExtractionError(f'{kind}: ambiguous or incomplete physical statement segments')
             output.extend(recovered)
@@ -3135,11 +3164,15 @@ def _parent_scope_segments(tree, facts, source_facts):
         if len(printed) == 1:
             names[record['raw_value'].strip().zfill(10)] = next(iter(printed))
     parent_cik = (parent[1] or '').zfill(10)
-    for concept_groups in (_CORROBORATED_STATEMENT_CONCEPTS, _UTILITY_STATEMENT_CONCEPTS):
+    # Last, both catalogs once more with a number printed across grid columns
+    # read under the period it spans and titles printed with their units
+    # (`last_readings`).
+    for concept_groups, last_readings in ((_CORROBORATED_STATEMENT_CONCEPTS, False), (_UTILITY_STATEMENT_CONCEPTS, False),
+                                          (_CORROBORATED_STATEMENT_CONCEPTS, True), (_UTILITY_STATEMENT_CONCEPTS, True)):
         try:
             selected = _validate_primary_scope(
                 _select_statement_segments_v2(tree, facts, concept_groups=concept_groups, corroborate=True, extended=True,
-                                              outside_notes=True), source_facts)
+                                              outside_notes=True, last_readings=last_readings), source_facts)
         except TableExtractionError:
             continue
         for segment in selected:
@@ -3184,14 +3217,20 @@ def _select_statement_segments(tree, facts, *, cash_followers, corroborated_layo
         if selected is None and corroborated_layouts:
             # Last, so a filing the two established selections accept keeps
             # its exact segments and proof.
-            # Each later attempt reads more; the last two look outside the notes only.
-            for concept_groups, extended, outside_notes in (
-                    (_CORROBORATED_STATEMENT_CONCEPTS, False, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, False),
-                    (_UTILITY_STATEMENT_CONCEPTS, True, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, True),
-                    (_UTILITY_STATEMENT_CONCEPTS, True, True)):
+            # Each later attempt reads more; the fourth and fifth look outside
+            # the notes only. The last four repeat the second to fifth with
+            # the last readings: a number printed across grid columns under
+            # the period it spans, and a title printed with its units.
+            for concept_groups, extended, outside_notes, last_readings in (
+                    (_CORROBORATED_STATEMENT_CONCEPTS, False, False, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, False, False),
+                    (_UTILITY_STATEMENT_CONCEPTS, True, False, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, True, False),
+                    (_UTILITY_STATEMENT_CONCEPTS, True, True, False), (_CORROBORATED_STATEMENT_CONCEPTS, True, False, True),
+                    (_UTILITY_STATEMENT_CONCEPTS, True, False, True), (_CORROBORATED_STATEMENT_CONCEPTS, True, True, True),
+                    (_UTILITY_STATEMENT_CONCEPTS, True, True, True)):
                 try:
                     selected = _select_statement_segments_v2(tree, facts, concept_groups=concept_groups, corroborate=True,
-                                                             extended=extended, outside_notes=outside_notes)
+                                                             extended=extended, outside_notes=outside_notes,
+                                                             last_readings=last_readings)
                     break
                 except TableExtractionError:
                     selected = None

@@ -147,7 +147,7 @@ def _scope(refs):
     return scope
 
 
-def page_continuation(tree, kind, first, table, facts, html_ids, concept_groups):
+def page_continuation(tree, kind, first, table, facts, html_ids, concept_groups, *, spanned_cells=False):
     """Return a titled table and the untitled table that continues it on the next page.
 
     `first` is the one incomplete titled table of its kind and `table` the
@@ -173,6 +173,9 @@ def page_continuation(tree, kind, first, table, facts, html_ids, concept_groups)
       change agrees with those totals;
     * income statement: income before income taxes less income tax expense,
       both in the first table, equals a net income line of the second.
+
+    `spanned_cells` reads the second table as the very last selection
+    attempts read every table (`tables._segment_candidate`).
     """
     from .tables import (StatementSegment, TableExtractionError, _column_header_cells, _column_periods,
                          _page_furniture_between, _period_caption, _segment_candidate, layout_grid, local)
@@ -218,7 +221,8 @@ def page_continuation(tree, kind, first, table, facts, html_ids, concept_groups)
             # Inherited headers establish their own periods; corroboration never adds to them.
             candidate = _segment_candidate(
                 tree, table, kind, facts, html_ids, concept_groups=concept_groups, corroborate=not inherited,
-                inherited_periods={int(column): value['period'] for column, value in inherited.items()} or None)
+                inherited_periods={int(column): value['period'] for column, value in inherited.items()} or None,
+                spanned_cells=spanned_cells)
         except TableExtractionError:
             return None, inherited
         return (candidate if candidate is not None and candidate['axes'] == first['axes'] else None), inherited
@@ -343,7 +347,66 @@ def statement_before_supplements(tree, kind, candidates, required):
     return main
 
 
-def recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups):
+CONTINUED_PAGES_VERSION = 'continued-pages-v1'
+
+
+def continued_pages(tree, kind, candidates, required):
+    """A complete income statement and the pages marked as its continuation, or None.
+
+    An income statement often runs on to a page printed under the same title
+    and marked "(continued)": the allocation of net income, earnings per
+    share, or comprehensive income. The first candidate must be complete,
+    with every concept group in every column, and not marked as a
+    continuation. Every other candidate must be marked as one and share the
+    first table's title, stand after the table before it with nothing but
+    page furniture between them, have the first table's column periods,
+    report the same entity and hold a number of the registrant's own scope.
+    No table may lie inside a note. The statement is then all of these
+    tables, in the order they are printed.
+    """
+    from .tables import StatementSegment, _page_furniture_between
+
+    if kind != 'income_statement' or len(candidates) < 2:
+        return None
+    main, pages = candidates[0], candidates[1:]
+    if (main['continued'] or not main['axes'] or not main['headings'] or in_note(main['table'])
+            or any(groups != required for groups in main['coverage'].values())):
+        return None
+
+    def entities(candidate):
+        return {json.dumps(json.loads(scope)['entity'], sort_keys=True) for scope in candidate['scopes']}
+
+    entity = entities(main)
+    if len(entity) != 1:
+        return None
+    titles = set(main['headings'])
+    previous = main
+    for page in pages:
+        titles &= page['headings']
+        if (not page['continued'] or not titles or in_note(page['table']) or page['axes'] != main['axes']
+                or entities(page) != entity or not any(not json.loads(scope)['dimensions'] for scope in page['scopes'])
+                or not _page_furniture_between(tree, previous['table'], page['table'], kind)):
+            return None
+        previous = page
+    keys = [f'{kind}.segment_{index + 1}' for index in range(len(candidates))]
+    groups = []
+    for axis in main['axes']:
+        combined = {}
+        for candidate in candidates:
+            for group, identities in candidate['evidence'][axis].items():
+                combined.setdefault(group, []).extend(identities)
+        groups.append({'period': json.loads(axis), 'groups': {group: sorted(set(identities))
+                                                              for group, identities in sorted(combined.items())}})
+    common = {'group_key': kind, 'segment_count': len(candidates), 'segment_keys': keys,
+              'source_xpaths': [source_xpath(tree, candidate['table']) for candidate in candidates],
+              'heading': sorted(titles)[0], 'column_periods': [json.loads(axis) for axis in main['axes']],
+              'continued_pages': {'verification_version': CONTINUED_PAGES_VERSION, 'entity': json.loads(next(iter(entity)))},
+              'combined_concept_evidence': groups}
+    return tuple(StatementSegment(kind, key, candidate['table'], common | {'segment_index': index + 1})
+                 for index, (key, candidate) in enumerate(zip(keys, candidates)))
+
+
+def recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups, *, spanned_cells=False):
     """Select a statement the established rules leave "ambiguous or incomplete", or return None.
 
     Tables none of whose numbers has the registrant's own scope are left out
@@ -389,7 +452,8 @@ def recover(tree, kind, candidates, untitled, facts, html_ids, concept_groups):
                           if any(local(node) == 'nonfraction' for node in table.iter())), None)
         if following is None or following not in untitled:
             continue
-        segments = page_continuation(tree, kind, first, following, facts, html_ids, concept_groups)
+        segments = page_continuation(tree, kind, first, following, facts, html_ids, concept_groups,
+                                     spanned_cells=spanned_cells)
         if segments is not None:
             found.append(segments)
     return found[0] if len(found) == 1 else None
