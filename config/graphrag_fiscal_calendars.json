@@ -1,0 +1,59 @@
+{
+  "rules": [
+    {
+      "cik": "0001652044", "ticker": "GOOGL", "first_fy": 2021, "last_fy": 2026,
+      "year_end_month": 12, "basis": "month_end",
+      "evidence": [
+        {"url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204422000019/goog-20211231.htm", "note": "FY 2021 cover and comparative year ends."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000018/goog-20251231.htm", "note": "FY 2025 cover and comparative December year ends."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/1652044/000165204426000071/goog-20260630.htm", "note": "2026 interim year-to-date reporting continues on the calendar-year cycle."}
+      ]
+    },
+    {
+      "cik": "0001018724", "ticker": "AMZN", "first_fy": 2021, "last_fy": 2026,
+      "year_end_month": 12, "basis": "month_end",
+      "evidence": [
+        {"url": "https://www.sec.gov/Archives/edgar/data/1018724/000101872422000005/amzn-20211231.htm", "note": "FY 2021 annual cover and comparative year ends."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/1018724/000101872426000004/amzn-20251231.htm", "note": "FY 2025 annual cover and comparative December year ends."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/1018724/000101872426000026/amzn-20260630.htm", "note": "2026 10-Q compares December 31, 2025 with June 30, 2026 and gives six-month interim results."}
+      ]
+    },
+    {
+      "cik": "0000104169", "ticker": "WMT", "first_fy": 2022, "last_fy": 2027,
+      "year_end_month": 1, "basis": "month_end",
+      "evidence": [
+        {"url": "https://www.sec.gov/Archives/edgar/data/104169/000010416922000012/wmt-20220131.htm", "note": "FY 2022 cover and comparative January year ends."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000055/wmt-20260131.htm", "note": "FY 2026 cover and comparative January year ends."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/104169/000010416926000154/wmt-20260731.htm", "note": "MD&A names January 31, 2027 as FY 2027 close and July 31, 2026 as the six-month interim close."}
+      ]
+    },
+    {
+      "cik": "0000721371", "ticker": "CAH", "first_fy": 2022, "last_fy": 2026,
+      "year_end_month": 6, "basis": "month_end",
+      "evidence": [
+        {"url": "https://www.sec.gov/Archives/edgar/data/721371/000072137122000058/cah-20220630.htm", "note": "FY 2022 10-K cover and basis of presentation."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/721371/000072137126000038/cah-20260630.htm", "note": "Introduction explicitly identifies June 30 closes for FY 2020 through FY 2027."}
+      ]
+    },
+    {
+      "cik": "0000050863", "ticker": "INTC", "first_fy": 2021, "last_fy": 2026,
+      "year_end_month": 12, "basis": "last_weekday", "weekday": 5,
+      "extra_week_quarter": {"2022": 1},
+      "evidence": [
+        {"url": "https://www.sec.gov/Archives/edgar/data/50863/000005086322000007/intc-20211225.htm", "note": "Note 1 documents the last Saturday in December and the FY 2021 close."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/50863/000005086323000028/intc-20230401.htm", "note": "Note 1 identifies FY 2022 as 53 weeks, with the extra week in Q1."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/50863/000005086326000011/R10.htm", "note": "Note 1 reports 52 weeks for FY 2023–2026."}
+      ]
+    },
+    {
+      "cik": "0000106040", "ticker": "WDC", "first_fy": 2022, "last_fy": 2026,
+      "year_end_month": 6, "basis": "nearest_weekday", "weekday": 4,
+      "extra_week_quarter": {"2026": 1},
+      "evidence": [
+        {"url": "https://www.sec.gov/Archives/edgar/data/106040/000010604022000040/wdc-20220401.htm", "note": "Fiscal Year note documents the Friday nearest June 30, 52 weeks and 13-week quarters for FY 2021 and FY 2022."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/106040/000010604023000028/fy2023westerndigitalannual.pdf", "note": "Annual report confirms FY 2021–2023 had 52 weeks."},
+        {"url": "https://www.sec.gov/Archives/edgar/data/106040/000162828026057139/wdc-20260703.htm", "note": "FY 2024 and FY 2025 had 52 weeks; FY 2026 had 53 weeks with a 14-week Q1."}
+      ]
+    }
+  ]
+}

@@ -89,3 +89,44 @@ Filing-level fiscal metadata is outside the comparison. A version/processing
 set change, gap in lineage evidence, or missing baseline remains inconclusive.
 The verification commands return 0 for a pass, 1 for a difference or
 inconsistency, and 2 for incomplete or unverified evidence.
+
+## Recalculate fiscal labels from historical EDGAR calendars
+
+The date-based check consumes the same six-company inventory and stored DEI
+export. It derives labels only from `reporting_period_end`, the form, and
+period-effective calendar rules keyed by CIK. The versioned calendar contains
+the EDGAR filings and the supported fiscal years for each rule. Months and
+week-based year ends use separate methods. For 52/53-week issuers, output
+includes the expected and actual reporting dates, fiscal week count, and
+signed deviation in days. The inclusive tolerance is 10 calendar days for
+weekly calendars. A fixed month-end calendar requires an exact date. Missing
+rules, unresolved 53rd-week quarter placement, overlapping matches, unsupported
+transition forms, and dates outside tolerance all remain review items.
+
+```sh
+PYTHONPATH=src python scripts/validate_fiscal_labels.py \
+  --calendar config/graphrag_fiscal_calendars.json \
+  --inventory /private/table-audit/shared-inventory.json \
+  --dei /private/stored-dei-assertions.json --output /private/fiscal-label-audit
+```
+
+DEI focus values are compared only when the stored SEC DEI facts match the
+CIK, document, form and reporting period, with no nil or dimensional
+assertions. The output retains raw facts, source receipt hashes, context
+references and XPath. Compare disagreements without editing shared fiscal
+metadata, comparative dates, or XBRL fact contexts. This is a comparison with
+stored XBRL evidence when independently hash-verified XML is unavailable.
+
+When Michael supplies released downstream rows, provide both
+`--published /private/official-exports.json` and
+`--snapshots /private/table-audit`. The manifest is an array of objects with
+`accession`, `selection` (`contract` and `id`), an attributable `evidence`
+reference, and `exports` (the independent filing, table and cell arrays
+described above). The script compares each exact receiving set for complete
+and unique table and cell rows, parent filing IDs, cell/table membership, and
+label inheritance. The CSV separates calculated, DEI and released labels and
+reports table and cell inheritance separately. The evidence JSON retains
+per-set disagreements. Missing official output leaves the released label
+fields empty and downstream statuses unverified. Status 1 indicates a
+confirmed mismatch or failed inheritance; status 2 indicates missing or
+unresolved evidence.
