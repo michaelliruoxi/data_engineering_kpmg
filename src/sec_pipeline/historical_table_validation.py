@@ -24,6 +24,9 @@ from .tables import select_statement_segments
 COMPANIES = dict(AAPL="0000320193", CASY="0000726958", MCK="0000927653", MDT="0001613103",
                  MSFT="0000789019", MU="0000723125", NKE="0000320187", NTAP="0001002047",
                  PH="0000076334", TTWO="0000946581")
+GRAPHRAG_COMPANIES = dict(GOOGL="0001652044", AMZN="0001018724", WMT="0000104169",
+                           INTC="0000050863", CAH="0000721371", WDC="0000106040")
+GRAPHRAG_DATES = ("2021-01-01", "2026-12-31")
 PRIOR_SAMPLE = "0001193125-26-191507"
 SUMMARY_COLUMNS = ("ticker", "CIK", "accession", "form", "filing_date", "reporting_period",
     "processing_family", "processing_set_id", "table_version", "facts_version", "report_version", "chunk_version",
@@ -46,8 +49,8 @@ def assert_readonly(conn):
         raise DatabaseError("A read-write transaction is prohibited.")
 
 
-def read_inventory(conn, companies):
-    """No year filter: observed DB holdings are not a complete discovery list."""
+def read_inventory(conn, companies, date_range=None):
+    """Read in-scope holdings. Acquisition evidence is supplied separately."""
     assert_readonly(conn)
     identity = conn.execute("SELECT current_user,current_database(),now() AS queried_at,current_setting('transaction_read_only') AS read_only").fetchone()
     ssl = conn.execute("SELECT ssl,version,cipher FROM pg_stat_ssl WHERE pid=pg_backend_pid()").fetchone()
@@ -55,19 +58,29 @@ def read_inventory(conn, companies):
         raise DatabaseError("Expected sec_jazzy with a verified SSL session.")
     relations = conn.execute("SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema IN ('sec','finance') ORDER BY 1,2").fetchall()
     result = {"status": "connected_readonly_inventory_completed", "attempted_at_utc": utc_now(), "identity": identity,
-        "ssl": ssl, "sslmode": "verify-full", "scope_status": "pending_owner_confirmation", "year_filter": None,
+        "ssl": ssl, "sslmode": "verify-full", "scope_status": "pending_owner_confirmation", "year_filter": date_range,
         "relations": relations, "read_only": True,
         "schema": conn.execute("SELECT table_schema,table_name,column_name,data_type FROM information_schema.columns WHERE table_schema IN ('sec','finance') ORDER BY 1,2,ordinal_position").fetchall(),
         "permissions": conn.execute("SELECT n.nspname AS schema,c.relname,has_table_privilege(c.oid,'SELECT') AS can_select,has_table_privilege(c.oid,'INSERT,UPDATE,DELETE') AS can_write FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname IN ('sec','finance') AND c.relkind IN ('r','v') ORDER BY 1,2").fetchall()}
     result["companies"] = conn.execute("SELECT * FROM sec.companies WHERE cik=ANY(%s) ORDER BY cik", (list(companies.values()),)).fetchall()
-    result["filings"] = conn.execute("SELECT f.*,c.cik,c.ticker FROM sec.filings f JOIN sec.companies c ON c.id=f.company_id WHERE c.cik=ANY(%s) AND f.form IN ('10-K','10-Q') ORDER BY c.ticker,f.filing_date,f.accession_number", (list(companies.values()),)).fetchall()
+    filings_sql = """SELECT f.*,c.cik,c.ticker FROM sec.filings f
+        JOIN sec.companies c ON c.id=f.company_id
+        WHERE c.cik=ANY(%s) AND f.form IN ('10-K','10-Q')"""
+    params = (list(companies.values()),)
+    if date_range:
+        filings_sql += " AND f.filing_date BETWEEN %s AND %s"
+        params += tuple(date_range)
+    result["filings"] = conn.execute(
+        filings_sql + " ORDER BY c.ticker,f.filing_date,f.accession_number", params).fetchall()
     ids = [f["id"] for f in result["filings"]]
     names = {r["table_name"] for r in relations if r["table_schema"] == "sec"}
     for name in ("filing_processing_sets", "preferred_processing_sets", "source_processing_sets", "source_document_sets", "source_documents"):
         result[name] = conn.execute(f"SELECT * FROM sec.{name} WHERE filing_id=ANY(%s) ORDER BY 1", (ids,)).fetchall() if name in names else []
     # The browsing view's recommendation is evidence, NOT an approved selection.
     if any(r["table_schema"] == "finance" and r["table_name"] == "filing" for r in relations):
-        result["finance_filing"] = conn.execute("SELECT * FROM finance.filing WHERE cik=ANY(%s) ORDER BY ticker,accession_number", (list(companies.values()),)).fetchall()
+        result["finance_filing"] = conn.execute(
+            "SELECT * FROM finance.filing WHERE accession_number=ANY(%s) ORDER BY ticker,accession_number",
+            ([row["accession_number"] for row in result["filings"]],)).fetchall()
     return result
 
 
@@ -87,13 +100,15 @@ def connection_failure(error):
             "attempted_at_utc": utc_now(), "error_text": "withheld_to_protect_credentials"}
 
 
-def merge_candidates(inventory, inputs, companies):
+def merge_candidates(inventory, inputs, companies, date_range=None):
     """Union discoveries/manifests/queue and DB, retaining un-ingested filings."""
     candidates, conflicts, discovery_complete = {}, [], set()
 
     def add(row, origin, ticker=None):
         cik = str(row.get("cik", "")).zfill(10)
         ticker = ticker or row.get("ticker") or row.get("requested_ticker") or next((t for t, c in companies.items() if c == cik), None)
+        if origin == "shared_database":
+            ticker = next((t for t, known_cik in companies.items() if known_cik == cik), None)
         if ticker not in companies:
             return
         accession = row.get("accession_number", row.get("accession"))
@@ -104,13 +119,26 @@ def merge_candidates(inventory, inputs, companies):
         if row.get("cik") and cik != companies[ticker]:
             conflicts.append({"accession": accession, "field": "CIK", "values": [companies[ticker], cik], "origin": origin})
             return
+        if date_range:
+            try:
+                filing_day = str(datetime.fromisoformat(str(row.get("filing_date"))).date())
+            except ValueError:
+                conflicts.append({"accession": accession, "field": "filing_date", "origin": origin,
+                                  "values": [row.get("filing_date")], "reason": "missing_or_invalid"})
+                return
+            if not date_range[0] <= filing_day <= date_range[1]:
+                return
         clean = {"ticker": ticker, "CIK": companies[ticker], "accession": accession, "form": row["form"],
                  "filing_date": row.get("filing_date"), "reporting_period": row.get("reporting_period_end", row.get("reporting_period")),
                  "filing_id": row.get("filing_id", row.get("id")) if origin == "shared_database" else None,
                  "candidate_sources": [origin], "scope_status": "pending_owner_confirmation"}
         if accession in candidates:
             current = candidates[accession]
-            for key in ("ticker", "CIK", "form", "filing_date", "reporting_period"):
+            if current["CIK"] != clean["CIK"]:
+                conflicts.append({"accession": accession, "field": "CIK",
+                                  "values": [current["CIK"], clean["CIK"]], "origin": origin})
+                return
+            for key in ("form", "filing_date", "reporting_period"):
                 if current.get(key) and clean.get(key) and current[key] != clean[key]:
                     conflicts.append({"accession": accession, "field": key, "values": [current[key], clean[key]], "origin": origin})
                 elif not current.get(key):
@@ -283,7 +311,10 @@ def audit_candidate(snapshot, roots):
     result["original_source_errors"] = [e for e in result["errors"] if e["reason"] in source_reasons]
     result["database_relationship_errors"] = [e for e in result["errors"]
         if e not in result["section_errors"] and e not in result["original_source_errors"]]
-    result["relational_checks_status"] = "failed" if result["database_relationship_errors"] else "passed_stored_evidence_only"
+    result["relational_checks_status"] = (
+        "failed" if result["database_relationship_errors"] else
+        "no_tables_to_check" if not snapshot["tables"] else "passed_stored_evidence_only"
+    )
     if result["errors"]:
         result["status"] = "failed"
     elif result["unverified"] or result.get("processing_validation_status") != "passed":
@@ -357,7 +388,9 @@ def summarize(candidate, checks, snapshots, issues, inventory, sets=None, *, inc
         "failed" if any(c["status"] == "failed" for c in checks) else
         "blocked" if not checks or row["source_status"] != "available" else "unverified_selection_or_disposition")
     row["database_relationship_status"] = ("failed" if any(c.get("relational_checks_status") == "failed" for c in checks) else
-        "passed_stored_evidence_only" if checks and len(checks) == len(sets) else "unverified")
+        "passed_stored_evidence_only" if checks and len(checks) == len(sets)
+        and all(c.get("relational_checks_status") == "passed_stored_evidence_only" for c in checks)
+        else "unverified")
     row["original_source_semantics_status"] = "passed" if checks and len(checks) == len(sets) and all(c["status"] == "passed" for c in checks) else "unverified"
     return row
 
@@ -371,9 +404,11 @@ def write_csv(path, rows, columns):
             writer.writerow({key: json.dumps(value, sort_keys=True, ensure_ascii=False) if isinstance(value, (dict, list)) else value for key, value in row.items() if key in columns})
 
 
-def source_requirements(inventory, companies, roots, *, include_prior_sample=False):
+def source_requirements(inventory, companies, roots, *, include_prior_sample=False, date_range=None):
     """Receipt paths may refer to another import machine; resolve, never assume."""
-    filings = {str(f["id"]): f for f in inventory.get("filings", []) if f.get("ticker") in companies}
+    from .table_sections import canonical
+    candidates, _, _ = merge_candidates(canonical(inventory), [], companies, date_range)
+    filings = {str(row["filing_id"]): row for row in candidates}
     rows = []
     for source in inventory.get("source_documents", []):
         filing = filings.get(str(source["filing_id"]))
@@ -390,8 +425,8 @@ def source_requirements(inventory, companies, roots, *, include_prior_sample=Fal
             if path.is_file():
                 existing.append(str(path))
                 hashes.append(hashlib.sha256(path.read_bytes()).hexdigest())
-        excluded = filing["accession_number"] == PRIOR_SAMPLE and not include_prior_sample
-        rows.append({"ticker": filing["ticker"], "accession": filing["accession_number"], "source_document_id": str(source["id"]),
+        excluded = filing["accession"] == PRIOR_SAMPLE and not include_prior_sample
+        rows.append({"ticker": filing["ticker"], "accession": filing["accession"], "source_document_id": str(source["id"]),
             "source_url": source["source_url"], "local_path": relative, "SHA-256": source["sha256"], "file_type": source["role"],
             "local_exists": bool(existing), "resolved_paths": existing, "attempted_paths": attempted,
             "local_sha256": hashes, "hash_status": "missing" if not hashes else "matched" if source["sha256"] in hashes else "mismatch",
@@ -448,11 +483,13 @@ def download_required_sources(requirements, root, *, identity_approved):
     return status
 
 
-def run_validation(inventory, inputs, companies, roots, output, snapshot_reader, selections=None, *, include_prior_sample=False):
+def run_validation(inventory, inputs, companies, roots, output, snapshot_reader, selections=None, *,
+                   include_prior_sample=False, date_range=None):
     from .table_sections import canonical
     inventory = canonical(inventory)
-    candidates, conflicts, discovery_complete = merge_candidates(inventory, inputs, companies)
-    requirements = source_requirements(inventory, companies, roots, include_prior_sample=include_prior_sample)
+    candidates, conflicts, discovery_complete = merge_candidates(inventory, inputs, companies, date_range)
+    requirements = source_requirements(inventory, companies, roots,
+                                      include_prior_sample=include_prior_sample, date_range=date_range)
     selections = selections or {}
     known = {c["accession"]: c for c in candidates}
     for accession, selection in selections.items():
@@ -463,8 +500,9 @@ def run_validation(inventory, inputs, companies, roots, output, snapshot_reader,
     write_csv(output / "source_requirements.csv", requirements, tuple(requirements[0]) if requirements else ("accession", "source_url", "local_path", "SHA-256", "file_type", "local_exists"))
     minimum = [r for r in requirements if r["minimum_relationship_source"] and r["hash_status"] != "matched"]
     write_csv(output / "missing_sources_minimal.csv", minimum, tuple(requirements[0]) if requirements else ("accession",))
-    save_json(output / "candidate_manifest.json", {"scope_status": "pending_owner_confirmation", "year_filter": None,
-        "basis": "Union of observed shared DB holdings and explicitly supplied discovery/manifests; NOT a final shortlist",
+    save_json(output / "candidate_manifest.json", {"scope_status": "pending_owner_confirmation", "year_filter": date_range,
+        "basis": "shared holdings plus supplied Acquisition evidence" if inputs else "database holdings only",
+        "manifest_paths": [origin for origin, _ in inputs],
         "filings": candidates, "metadata_conflicts": conflicts})
     issues, summaries, versions, traces, mappings = [], [], [], [], []
     for conflict in conflicts:
@@ -519,10 +557,18 @@ def run_validation(inventory, inputs, companies, roots, output, snapshot_reader,
             row["selection_status"] = "explicit_override_pinned_not_approval_of_team_scope"
         summaries.append(row)
         print(json.dumps({"accession": accession, "ticker": candidate["ticker"], "status": row["validation_status"], "candidate_sets_checked": len(checks)}), flush=True)
-    coverage = [{"ticker": t, "CIK": c, "observed_candidate_filings": sum(r["ticker"] == t for r in candidates),
-        "expected_final_filing_count": None, "missing_final_accessions": "unknown_without_final_list",
-        "discovery_status": "supplied_discovery_window_complete_not_final_scope" if t in discovery_complete else "no_complete_discovery_inventory_available",
-        "scope_status": "pending_owner_confirmation"} for t, c in sorted(companies.items())]
+    coverage = []
+    for ticker, cik in sorted(companies.items()):
+        observed = [row for row in candidates if row["ticker"] == ticker]
+        acquired = [row for row in observed if set(row["candidate_sources"]) - {"shared_database"}]
+        coverage.append({"ticker": ticker, "CIK": cik, "observed_candidate_filings": len(observed),
+            "shared_db_filings": sum(bool(row["filing_id"]) for row in observed),
+            "supplied_acquisition_filings": len(acquired) if inputs else None,
+            "supplied_acquisition_filings_missing_db": sum(not row["filing_id"] for row in acquired) if inputs else None,
+            "expected_final_filing_count": None, "missing_final_accessions": "unknown_without_final_list",
+            "discovery_status": ("supplied_discovery_window_complete_not_final_scope" if ticker in discovery_complete
+                                 else "no_complete_discovery_inventory_available"),
+            "scope_status": "pending_owner_confirmation"})
     save_json(output / "processing_candidates.json", versions)
     save_json(output / "trace_examples.json", traces)
     save_json(output / "trace_examples_by_company.json", [next(t for t in traces if t["ticker"] == ticker)
@@ -542,8 +588,9 @@ def run_validation(inventory, inputs, companies, roots, output, snapshot_reader,
     report = f"""# Historical table relationship validation
 
 Scope: {len(companies)} requested companies; {len(candidates)} observed candidate filings. **Pending owner confirmation.**
-Run completed: {utc_now()}. No final accession list or final year range was assumed.
-The phrase '17 10Q/10K' was not interpreted. Missing historical accessions and the expected final count remain unknown.
+Run completed: {utc_now()}. Filing-date filter: {date_range or "unbounded"}.
+Coverage basis: {"database holdings plus supplied manifests" if inputs else "database holdings only"}.
+See candidate_manifest.json for input identities and the acquisition reconciliation basis.
 
 ## Results
 
