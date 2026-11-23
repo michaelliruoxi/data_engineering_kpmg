@@ -1,6 +1,10 @@
 from copy import deepcopy
+from datetime import date, timedelta
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -28,13 +32,28 @@ def test_historical_calendar_uses_reporting_period(cik, actual, form, label, wee
     assert (result["expected_period_end"], result["deviation_days"], result["fiscal_weeks"]) == (actual, 0, weeks)
 
 
-def test_week_tolerance_is_inclusive_and_stops_at_11_days():
-    row = {"CIK": "0000050863", "reporting_period_end": "2022-04-12", "form": "10-Q"}
-    result = calculate_fiscal(row, RULES)
-    assert (result["status"], result["deviation_days"]) == ("within_10_days", 10)
-    result = calculate_fiscal(row | {"reporting_period_end": "2022-04-13"}, RULES)
-    assert result["reason"] == "outside_calendar_tolerance"
-    assert result["calendar_candidates"][0]["deviation_days"] == 11
+@pytest.mark.parametrize(("cik", "prior_end", "forecast", "fiscal_year"), [
+    ("0000050863", "2021-12-25", "2022-04-02", 2022),
+    ("0000106040", "2025-06-27", "2025-10-03", 2026),
+])
+@pytest.mark.parametrize("deviation", [-11, -10, -7, 0, 10, 11])
+def test_14_week_q1_expected_date_is_independent_of_reported_date(cik, prior_end, forecast, fiscal_year, deviation):
+    expected = date.fromisoformat(forecast)
+    assert expected - date.fromisoformat(prior_end) == timedelta(weeks=14)
+    actual = expected + timedelta(days=deviation)
+    result = calculate_fiscal({"CIK": cik, "reporting_period_end": actual.isoformat(),
+                               "filing_date": "2099-01-01", "form": "10-Q"}, RULES)
+    assert result["actual_period_end"] == actual.isoformat()
+    if abs(deviation) <= 10:
+        assert result["status"] == ("exact" if deviation == 0 else "within_10_days")
+        evidence = result
+    else:
+        assert result["status"] == "review_required"
+        assert result["reason"] == "outside_calendar_tolerance"
+        assert "fiscal_year" not in result
+        evidence, = result["calendar_candidates"]
+    assert (evidence["fiscal_year"], evidence["period"], evidence["fiscal_weeks"]) == (fiscal_year, "Q1", 53)
+    assert (evidence["expected_period_end"], evidence["deviation_days"]) == (forecast, deviation)
 
 
 def test_no_extrapolation_or_tie_breaking():
@@ -65,22 +84,68 @@ def filing():
             "form": "10-Q", "reporting_period_end": "2025-10-03"}
 
 
-def test_dei_selects_same_context_end_and_preserves_raw_conflicts(filing):
+@pytest.fixture
+def dei_scope():
     common = {"filing_id": "filing", "source_document_id": "source", "concept_namespace": "http://xbrl.sec.gov/dei/2025",
               "period_kind": "duration", "period_end": "2025-10-03", "is_nil": False, "dimensions": [],
               "source_reference": {"entity": {"identifier": "106040"}, "xpath": "/x", "context_ref": "q1"}}
     values = {"DocumentFiscalYearFocus": "2026", "DocumentFiscalPeriodFocus": "Q1",
               "DocumentPeriodEndDate": "2025-10-03", "DocumentType": "10-Q"}
-    scope = {"filing_id": "filing", "selection": {"contract": "legacy", "id": "set"}, "source": {"id": "source"},
-             "facts": [common | {"concept_name": name, "raw_value": value} for name, value in values.items()]}
-    stray = common | {"concept_name": "DocumentFiscalYearFocus", "raw_value": "2025", "period_end": "2024-09-27"}
-    scope["facts"].append(stray)
+    return {"filing_id": "filing", "selection": {"contract": "legacy", "id": "set"}, "source": {"id": "source"},
+            "facts": [common | {"concept_name": name, "raw_value": value} for name, value in values.items()]}
+
+
+def test_dei_selects_same_context_end_and_preserves_raw_conflicts(filing, dei_scope):
+    scope = dei_scope
+    scope["facts"].append(scope["facts"][0] | {"raw_value": "2025", "period_end": "2024-09-27"})
     result = inspect_dei(filing, [scope])
     assert compare_labels(calculate_fiscal(filing, RULES), result) == "match"
     assert result["scopes"][0]["facts"][-1]["raw_value"] == "2025"
     assert result["scopes"][0]["facts"][-1]["qualified"] is False
     scope["facts"][-1]["period_end"] = "2025-10-03"
-    assert inspect_dei(filing, [scope])["status"] == "review_required"
+    conflicted = inspect_dei(filing, [scope])
+    assert conflicted["status"] == "review_required"
+    assert "fiscal_year" not in conflicted
+    assert {fact["raw_value"] for fact in conflicted["scopes"][0]["facts"]
+            if fact["name"] == "DocumentFiscalYearFocus" and fact["qualified"]} == {"2025", "2026"}
+
+
+@pytest.mark.parametrize(("field", "value"), [("DocumentFiscalPeriodFocus", "Q2"),
+                                              ("DocumentPeriodEndDate", "2025-10-02"),
+                                              ("DocumentType", "10-K")])
+def test_conflicting_document_dei_values_remain_unresolved(filing, dei_scope, field, value):
+    fact = next(fact for fact in dei_scope["facts"] if fact["concept_name"] == field)
+    dei_scope["facts"].append(fact | {"raw_value": value})
+    result = inspect_dei(filing, [dei_scope])
+    assert result["status"] == "review_required"
+    assert "period" not in result
+    assert {f["raw_value"] for f in result["scopes"][0]["facts"] if f["name"] == field} == {value, fact["raw_value"]}
+
+
+def test_cli_conflicting_dei_sets_preserve_values_and_report_mismatch(filing, dei_scope, tmp_path):
+    repository = Path(__file__).resolve().parents[1]
+    inventory = {"filings": [filing | {"id": filing["filing_id"], "cik": filing["CIK"],
+                                       "accession_number": filing["accession"]}]}
+    conflicting = deepcopy(dei_scope)
+    conflicting["selection"]["id"] = "other-set"
+    conflicting["facts"][1]["raw_value"] = "Q2"
+    scopes = [scope | {"accession": filing["accession"]} for scope in (dei_scope, conflicting)]
+    for name, value in (("inventory", inventory), ("dei", scopes)):
+        (tmp_path / name).write_text(json.dumps(value))
+    out = tmp_path / "out"
+    run = subprocess.run([
+        sys.executable, str(repository / "scripts/validate_fiscal_labels.py"),
+        "--calendar", str(repository / "config/graphrag_fiscal_calendars.json"),
+        "--inventory", str(tmp_path / "inventory"), "--dei", str(tmp_path / "dei"), "--output", str(out),
+    ], cwd=repository, env=os.environ | {"PYTHONPATH": str(repository / "src")}, capture_output=True, text=True)
+    assert run.returncode == 1, run.stderr
+    evidence, = json.loads((out / "fiscal-label-evidence.json").read_text())
+    assert evidence["calculated"]["period"] == "Q1"
+    assert evidence["dei"]["status"] == "review_required"
+    assert [scope["label"] for scope in evidence["dei"]["scopes"]] == [[2026, "Q1"], [2026, "Q2"]]
+    assert [scope["calculated_vs_dei"] for scope in evidence["dei"]["scopes"]] == ["match", "mismatch"]
+    assert evidence["calculated_vs_dei"] == "mismatch"
+    assert evidence["publication"]["status"] == "unverified_official_output_unavailable"
 
 
 def test_official_publication_checks_table_and_cell_inheritance_separately(filing, tmp_path):
